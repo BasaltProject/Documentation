@@ -1,0 +1,81 @@
+---
+title: Installation
+description: Getting the binary onto a machine and through its first start.
+---
+
+Basalt ships as a single native binary per platform. There is no runtime to
+install alongside it and no version of anything to keep matched.
+
+## Supported platforms
+
+| Platform | Architecture | Target |
+|---|---|---|
+| macOS | Apple silicon | `macosArm64` |
+| macOS | Intel | `macosX64` |
+| Linux | x86_64 | `linuxX64` |
+| Linux | aarch64 | `linuxArm64` |
+| Windows | x86_64 | `mingwX64` |
+
+## Install
+
+Download the binary for your platform, make it executable and put it where you
+want the server to live. The server writes everything it needs next to itself.
+
+```bash
+chmod +x basalt
+./basalt
+```
+
+## First start
+
+The first start does not launch a server. It writes `eula.toml` and stops.
+
+<x-docs.callout type="warning" title="The server never prompts you">
+On first start Basalt writes `eula.toml` with `eula = false` and exits. Open it,
+set `eula = true` and start again. An accepted `eula.txt` from an existing server
+is read once and migrated.
+</x-docs.callout>
+
+For non-interactive environments there is a flag, and using it is a deliberate
+act that counts as accepting the [Minecraft EULA](https://www.minecraft.net/en-us/eula):
+
+```bash
+./basalt --accept-eula
+```
+
+## Game data
+
+Once the EULA is accepted, the server downloads the official server download
+from Mojang, verifies its SHA-1 and unpacks only the data it needs into a local
+cache. That happens once per version; later starts touch neither the network nor
+the archive.
+
+## Moving an existing server across
+
+Point Basalt at an existing server directory and it takes what it can:
+
+- `server.properties` is imported once, on first start.
+- `eula.txt` is read once and migrated to `eula.toml`.
+- Anvil worlds are read and converted to Linear regions on load.
+
+## Building from source
+
+The network layer lives in [Wire](https://github.com/BasaltProject/Wire), shared
+with the proxy and pulled in as a submodule, so clone with it:
+
+```bash
+git clone --recurse-submodules https://github.com/BasaltProject/Server.git
+```
+
+In an existing clone, `git submodule update --init` does the same thing. Without
+it the build fails immediately: half the modules are missing.
+
+Kotlin/Native tasks carry the target in their name. Gradle orchestrates the build
+and needs JDK 25, which the server itself does not.
+
+```bash
+./gradlew :server-runtime:linkReleaseExecutableMacosArm64
+```
+
+Kotlin/Native does not cross-compile between host families, so each target is
+built on its own host.

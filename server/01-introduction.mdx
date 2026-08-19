@@ -1,0 +1,53 @@
+---
+title: Introduction
+description: What Basalt Server is, how it treats versions, and what it expects from you.
+---
+
+Basalt Server is a complete reimplementation of the Minecraft server, written
+entirely in Kotlin/Native and shipped as a native binary for each platform.
+There is no JVM anywhere in the runtime: no bundled JRE, no embedded VM, no
+hidden Java process.
+
+## Vanilla parity
+
+A Basalt Server with no plugins behaves exactly like the official one. Same seed,
+same world. Same drops, same damage, same redstone, same mobs, bugs included.
+
+Parity is the acceptance criterion for every system, not an aspiration. Where
+vanilla does something that looks wrong, Basalt does the same thing.
+
+<x-docs.callout type="note" title="Changing that on purpose">
+Anything that makes the server behave differently from vanilla is opt-in and
+labelled as such in the generated configuration comments. The default path is
+always the vanilla one.
+</x-docs.callout>
+
+## Versions
+
+Basalt tracks the newest Minecraft release. The core speaks one protocol, the
+current one, and every other client is normalised before it reaches the core.
+
+| Client | How it connects |
+|---|---|
+| Current Java Edition | Directly, no translation |
+| Older Java Edition | Translated at the edge |
+| Bedrock Edition | Translated at the edge |
+
+That translation layer is symmetric and external to the core, so gameplay code
+never learns that older clients exist. It is the ViaVersion model applied from
+the design rather than grafted on afterwards.
+
+## Plugins
+
+The plugin API is native and written in Lua, packaged as `.bspkg` files. Plugins
+run in a sandbox with a per-tick instruction budget, so a broken one cannot take
+the server down.
+
+Bukkit plugins run too, in a separate process. See
+[Bukkit plugins](bukkit-plugins.mdx) for what that costs and when to use it.
+
+## What it does not ship
+
+No proprietary Minecraft content: no structures, no loot tables, no datapacks,
+no textures, no jars. The data the server needs is fetched from Mojang once you
+accept the EULA, verified, and cached locally.
