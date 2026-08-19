@@ -1,0 +1,46 @@
+---
+title: Bukkit plugins
+description: Running the existing ecosystem in a separate JVM process, and what it costs.
+---
+
+Most of the Minecraft server ecosystem is Bukkit, Spigot and Paper plugins that
+will never be rewritten. Basalt runs them, and doing so is optional.
+
+## How it works
+
+Bukkit plugins do not run inside the server. They run in a **separate JVM
+process** that talks to the core, so the Basalt binary itself never links a JVM,
+never starts one, and never looks for Java when the feature is off.
+
+```
+basalt (native)  <--- IPC --->  bukkit bridge (JVM)
+```
+
+<x-docs.callout type="warning" title="It is opt-in, and it costs">
+Turning this on means you supply a JVM and accept what that costs: memory and
+startup time far above what the native server uses on its own. It is a trade you
+make deliberately, in exchange for plugins you already depend on.
+</x-docs.callout>
+
+## Enabling it
+
+```toml
+[bukkit]
+enabled = true
+java = "/usr/lib/jvm/java-21/bin/java"
+memory = "2G"
+```
+
+With `enabled = false`, which is the default, none of this exists at runtime.
+
+## When to use which
+
+| You want | Use |
+|---|---|
+| Maximum performance, no JVM at all | Native Lua plugins |
+| A plugin that already exists and works | The Bukkit bridge |
+| Both | Both. They run side by side |
+
+Native plugins are the fast path: no process boundary, no serialisation, no
+second heap. The bridge exists so that adopting Basalt does not mean giving up
+the plugins your server is built on while you migrate.

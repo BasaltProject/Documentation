@@ -1,0 +1,52 @@
+---
+title: Plugins
+description: The native Lua API, its packages and its sandbox.
+---
+
+Plugins are written in Lua and packaged as `.bspkg` files, each with a manifest,
+code, resources and metadata. This is the API of the project: everything the
+server can do, it can do through here.
+
+## A first plugin
+
+```lua
+-- hello.lua
+basalt.on("player_join", function(event)
+    event.player:send(
+        "<gradient:aqua:green>Welcome!</gradient>"
+    )
+end)
+```
+
+Text is authored in MiniMessage and rendered through the component model, never
+through legacy colour codes. Colours, hovers, clicks and translations are all
+part of the component, not part of a formatted string.
+
+## The sandbox
+
+Every plugin runs inside a sandbox with a per-tick instruction budget. A plugin
+that loops forever is stopped and reported; it does not take the server with it.
+
+<x-docs.callout type="tip" title="Why Lua">
+The runtime is BlueLuaK, a Kotlin Multiplatform implementation, so it is the same
+runtime everywhere Basalt runs. There is no native Lua dependency to install and
+no per-platform build of your plugin.
+</x-docs.callout>
+
+## Packaging
+
+A `.bspkg` is a directory tree with a manifest at its root:
+
+```toml
+name = "hello"
+version = "1.0.0"
+authors = ["you"]
+entry = "hello.lua"
+```
+
+Drop the package in `plugins/` and start the server.
+
+## Errors
+
+A defective plugin is a plugin problem, never a server problem. Failures are
+reported with the plugin that caused them and the server keeps running.
