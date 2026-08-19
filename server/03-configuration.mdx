@@ -1,0 +1,143 @@
+---
+title: Configuration
+description: The config directory, one TOML file per domain.
+---
+
+Configuration lives in `config/`, one file per domain, generated with comments
+and vanilla defaults on first start.
+
+```
+config/
+  server.toml        network, logging, performance
+  worlds.toml        which worlds load, and how
+  groups.toml        permission groups
+  commands.toml      permissions, aliases, wording, your own commands
+  server_list.toml   how the server looks in the multiplayer list
+  tab_list.toml      the panel behind Tab
+  scoreboard.toml    the panel down the side of the screen
+  boss_bar.toml      the bar across the top
+  animations.toml    text that moves, shared by all of them
+```
+
+A file earns its place by being a domain of its own, not by being one more table
+in an existing file. Each world also carries a `settings.toml` inside its own
+directory, inheriting whatever it does not override from `worlds.toml`.
+
+## What belongs where
+
+Configuration is what the operator writes. State is what the process writes, and
+state does not go in `config/`. A world's seed lives with the world, not in a
+configuration file, and it wins over a configured one.
+
+```toml
+[network]
+host = "0.0.0.0"
+port = 25565
+
+[performance]
+view_distance = 10
+simulation_distance = 10
+```
+
+<x-docs.callout type="warning" title="A malformed file stops the start">
+Basalt names the file it could not read and exits. It never starts quietly on
+defaults, because a server running on defaults you did not choose is worse than
+one that did not start.
+</x-docs.callout>
+
+## Worlds
+
+`worlds.toml` holds the defaults every world inherits. A single world overrides
+them in `worlds/<name>/settings.toml`, and only the keys it sets.
+
+## Permissions
+
+Groups are native, with names like `basalt.command.gamemode`, wildcards,
+denials and inheritance. Group membership is state, so it lives in `players.db`
+rather than in configuration.
+
+## Commands
+
+`commands.toml` decides four things about a command: the permission it asks for,
+what it is called, whether it exists at all, and what it answers.
+
+```toml
+[commands.teleport]
+permission = "basalt.command.moderator"
+aliases = ["tpa"]
+
+[commands.kill]
+enabled = false
+
+[custom.discord]
+message = ["<blue>discord.gg/example</blue>"]
+
+[messages]
+"commands.seed.success" = "<gray>Seed: %1%</gray>"
+```
+
+Every command already asks for `basalt.command.<name>` without being listed, so
+this file is only for changing that. Naming a permission here does not grant it:
+that is `groups.toml`, and the two read in one direction only.
+
+`enabled = false` removes a command rather than leaving it to refuse: it stops
+being sent to clients, and its aliases go with it.
+
+`[custom]` is for the `/discord` and `/rules` that would otherwise need a plugin,
+and no more than that. Anything with logic in it is a plugin.
+
+<x-docs.callout type="warning" title="Rewording is a trade">
+By default the server sends a translation key and every client renders it in its
+own language. Override one under `[messages]` and it becomes literal text, the
+same for everyone, in whatever language you wrote it. That is why there are no
+per-language tables here: a server is normally aimed at one community rather than
+being multilingual. `%1%`, `%2%` and so on are the values the message was going
+to be filled with, in order.
+</x-docs.callout>
+
+## Profiles
+
+Every file that draws something (`server_list`, `tab_list`, `scoreboard`,
+`boss_bar`) uses the same profile system. A profile is one complete look. The one
+that wins is the highest priority among those switched on with `active` or whose
+every `when` condition holds; if none does, the one marked `default` is used.
+Anything a profile leaves out it takes from the default, so a profile that only
+changes the text is three lines long.
+
+```toml
+[profiles.staff]
+priority = 10
+when = ["%basalt_player_is_op% = true"]
+header = ["<red>STAFF</red>"]
+```
+
+Conditions compare placeholders with `=`, `!=`, `<`, `<=`, `>`, `>=`, `matches`
+and `contains`. A condition the current situation cannot answer is reported once
+in the log and the profile is skipped, so it never counts as a silent no.
+
+## Placeholders
+
+The server exposes a placeholder registry used by every file above, by your own
+commands, and by plugins:
+
+```
+%basalt_server_*%    online, max_players, tps, ram_used, cpu, uptime, version
+%basalt_player_*%    name, world, dimension, x, y, z, is_op, known, ip, protocol
+%basalt_animation_*% a named animation from animations.toml
+```
+
+Any number takes a precision suffix: `%basalt_player_x%` is the true position and
+unreadable, `%basalt_player_x_1%` is one decimal.
+
+**Plugins register their own.** The registry is not a fixed list the server owns:
+a plugin adds its providers to it and its placeholders then work in every file
+above, in your own commands, and in any other plugin that reads them. Nothing has
+to be installed in between, and nothing has to add support for a placeholder
+before it works somewhere.
+
+<x-docs.callout type="tip" title="A wrong name shows up">
+A placeholder the server cannot fill in is left visible and explained once in the
+log, rather than silently emptying the line. `/placeholder` resolves one against
+the current context, which is the fastest way to find out why a line of your MOTD
+is not rendering.
+</x-docs.callout>
