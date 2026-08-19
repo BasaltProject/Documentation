@@ -1,0 +1,36 @@
+---
+title: Plugins
+description: The native Lua API, and running Velocity and BungeeCord plugins.
+---
+
+The proxy has its own plugin API. Plugins are written in Lua and packaged as
+`.bppkg` files, the same shape as the server's `.bspkg`, and run in a sandbox
+with a per-tick instruction budget.
+
+```lua
+-- greet.lua
+basalt.on("player_connect", function(event)
+    event.player:send_to("lobby")
+end)
+```
+
+It is a separate format from the server's on purpose: a proxy plugin and a server
+plugin see different things, and pretending one API covers both would make the
+worse version of each.
+
+## Velocity and BungeeCord plugins
+
+The existing proxy ecosystem is worth a great deal, and most of it is Velocity
+and BungeeCord plugins. Basalt Proxy runs them, and doing so is opt-in.
+
+```toml
+[jvm_plugins]
+enabled = true
+java = "/usr/lib/jvm/java-21/bin/java"
+```
+
+<x-docs.callout type="warning" title="You supply the JVM">
+The proxy core, its network layer and its own plugins are native. A proxy started
+without this feature never looks for Java. Enabling it means accepting the memory
+and startup time a JVM costs, in exchange for the plugins you already depend on.
+</x-docs.callout>

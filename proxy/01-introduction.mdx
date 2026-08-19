@@ -1,0 +1,32 @@
+---
+title: Introduction
+description: One address in front of many servers, with no JVM in the runtime.
+---
+
+Basalt Proxy sits in front of a set of Minecraft servers and gives players one
+address to connect to, moving them between backends without a reconnect.
+
+It is written entirely in Kotlin/Native and ships as a native binary per
+platform. It shares its entire network layer with
+[Basalt Server](../server/introduction.mdx) through Wire: one implementation of
+the protocol, used by both sides.
+
+## Any backend
+
+A proxy that only works with its own server is a proxy nobody can adopt. Basalt
+Proxy speaks the standard protocol to whatever is behind it.
+
+| Backend | What you get |
+|---|---|
+| Any Minecraft server | Routing, one address, moving players between backends, plugins |
+| Basalt Server | The above, plus work the two can hand to each other rather than each doing it alone |
+
+Vanilla, Paper, Spigot and Fabric all work. Basalt Server behind it is the better
+case, not the required one.
+
+## Clients
+
+Older Java clients and Bedrock clients connect through translation at the edge,
+the same machinery the server carries. Which side does that work is a
+configuration decision, and it has a sensible default. See
+[Backends](backends.mdx).

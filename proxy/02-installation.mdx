@@ -1,0 +1,55 @@
+---
+title: Installation
+description: Installing the proxy and pointing it at your servers.
+---
+
+The proxy is a single native binary, the same shape as the server.
+
+```bash
+chmod +x basalt-proxy
+./basalt-proxy
+```
+
+On first start it writes a `config/` directory, one TOML file per domain, with
+comments and defaults.
+
+## Command line
+
+```bash
+./basalt-proxy --help
+./basalt-proxy --version
+./basalt-proxy --config /etc/basalt-proxy
+```
+
+## Backends
+
+```toml
+[[servers]]
+name = "lobby"
+address = "127.0.0.1:25566"
+
+[[servers]]
+name = "survival"
+address = "127.0.0.1:25567"
+
+[routing]
+default = "lobby"
+```
+
+<x-docs.callout type="tip" title="Start small">
+One backend and a default route is a working proxy. Add servers as you need
+them; nothing about the first one has to change.
+</x-docs.callout>
+
+## Building from source
+
+The network layer lives in Wire and is pulled in as a submodule, so clone with
+it:
+
+```bash
+git clone --recurse-submodules https://github.com/BasaltProject/Proxy.git
+./gradlew :proxy-runtime:linkReleaseExecutableMacosArm64
+```
+
+Replace the target with the one you are building for. Kotlin/Native does not
+cross-compile between host families.
