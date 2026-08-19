@@ -1,7 +1,21 @@
-# Basalt Documentation
+<p align="center">
+  <img src="docs/assets/basalt-logo.png" alt="Basalt" width="360">
+</p>
 
-The documentation published at [basaltmc.org/docs](https://basaltmc.org/docs).
-This repository holds the content; the site that renders it lives in
+<h2 align="center">Basalt Documentation</h2>
+
+<p align="center">
+  <strong>The documentation published at <a href="https://basaltmc.org/docs">basaltmc.org/docs</a>.</strong>
+</p>
+
+<p align="center">
+  <img alt="Format" src="https://img.shields.io/badge/format-MDX-1B1F24?logo=mdx&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
+</p>
+
+## Overview
+
+This repository holds the content. The site that renders it lives in
 [Website](https://github.com/BasaltProject/Website) and pulls this repository in
 as a submodule.
 
