@@ -28,9 +28,9 @@ Every plugin runs inside a sandbox with a per-tick instruction budget. A plugin
 that loops forever is stopped and reported; it does not take the server with it.
 
 <x-docs.callout type="tip" title="Why Lua">
-The runtime is BlueLuaK, a Kotlin Multiplatform implementation, so it is the same
-runtime everywhere Basalt runs. There is no native Lua dependency to install and
-no per-platform build of your plugin.
+The runtime is the official Lua 5.5.1, built from source into the binary, so it
+is the same runtime everywhere Basalt runs. There is no Lua to install alongside
+it and no per-platform build of your plugin.
 </x-docs.callout>
 
 ## Packaging

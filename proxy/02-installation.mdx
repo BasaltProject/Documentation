@@ -48,8 +48,10 @@ it:
 
 ```bash
 git clone --recurse-submodules https://github.com/BasaltProject/Proxy.git
-./gradlew :proxy-runtime:linkReleaseExecutableMacosArm64
+cd Proxy
+cmake --preset release
+cmake --build build/release
 ```
 
-Replace the target with the one you are building for. Kotlin/Native does not
-cross-compile between host families.
+You need CMake 3.28 or newer, Ninja and Clang. The binary lands in
+`build/release/bin/`.

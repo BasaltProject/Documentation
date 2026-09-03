@@ -6,7 +6,7 @@ description: One address in front of many servers, with no JVM in the runtime.
 Basalt Proxy sits in front of a set of Minecraft servers and gives players one
 address to connect to, moving them between backends without a reconnect.
 
-It is written entirely in Kotlin/Native and ships as a native binary per
+It is written entirely in C++23 and ships as a native binary per
 platform. It shares its entire network layer with
 [Basalt Server](../server/introduction.mdx) through Wire: one implementation of
 the protocol, used by both sides.

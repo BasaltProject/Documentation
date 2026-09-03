@@ -70,12 +70,13 @@ git clone --recurse-submodules https://github.com/BasaltProject/Server.git
 In an existing clone, `git submodule update --init` does the same thing. Without
 it the build fails immediately: half the modules are missing.
 
-Kotlin/Native tasks carry the target in their name. Gradle orchestrates the build
-and needs JDK 25, which the server itself does not.
+You need CMake 3.28 or newer, Ninja and Clang. Nothing else: every dependency is
+vendored and built from source.
 
 ```bash
-./gradlew :server-runtime:linkReleaseExecutableMacosArm64
+cmake --preset release
+cmake --build build/release
 ```
 
-Kotlin/Native does not cross-compile between host families, so each target is
-built on its own host.
+The binary lands in `build/release/bin/`, named for the platform it was built
+for.
