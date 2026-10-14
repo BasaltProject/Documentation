@@ -1,25 +1,25 @@
 ---
 title: Bukkit plugins
-description: Running the existing ecosystem in a separate JVM process, and what it costs.
+description: Running the existing ecosystem through Basalt Shim, and how it works.
 ---
 
-Most of the Minecraft server ecosystem is Bukkit, Spigot and Paper plugins that
-will never be rewritten. Basalt runs them, and doing so is optional.
+Most of the Minecraft server ecosystem consists of Bukkit, Spigot and Paper plugins that
+will never be rewritten. Basalt aims to support them optionally without requiring an external JVM.
 
 ## How it works
 
-Bukkit plugins do not run inside the server. They run in a **separate JVM
-process** that talks to the core, so the Basalt binary itself never links a JVM,
-never starts one, and never looks for Java when the feature is off.
+Bukkit plugins do not run inside the native server core. They are executed through
+**Basalt Shim**, a lightweight embeddable C++ Java virtual machine developed for modern Java
+LTS releases. The bridge communicates with the core over IPC, ensuring the Basalt binary
+remains free of JVM overhead when the feature is disabled.
 
 ```
-basalt (native)  <--- IPC --->  bukkit bridge (JVM)
+basalt (native)  <--- IPC --->  bukkit bridge (Shim)
 ```
 
-<x-docs.callout type="warning" title="It is opt-in, and it costs">
-Turning this on means you supply a JVM and accept what that costs: memory and
-startup time far above what the native server uses on its own. It is a trade you
-make deliberately, in exchange for plugins you already depend on.
+<x-docs.callout type="note" title="No external Java runtime required">
+Because execution is powered by Basalt Shim, operators do not need to install an external
+JDK or configure a host Java binary path. The feature is opt-in and off by default.
 </x-docs.callout>
 
 ## Enabling it
@@ -27,7 +27,6 @@ make deliberately, in exchange for plugins you already depend on.
 ```toml
 [bukkit]
 enabled = true
-java = "/usr/lib/jvm/java-21/bin/java"
 memory = "2G"
 ```
 
@@ -37,10 +36,10 @@ With `enabled = false`, which is the default, none of this exists at runtime.
 
 | You want | Use |
 |---|---|
-| Maximum performance, no JVM at all | Native Lua plugins |
-| A plugin that already exists and works | The Bukkit bridge |
-| Both | Both. They run side by side |
+| Maximum performance, native execution | Native Lua plugins |
+| Existing legacy plugins | The Bukkit bridge (Basalt Shim) |
+| Both | Both, running side by side |
 
-Native plugins are the fast path: no process boundary, no serialisation, no
-second heap. The bridge exists so that adopting Basalt does not mean giving up
-the plugins your server is built on while you migrate.
+Native plugins are the fast path: no process boundary, no serialization, and no
+secondary heap. The bridge exists so that adopting Basalt does not require giving up
+the plugins your server relies on while you migrate.
