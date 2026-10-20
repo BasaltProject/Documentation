@@ -34,3 +34,7 @@ Minecraft protocol. `--config` selects the configuration directory, defaulting t
 missing, preserves existing files and validates their settings. An invalid file
 is named in the error and the process exits with code 1. `--help` and `--version`
 do not generate configuration files.
+
+The listener address and port are set under `[network]` in `proxy.toml`. Startup
+reports its port, then continues serving local status and ping/pong requests.
+SIGINT (Ctrl+C) or SIGTERM stops the owners and closes their sessions.
