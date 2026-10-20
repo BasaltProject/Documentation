@@ -29,4 +29,8 @@ Use the filename produced by your build:
 ```
 
 `--help` describes the arguments. `--version` prints the build version and native
-Minecraft protocol. `--config` selects the directory passed to the startup code.
+Minecraft protocol. `--config` selects the configuration directory, defaulting to
+`./config`. Startup creates commented `proxy.toml` and `backends.toml` files when
+missing, preserves existing files and validates their settings. An invalid file
+is named in the error and the process exits with code 1. `--help` and `--version`
+do not generate configuration files.
