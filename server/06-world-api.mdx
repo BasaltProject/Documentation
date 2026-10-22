@@ -55,21 +55,38 @@ lists the loaded ones as `{ cx, cz }` pairs.
 `load` is `false`), and `world:write_states(positions, states, notify?)` writes them, returning how many changed.
 
 A change of blocks can set off more than the blocks. `world:apply_changes(positions, states, effects?)` writes the
-states and then runs `effects` for the blocks that changed; `world:update_neighbors(positions, effects?)` runs them for
-blocks that are already written. `effects` is a list of names, or their bits added up:
+states and then runs `effects` for the blocks that changed, the way `Level.setBlock` does in the official server;
+`world:update_neighbors(positions, effects?, previous?)` runs them for blocks that are already written, and `previous`
+(a state id per position) says what each held before, which the departure of a block needs. `effects` is a list of
+names, or their bits added up:
 
 | Effect | Does |
 |---|---|
-| `neighbors` | Tells the neighbors that one of theirs changed, so a torch falls off a broken wall |
-| `shapes` | Reshapes the blocks around to fit, like fences joining |
+| `departure` | The block that left sets off its own hooks on the way out: a piston head takes its base, a dust or a container tells what it fed |
+| `place` | The block that arrived sets off its own hooks: a pumpkin builds its golem, dust settles its power, a piston checks its signal, a sponge drinks |
+| `ticks` | The block that arrived books what it needs: sand its fall, water its flow, fire its spread, frogspawn its hatch |
+| `neighbors` | Tells the neighbors that one of theirs changed, in the official order, so a torch falls off a broken wall and a lamp lights beside a redstone block |
+| `shapes` | Reshapes the blocks around to fit, like fences joining and unsupported blocks breaking |
 | `light` | Works the light out again |
+| `entities` | A container that is replaced spills what it held as items |
+| `poi` | Points of interest (beds, bells, job blocks) follow the change; without it they keep their old state |
 | `clients` | Shows the new state to the players who see the blocks |
-| `entities`, `poi`, `ticks` | Reserved; accepted, and nothing happens yet |
 
 ```lua
 local at = { {10, 64, 10}, {10, 65, 10} }
 local changed = world:apply_changes(at, { stone, stone }, { "neighbors", "shapes", "clients" })
+-- sand put down this way falls, water flows, a redstone block lights the lamp next to it
+world:apply_changes({ {0, 70, 0} }, { worlds.state_id("minecraft:sand") }, { "place", "ticks", "neighbors" })
 ```
+
+The pieces of that aftermath can also be asked for on their own, for blocks already written:
+
+| Call | Does |
+|---|---|
+| `world:neighbor_changed(positions, sources?)` | The block at each position is told that a neighbor changed, and answers as it would in the official server |
+| `world:update_shapes(positions, states?)` | The blocks around each position reshape to fit it; with `states`, only along dust lines for a block that is or was that state |
+| `world:schedule_tick(where, delay, kind?)` | Books a tick of the block there, or of its fluid when `kind` is `"fluid"`; `false` when there is nothing to tick |
+| `world:use_item_on(where, face, item, yaw?, pitch?)` | Uses a block item on a face (`down`, `up`, `north`, `south`, `west`, `east`) as a player holding it would; returns how many blocks were put down |
 
 ## Chunks
 
@@ -131,8 +148,21 @@ world:set_biomes(0, 0, biomes)                    -- shows the chunk again
 
 A cell in `set_biomes` that is not a string keeps its biome. `worlds.biomes()` lists every biome name.
 
-After a bulk edit, `world:relight_chunks({ {0, 0} })` marks the light of those chunks stale so it is recomputed, and
-shows them again.
+The server works the light out itself when blocks change, off the tick thread. These calls are for tools that edit
+many blocks and want to read the result or take control of it.
+
+| Call | Does |
+|---|---|
+| `world:light_at(where, layer)` | The level (0 to 15) of `"block"` or `"sky"` light at a position, up to date; `nil` when the chunk is not loaded |
+| `world:light_section(cx, sy, cz, layer, load?)` | The light of a section as 2048 bytes, two levels each (index `y * 256 + z * 16 + x`, low nibble first), or `nil` |
+| `world:set_light_section(cx, sy, cz, layer, bytes)` | Replaces a section's light; it stands until blocks around change and the light is worked out again |
+| `world:check_light(positions)` | Queues the light around those blocks to be worked out again |
+| `world:relight_chunks(chunks)` | Works the light of those chunks out again off the tick thread, then shows them again to the players near them |
+
+```lua
+world:relight_chunks({ {0, 0} })
+print(world:light_at(0, 64, 0, "sky"))
+```
 
 ## What blocks are
 
