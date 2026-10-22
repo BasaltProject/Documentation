@@ -160,7 +160,7 @@ many blocks and want to read the result or take control of it.
 | Call | Does |
 |---|---|
 | `world:light_at(where, layer)` | The level (0 to 15) of `"block"` or `"sky"` light at a position, up to date; `nil` when the chunk is not loaded |
-| `world:light_section(cx, sy, cz, layer, load?)` | The light of a section as 2048 bytes, two levels each (index `y * 256 + z * 16 + x`, low nibble first), or `nil` |
+| `world:light_section(cx, sy, cz, layer, load?, fresh?)` | The light of a section as 2048 bytes, two levels each (index `y * 256 + z * 16 + x`, low nibble first), or `nil`; `fresh` (default `true`) works the light out first when blocks around changed |
 | `world:set_light_section(cx, sy, cz, layer, bytes)` | Replaces a section's light; it stands until blocks around change and the light is worked out again |
 | `world:check_light(positions)` | Queues the light around those blocks to be worked out again |
 | `world:relight_chunks(chunks)` | Works the light of those chunks out again off the tick thread, then shows them again to the players near them |
