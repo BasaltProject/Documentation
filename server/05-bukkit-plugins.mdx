@@ -66,11 +66,11 @@ plugin name.
   light of the blocks it places.
 - Removing an entity by UUID from a WorldEdit operation.
 
-## Settings
+## Setup
 
-`config/bukkit.toml` is generated with every key optional: `enabled = "auto"` (or `true` or `false`),
-`download = true`, and `runtime`, `libjvm`, `boot-classpath`, `runtime-jar` and `libraries` to point at pieces kept
-elsewhere. The default runs everything from the server's own `runtime/` folder, which sits next to the binary.
+None. The Java machine and the Bukkit layer are inside the server binary. The first time a Bukkit jar is in `plugins/`,
+the server unpacks them into `.basalt/bukkit/` and downloads the few libraries they need once, each checked against its
+published SHA-1. After that it starts offline.
 
 ## When to use which
 
