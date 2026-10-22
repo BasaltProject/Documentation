@@ -85,6 +85,7 @@ The pieces of that aftermath can also be asked for on their own, for blocks alre
 |---|---|
 | `world:neighbor_changed(positions, sources?)` | The block at each position is told that a neighbor changed, and answers as it would in the official server |
 | `world:update_shapes(positions, states?)` | The blocks around each position reshape to fit it; with `states`, only along dust lines for a block that is or was that state |
+| `world:valid_state(where, state)` | The state a fence, pane, wall or stair would take if it were put there, joined to what is around it; nothing is written |
 | `world:schedule_tick(where, delay, kind?)` | Books a tick of the block there, or of its fluid when `kind` is `"fluid"`; `false` when there is nothing to tick |
 | `world:use_item_on(where, face, item, yaw?, pitch?)` | Uses a block item on a face (`down`, `up`, `north`, `south`, `west`, `east`) as a player holding it would; returns how many blocks were put down |
 
