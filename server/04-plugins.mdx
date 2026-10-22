@@ -10,11 +10,9 @@ server can do, it can do through here.
 ## A first plugin
 
 ```lua
--- hello.lua
-basalt.on("player_join", function(event)
-    event.player:send(
-        "<gradient:aqua:green>Welcome!</gradient>"
-    )
+-- src/main.lua
+on("player.join", function(e)
+    e.player:send("<gradient:aqua:green>Welcome!</gradient>")
 end)
 ```
 
@@ -38,13 +36,22 @@ it and no per-platform build of your plugin.
 A `.bspkg` is a directory tree with a manifest at its root:
 
 ```toml
-name = "hello"
+id = "hello"
+name = "Hello"
 version = "1.0.0"
-authors = ["you"]
-entry = "hello.lua"
+main = "src/main.lua"
 ```
 
 Drop the package in `plugins/` and start the server.
+
+Kiln, the plugin compiler, checks a plugin before it reaches a server: `kiln check hello` reports a misspelt name
+such as `players.onlin`, a missing `require` or a broken `plugin.toml`.
+
+## More of the API
+
+- [The world](/docs/server/world-api): blocks, sections, block entities, entity NBT, biomes and light.
+- [Packets](/docs/server/packets): listen to, change, cancel and send packets in every connection state.
+- [Bukkit plugins](/docs/server/bukkit-plugins): run existing jars from the same folder.
 
 ## Errors
 

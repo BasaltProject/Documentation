@@ -1,0 +1,63 @@
+---
+title: Packets
+description: Listen to, change, cancel and send packets of any connection state from Lua.
+---
+
+A plugin can see every packet of every connection state: handshake, status, login, configuration and play, in both
+directions. It needs the capability in its manifest, and the server operator has to grant it.
+
+```toml
+[capabilities]
+packets = true
+```
+
+## Listening
+
+```lua
+packet.on("clientbound.set_title_text", function(p)
+    p.cancelled = true            -- the player never sees it
+end)
+
+packet.watch("serverbound.play.*", function(p)
+    log.info(p.name .. " from " .. p.player_name)
+end)
+```
+
+`packet.on(name, [options,] handler)` can cancel or rewrite a packet. `packet.watch` has the same shape but only
+observes. `options.priority` is `first`, `early`, `normal`, `late` or `last`.
+
+A name looks like `clientbound.set_title_text`. Add the state for packets that exist in more than one,
+`serverbound.play.chat`, or give the id in hex, `clientbound.configuration.0x07`. Wildcards listen to groups:
+`serverbound.*`, `clientbound.play.*` and `*`. `/plugins packets` lists the names.
+
+| Field | Meaning |
+|---|---|
+| `name`, `phase`, `id`, `serverbound` | Which packet it is |
+| `player`, `player_name`, `player_uuid` | Who it belongs to, once known |
+| `connection` | An id for the connection, stable while it lasts |
+| `protocol`, `translated` | The version the client announced, and whether it is older than the server |
+| `bytes`, `size` | The body without the id, as a list of numbers from 0 to 255 |
+| `cancelled` | Set to `true` to drop the packet |
+
+Assigning a list to `p.bytes` replaces the body. The bytes are in the server's protocol; a client that is older gets
+them translated on the way out, and what it sends arrives already translated.
+
+<x-docs.callout type="note" title="Cost">
+A packet nobody listens to costs one atomic read. Listen to the narrowest name that does the job.
+</x-docs.callout>
+
+## Sending
+
+```lua
+packet.send(player, "clientbound.set_title_text", bytes)       -- to one player
+packet.receive(player, "serverbound.play.chat", bytes)         -- as if the client had sent it
+p:send("clientbound.set_title_text", bytes)                    -- on the connection that packet travels on
+```
+
+The last argument, `intercept`, defaults to `false`: the packet goes past the listeners. Pass `true` to run them on
+it too. Both return `false` when the player has no Java connection, which is the case for Bedrock players.
+
+## Plugin channels and commands
+
+`channel.on(name, fn)` and `channel.send(player, name, bytes)` carry plugin messages on the channels a plugin declares
+under `network` in its manifest. `run(command)` runs a command as the console and needs `commands = true`.

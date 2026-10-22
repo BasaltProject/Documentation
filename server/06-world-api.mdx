@@ -1,0 +1,97 @@
+---
+title: The world from Lua
+description: Blocks, sections, block entities, entity NBT, biomes and light in the native API.
+---
+
+`worlds.default()`, `worlds.by_name(name)` and `p.pos.world` give you a world object. Single blocks use the calls
+below; edits of many blocks have a bulk form that is orders of magnitude cheaper.
+
+```lua
+local world = worlds.default()
+world:set_block(0, 64, 0, "minecraft:oak_stairs[facing=east]")
+print(world:block_state(0, 64, 0))
+```
+
+A position can be given as three integers or as a `pos`.
+
+## Sections
+
+A section is 16 by 16 by 16 blocks. It travels as a list of 4096 block state ids, ordered x first, then z, then y
+(index `y * 256 + z * 16 + x + 1` for local coordinates from 0). A state id is an integer; `worlds.state_id` and
+`worlds.state_text` convert to and from the text form.
+
+```lua
+local stone = worlds.state_id("minecraft:stone")
+local states = world:section(0, 4, 0)            -- chunk_x, section_y, chunk_z
+for i = 1, 4096 do states[i] = stone end
+world:set_section(0, 4, 0, states)
+```
+
+| Call | Does |
+|---|---|
+| `world:section(cx, sy, cz, load?)` | The 4096 ids, or `nil` when the chunk is not loaded and `load` is `false` |
+| `world:set_section(cx, sy, cz, states, notify?)` | Writes a section; `notify` (default `true`) shows it to the players who see it |
+| `world:apply_chunk(cx, cz, sections, options?)` | Writes several sections of one chunk |
+| `world:apply_chunks(chunks, options?)` | Writes many chunks at once |
+| `world.block_version` | Changes whenever a block changes or a chunk loads or unloads |
+
+In `apply_chunk` and `apply_chunks`, `sections` maps a section y to its 4096 ids, and a negative id keeps the block
+that is there. `options.resend` (default `true`) shows the result to the players; `options.previous = true` returns a
+second value with what each section held before, which is what an undo needs. They return the number of blocks that
+changed, or `nil` when something was out of range (everything else is still applied).
+
+```lua
+local changed, before = world:apply_chunk(0, 0, { [4] = states }, { previous = true })
+```
+
+A copy of a section stays good while `world.block_version` has not moved.
+
+`world:resend_chunks({ {0, 0}, {1, 0} })` sends chunks again to the players near them, and `world:loaded_chunks()`
+lists the loaded ones as `{ cx, cz }` pairs.
+
+## Block entities
+
+Chests, signs, banners and the like carry data besides their state. It is read and written as SNBT text, the same
+notation `/data` uses.
+
+```lua
+local chest = world:block_entity(10, 64, 10)       -- nil when the block holds none
+world:set_block_entity(10, 64, 10, chest)          -- id, x, y and z in the text are ignored
+for _, at in ipairs(world:block_entities(0, 0)) do -- { x, y, z } for every one in a loaded chunk
+    print(at[1], at[2], at[3])
+end
+```
+
+`set_block_entity` returns `false` when the block there owns no block entity, and shows the change to the players who
+see it.
+
+## Entities as NBT
+
+```lua
+local snbt = world:entity_nbt(entity)    -- an entity or its id
+local copy = world:spawn_nbt(snbt)       -- edit Pos in the text first to place it elsewhere
+```
+
+Entities also expose `uuid`, `yaw`, `pitch`, `velocity`, `on_ground`, `age`, `width`, `height` and `custom_name`.
+`world:entity(id_or_uuid)` finds one and `world:entities_in(cx, cz)` lists the entities a chunk would save.
+
+## Biomes and light
+
+Biomes are stored per 4 by 4 by 4 cell. A chunk column has `world.height / 4 * 16` of them, ordered
+`(cell_y * 4 + cell_z) * 4 + cell_x` from the lowest block up.
+
+```lua
+local biomes = world:biomes(0, 0)                 -- one name per cell, nil when not loaded
+biomes[1] = "minecraft:desert"
+world:set_biomes(0, 0, biomes)                    -- shows the chunk again
+```
+
+A cell in `set_biomes` that is not a string keeps its biome. `worlds.biomes()` lists every biome name.
+
+After a bulk edit, `world:relight_chunks({ {0, 0} })` marks the light of those chunks stale so it is recomputed, and
+shows them again.
+
+## Threads
+
+These calls follow the rules of the rest of the API: a plugin runs in its own lane, and the world hands the work to
+the thread that owns it. Reading a loaded section is cheap from any lane; a write is applied before the call returns.
