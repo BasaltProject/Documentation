@@ -49,10 +49,11 @@ the callback see the pending writes.
 
 ## Worked with
 
-WorldEdit and FastAsyncWorldEdit load and run: selections, `//set`, `//replace`, `//copy`, `//paste`, `//undo`,
-schematics, chests with their items, signs with their text, entities and biomes. PacketEvents loads and sees every
-packet of every connection state. A plugin that carries the WorldEdit adapter interface gets the matching Basalt
-add-on automatically; nothing is looked up by plugin name.
+WorldEdit and FastAsyncWorldEdit load and run through the adapter for this Minecraft version that they carry
+themselves: selections, `//set`, `//replace`, `//copy`, `//paste` and `//undo` change the blocks players see and the
+blocks the server reads back. PacketEvents loads and sees every packet of every connection state. The server offers
+the Minecraft classes those adapters expect (chunks, palettes, block states, registries), so nothing is looked up by
+plugin name.
 
 ## Not supported yet
 
@@ -61,6 +62,8 @@ add-on automatically; nothing is looked up by plugin name.
 - Bedrock players do not exist for packet listeners, because they have no Java packets.
 - `ItemMeta` is limited to the item type and the amount, and regenerating chunks, growing trees and placing structures
   from a plugin are missing.
+- Chests with their items, signs with their text, entities and biomes in a WorldEdit copy, paste or schematic, and the
+  light of the blocks it places.
 - Removing an entity by UUID from a WorldEdit operation.
 
 ## Settings
