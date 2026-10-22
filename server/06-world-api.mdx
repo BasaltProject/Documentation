@@ -80,7 +80,7 @@ ids, which is one call instead of one per section. `world:chunk_status(cx, cz)` 
 `request_chunk(world, cx, cz, options?)` waits until a chunk is loaded. The chunk is generated in the background, so the
 tick is not held up; set `options.generate = false` to only wait for a chunk that is already on its way, and
 `options.urgent = true` to be served before the chunks nobody is waiting for. It can only be used where a plugin may
-wait, and it returns when the chunk is there or has given up, so look at `chunk_status` afterwards.
+wait, such as a `watch` handler, and it returns when the chunk is there or has given up, so look at `chunk_status` afterwards.
 
 ```lua
 request_chunk("world", 40, -12, { urgent = true })
