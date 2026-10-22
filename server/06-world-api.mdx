@@ -184,6 +184,7 @@ The tables the server uses for blocks are readable, so a plugin does not need it
 | `worlds.block_info(id)` | `friction`, `speed_factor`, `jump_factor`, `push_reaction`, `map_color`, `ignite_odds`, `burn_odds` |
 | `worlds.block_entity_types()` | Block id to the id of its block entity type, for every block that owns one |
 | `worlds.items()`, `worlds.entity_types()` | The ids, in registry order |
+| `worlds.registry(name)` | The ids of a registry by name: `damage_type`, `particle_type`, `worldgen/biome` and the other synchronized ones |
 | `worlds.tags(registry)` | Tag id to member ids, for `blocks`, `items`, `fluids` or `entity_types` |
 
 ```lua
