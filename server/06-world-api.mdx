@@ -49,6 +49,49 @@ A copy of a section stays good while `world.block_version` has not moved.
 `world:resend_chunks({ {0, 0}, {1, 0} })` sends chunks again to the players near them, and `world:loaded_chunks()`
 lists the loaded ones as `{ cx, cz }` pairs.
 
+## Many positions at once
+
+`world:read_states(positions, load?)` returns the state id at each `{ x, y, z }` (-1 where the chunk is not loaded and
+`load` is `false`), and `world:write_states(positions, states, notify?)` writes them, returning how many changed.
+
+A change of blocks can set off more than the blocks. `world:apply_changes(positions, states, effects?)` writes the
+states and then runs `effects` for the blocks that changed; `world:update_neighbors(positions, effects?)` runs them for
+blocks that are already written. `effects` is a list of names, or their bits added up:
+
+| Effect | Does |
+|---|---|
+| `neighbors` | Tells the neighbors that one of theirs changed, so a torch falls off a broken wall |
+| `shapes` | Reshapes the blocks around to fit, like fences joining |
+| `light` | Works the light out again |
+| `clients` | Shows the new state to the players who see the blocks |
+| `entities`, `poi`, `ticks` | Reserved; accepted, and nothing happens yet |
+
+```lua
+local at = { {10, 64, 10}, {10, 65, 10} }
+local changed = world:apply_changes(at, { stone, stone }, { "neighbors", "shapes", "clients" })
+```
+
+## Chunks
+
+`world:chunk_sections(cx, cz, load?)` returns every section of a chunk at once, a table from section y to the 4096
+ids, which is one call instead of one per section. `world:chunk_status(cx, cz)` says where a chunk stands: `unloaded`,
+`queued` (asked for and on its way), `loaded` or `ticking` (loaded near a player).
+
+`request_chunk(world, cx, cz, options?)` waits until a chunk is loaded. The chunk is generated in the background, so the
+tick is not held up; set `options.generate = false` to only wait for a chunk that is already on its way, and
+`options.urgent = true` to be served before the chunks nobody is waiting for. It can only be used where a plugin may
+wait, and it returns when the chunk is there or has given up, so look at `chunk_status` afterwards.
+
+```lua
+request_chunk("world", 40, -12, { urgent = true })
+if world:chunk_status(40, -12) ~= "unloaded" then
+    local sections = world:chunk_sections(40, -12, false)
+end
+```
+
+A chunk another plugin needs can be kept loaded with `world:hold_chunks(token, { {40, -12} })`. The chunks stay until
+`world:release_chunks(token)` is called with the same token, whether or not a player is near.
+
 ## Block entities
 
 Chests, signs, banners and the like carry data besides their state. It is read and written as SNBT text, the same
@@ -90,6 +133,25 @@ A cell in `set_biomes` that is not a string keeps its biome. `worlds.biomes()` l
 
 After a bulk edit, `world:relight_chunks({ {0, 0} })` marks the light of those chunks stale so it is recomputed, and
 shows them again.
+
+## What blocks are
+
+The tables the server uses for blocks are readable, so a plugin does not need its own copy.
+
+| Call | Gives |
+|---|---|
+| `worlds.blocks()` | `{ name, first_state, state_count }` for every block |
+| `worlds.block_properties(block)` | `{ name, values }` for each property, in the order their values step the state id |
+| `worlds.state_flags(id)` | `blocks_motion`, `occludes`, `full_cube`, `replaceable`, `has_fluid`, `has_collision`, `conducts_redstone`, `ticks_randomly`, `air`, `has_block_entity`, `light_emission`, `light_opacity` |
+| `worlds.block_hardness(block)` | `destroy_time`, `explosion_resistance`, `needs_tool` |
+| `worlds.block_info(id)` | `friction`, `speed_factor`, `jump_factor`, `push_reaction`, `map_color`, `ignite_odds`, `burn_odds` |
+| `worlds.items()`, `worlds.entity_types()` | The ids, in registry order |
+| `worlds.tags(registry)` | Tag id to member ids, for `blocks`, `items`, `fluids` or `entity_types` |
+
+```lua
+local info = worlds.block_info(worlds.state_id("minecraft:ice"))
+print(info.friction, info.push_reaction)   -- 0.98   normal
+```
 
 ## Threads
 
