@@ -123,14 +123,20 @@ end
 ```
 
 `set_block_entity` returns `false` when the block there owns no block entity, and shows the change to the players who
-see it.
+see it. `create_block_entity(x, y, z, snbt?)` gives the block a block entity (the block's defaults when the text is left
+out) in place of the one there, and `remove_block_entity(x, y, z)` takes it away and leaves the block; both return
+`false` when they have nothing to do.
 
 ## Entities as NBT
 
 ```lua
 local snbt = world:entity_nbt(entity)    -- an entity or its id
 local copy = world:spawn_nbt(snbt)       -- edit Pos in the text first to place it elsewhere
+world:remove_entity(copy.uuid)           -- takes an entity out by its uuid
 ```
+
+`spawn_nbt(snbt, cause?)` asks the `entity.spawn` event first, with `cause` as its reason (`plugin` unless given), and
+returns `nil` when a handler cancels it.
 
 Entities also expose `uuid`, `yaw`, `pitch`, `velocity`, `on_ground`, `age`, `width`, `height` and `custom_name`.
 `world:entity(id_or_uuid)` finds one and `world:entities_in(cx, cz)` lists the entities a chunk would save.
@@ -175,12 +181,28 @@ The tables the server uses for blocks are readable, so a plugin does not need it
 | `worlds.state_flags(id)` | `blocks_motion`, `occludes`, `full_cube`, `replaceable`, `has_fluid`, `has_collision`, `conducts_redstone`, `ticks_randomly`, `air`, `has_block_entity`, `light_emission`, `light_opacity` |
 | `worlds.block_hardness(block)` | `destroy_time`, `explosion_resistance`, `needs_tool` |
 | `worlds.block_info(id)` | `friction`, `speed_factor`, `jump_factor`, `push_reaction`, `map_color`, `ignite_odds`, `burn_odds` |
+| `worlds.block_entity_types()` | Block id to the id of its block entity type, for every block that owns one |
 | `worlds.items()`, `worlds.entity_types()` | The ids, in registry order |
 | `worlds.tags(registry)` | Tag id to member ids, for `blocks`, `items`, `fluids` or `entity_types` |
 
 ```lua
 local info = worlds.block_info(worlds.state_id("minecraft:ice"))
 print(info.friction, info.push_reaction)   -- 0.98   normal
+```
+
+## Old saved data
+
+Data written by an older version can be brought up to date with the same fixes the server applies to its own worlds.
+Block states and biome ids are only fixed from data version 2832 (1.18) on; older text comes back unchanged.
+
+| Call | Gives |
+|---|---|
+| `worlds.data_version()` | The data version the server writes |
+| `worlds.fix_nbt(kind, snbt, from_version)` | SNBT upgraded from `from_version`; `kind` is `chunk`, `block_entity`, `entity` or `item` |
+| `worlds.fix_name(kind, text, from_version)` | A `block_state` (`minecraft:oak_stairs[facing=east]`), `item` id or `biome` id upgraded |
+
+```lua
+print(worlds.fix_name("block_state", "minecraft:grass", 3000))   -- minecraft:short_grass
 ```
 
 ## Threads
