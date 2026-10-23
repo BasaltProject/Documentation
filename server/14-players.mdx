@@ -59,6 +59,13 @@ All read only: `locale`, `client_brand`, `virtual_host` (strings), `client_view_
 `main_hand` (0 left, 1 right), `skin_parts`, `chat_visibility`, `protocol_version`, `pack_status` (the last resource
 pack answer, -1 for none), and the booleans `chat_colors`, `text_filtering` and `server_listings`.
 
+More state is readable and writable as plain properties: `pose` (read only, the protocol pose id), `use_ticks` (read
+only, -1 for none), `use_remaining` (-1 for none), `visual_fire` (-1 follows the fire, 0 never, 1 always), `fixed_pose`
+(-1 for none), `no_physics` (spectators always), `freeze_locked` (only round-trips for now), `waypoint_style`,
+`waypoint_color` (RGB, -1 for none), `body_yaw`, `hurt_direction`, `no_action_ticks`, `maximum_air`,
+`max_no_damage_ticks` (the hurt cooldown), `shield_delay`, `saturated_regen_ticks`, `unsaturated_regen_ticks`,
+`starvation_ticks` and `killer` (uuid of the player credited with the last hit).
+
 ## Operations
 
 | Call | Returns | Does |
@@ -87,6 +94,27 @@ pack answer, -1 for none), and the booleans `chat_colors`, `text_filtering` and 
 | `p:look_at(x, y, z, eyes?)` | bool | Turns the client's view toward a point |
 | `p:chat_completions(action, list)` | bool | Custom chat completions: 0 adds, 1 removes, 2 sets |
 | `p:respawn()`, `p:chat(text)`, `p:save_data()` | bool | Respawns a dead player, says something in chat, saves the player record |
+
+### Using items, combat log and trades
+
+| Call | Returns | Does |
+|---|---|---|
+| `p:use_start(offhand)`, `p:use_complete()`, `p:use_clear()` | bool | Starts using the item of a hand (eat, draw a bow, raise a shield, spyglass), finishes it now, or drops it unfinished |
+| `p:shoulder(side)`, `p:set_shoulder(side, snbt)` | string | The entity on a shoulder (0 left, 1 right) as its saved compound, or an empty string |
+| `p:riptide(ticks, damage, item_snbt)`, `p:set_riptiding(bool)` | | The spin attack state |
+| `p:firework_boost(item_snbt)` | int | Attaches a rocket to a gliding player; its entity id, or -1 |
+| `p:sleep(x, y, z, force)` | bool | Sleeps in the bed at the position; `force` skips range, obstruction and time checks |
+| `p:block_entity(x, y, z, block_id, snbt)` | | Sends the block entity data of a block to this player only |
+| `p:load_data()` | | Reloads the stored record (position, game mode, inventory, health, experience) into the live player and resyncs the client |
+| `p:combat()`, `p:combat_clear()`, `p:combat_push(type, message_id, direct, cause, damage, fall_distance, location, tick)` | list | The damage log; 8 values per entry: damage type, message id, direct entity id, cause entity id, damage, fall distance, fall location, game tick |
+| `p:resend_recipes()` | | The recipe packet and the recipe book again |
+| `p:open_merchant(title_json, offers_snbt)`, `p:open_trades(entity_id)` | bool | A merchant window with trades a plugin made, or a villager's trades |
+| `p:set_profile(name, value, signature, ...)` | | Replaces the profile properties (the skin): the tab list entry is refreshed, the player respawns in place and every viewer sees it again |
+| `p:report_details(key, value, ...)` | | A custom report details packet, at most 32 pairs |
+| `p:clear_dialog()`, `p:delete_chat(hex)` | | Closes a dialog; removes a signed chat message by the hex of its 256 byte signature |
+| `p:window_title(json)` | bool | The open screen again under a new title; the window keeps its contents |
+
+`offers_snbt` is `{offers:[{buy:{id,count,components},buy2:{...},sell:{...},uses,max_uses,xp,price_multiplier,demand,special_price}]}`.
 
 ## Showing the client something else
 

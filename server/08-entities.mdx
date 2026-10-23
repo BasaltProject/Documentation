@@ -1,6 +1,6 @@
 ---
 title: Entities from Lua
-description: Properties, effects, attributes, equipment, movement and the events of mobs, projectiles and vehicles.
+description: Properties, effects, attributes, equipment, movement, mob goals and state, and the events of mobs, projectiles and vehicles.
 ---
 
 An entity object is what `world:entities()`, `world:entity(id)`, the `entity` field of an event and `world:spawn(...)`
@@ -97,6 +97,76 @@ clearing the slot. Slots are `mainhand`, `offhand`, `feet`, `legs`, `chest`, `he
 | `e:can_reach(x, y, z)` | Whether a path exists |
 | `e:stop_path()`, `e:has_path()` | Stops walking, tells whether a path is being followed |
 
+## Mob goals
+
+A mob can carry goals a plugin owns next to the vanilla ones, in the same selector: priority, flags and interruption work
+as in vanilla, and a mob without plugin goals pays nothing. Mobs that run on a brain (villagers) do not run them.
+
+| Call | Returns | Does |
+|---|---|---|
+| `e:add_goal(key, priority, flags?)` | bool | Adds a plugin goal; `flags` is a comma list of `move look jump target` |
+| `e:remove_goal(key)` | int | Retires every goal with that key, vanilla ones by name (`panic`, `look_at_player`, `bee_enter_hive`...) |
+| `e:remove_goals(flags?)` | int | Retires every goal that locks one of the flags, or all of them when none is given |
+| `e:has_goal(key)` | bool | Whether a live goal with that key exists |
+| `e:goals()` | list | `{ key, priority, running, plugin, flags }` for each goal |
+
+A vanilla goal key is the vanilla goal class name in snake case without `Goal`; the `minecraft:` prefix is optional. A
+running goal that is removed stops on the next AI turn. The `entity.goal` event below drives a plugin goal.
+
+```lua
+e:add_goal("my:wave", 3, "look")
+on("entity.goal", function(ev)
+    if ev.key == "my:wave" and ev.phase == "can_use" then ev.result = true end
+end)
+```
+
+## Mob state
+
+These properties are read with `e:get(name)` and written with `e:set(name, value)`. A read answers nil, and a write
+false, on an entity the property does not apply to. Nothing here changes what a mob does by default.
+
+Four more fields are plain properties: `age_locked` (an animal's age no longer moves), `burns_in_day`,
+`despawn_in_peaceful` (`-1` default, `0` never, `1` despawns in peaceful) and `nav_open_doors`. `aggressive` (the
+arms-up flag) is also a field, and melee goals raise it while they attack, so zombies hold their arms up.
+
+| Group | Names |
+|---|---|
+| Mobs | `conversion_countdown` (-1 for none: zombie to drowned, husk to zombie, skeleton to stray, zombie villager cure), `conversion_clock`, `immune_to_zombification`, `charging` (r), `spell` (r, 0 none to 5 blindness), `neutral_anger_end` (game tick, -1 calm), `despawn_delay`, `wander_target`, `moistness`, `got_fish`, `dolphin_treasure`, `puff_state` (0 to 2), `bat_resting` (r), `axolotl_playing_dead`, `skeleton_trap`, `skeleton_trap_time`, `wolf_interested` |
+| Fishing bobber | `hook_min_wait`, `hook_max_wait`, `hook_min_lure`, `hook_max_lure`, `hook_min_angle`, `hook_max_angle`, `hook_apply_lure`, `hook_rain_influenced`, `hook_sky_influenced`, `hook_bite_chance`, `hook_wait`, `hook_bite_in`, `hook_open_water` (r), `hook_phase` (r), `hook_hooked` (r) |
+| Minecarts | `cart_max_speed`, `cart_slow_when_empty`, `cart_friction`, `cart_flying_x/y/z`, `cart_derailed_x/y/z`, `cart_fuel`, `cart_push_x`, `cart_push_z`, `cart_explosion_speed`, `vehicle_damage` |
+| Boats | `boat_status` (r), `boat_max_speed`, `boat_occupied_deceleration`, `boat_unoccupied_deceleration`, `boat_work_on_land` |
+| Animals and monsters | `villager_restocks`, `horse_eating`, `horse_mouth_open`, `horse_rearing`, `horse_dashing`, `horse_max_temper`, `llama_caravan_head` (r), `llama_caravan_tail` (r), `bee_sting_age`, `bee_rolling` (r), `bee_rolling_override`, `allay_dancing`, `allay_jukebox` (r), `allay_duplication_cooldown`, `armadillo_state` (r), `creaking_active`, `creaking_home` (r), `copper_weather`, `copper_pose`, `copper_weathering_tick`, `sniffer_state` (r), `warden_highest_anger`, `warden_angry_at` (r), `dragon_phase`, `dragon_death_ticks` (r), `dragon_podium`, `guardian_laser_ticks`, `guardian_laser_target` (r), `shulker_peek` (r), `shulker_face`, `bullet_steps`, `bullet_target`, `bullet_direction`, `bullet_delta_x/y/z`, `frog_tongue_target`, `enderman_stared_at`, `piglin_cannot_hunt`, `piglin_dancing`, `piglin_charging`, `fox_flags`, `panda_flags`, `panda_unhappy`, `panda_sneeze`, `panda_eat`, `cat_lying`, `cat_head_up` (r) |
+| Raiders | `raid_wave`, `raid_can_join`, `raid_ticks_outside`, `raid_celebrating` (r), `raid_id` (r), `patrol_leader`, `patrol_target` |
+
+`hook_bite_in` starts the luring phase when written, as the bobber would. `hook_phase` is 0 flying, 1 hooked entity, 2
+bobbing, and `hook_hooked` is the hooked entity id or -1. `boat_status` runs from 0 in water to 4 in air.
+`fox_flags` uses the bits 4 crouching, 8 interested, 16 pouncing, 64 faceplanted and 128 defending; `panda_flags` uses 2
+sneeze, 4 roll, 8 sit and 16 on back. `copper_weathering_tick` is -2 waxed, -1 unset, else a game tick.
+
+Operations go through `e:call(name, args...)`.
+
+| Call | Returns | Does |
+|---|---|---|
+| `ambient_sound()`, `xp_reward()` | string or nil, int | The sound the mob would make now; the experience a kill would give |
+| `ranged_attack(x, y, z, charge?)` | bool | Skeleton family, wither and llama shoot at a point |
+| `converting()` | bool | A piglin or hoglin is turning |
+| `set_charging(bool)`, `set_sleeping(bool)`, `bat_awake(bool)`, `cat_lying(bool)`, `cat_head_up(bool)`, `set_spell(n)` | bool | State changes the clients see |
+| `raider_celebrate(bool)` | bool | Starts or stops celebrating |
+| `guardian_laser(bool)` | bool | Beam on the current target, or off; false without a target |
+| `enderman_teleport(towards, x, eye_y, z)` | bool | `0` teleports at random, `1` away from the point as vanilla does |
+| `llama_join_caravan(head_id)`, `llama_leave_caravan()` | bool | Caravan membership |
+| `shulker_set_peek(raw)` | bool | Opens the lid, 0 to 100, with its sound |
+| `hook_reset()`, `hook_pull()` | bool | Resets the fishing timers; pulls the hooked entity toward the owner |
+| `allay_duplicate()` | int | Spawns a copy and returns its entity id, or -1 |
+| `armadillo_roll_up()`, `armadillo_roll_out()` | bool | Rolls |
+| `creaking_activate(player_id)`, `creaking_deactivate()` | bool | |
+| `sniffer_explored()`, `sniffer_explore(x, y, z, remove?)` | list | The places it has dug as `x,y,z`; adds or removes one |
+| `warden_anger(id)`, `warden_set_anger(id, n)`, `warden_increase_anger(id, n)`, `warden_clear_anger(id)`, `warden_disturb(x, y, z)` | | The anger book of a warden, keyed by entity id |
+| `villager_restock()`, `villager_update_demand()`, `villager_reset_offers()`, `villager_add_trades(n)`, `villager_shake_head()`, `villager_sleep(x, y, z)`, `villager_wake()` | | Trading and bed; `villager_add_trades(0)` only makes sure the offers exist |
+| `villager_zombify()` | int | Becomes a zombie villager and returns its id, or -1 |
+| `villager_gossips()` | list | Six values a row: player uuid, then major negative, minor negative, minor positive, major positive, trading |
+| `villager_set_gossip(uuid, type, value)`, `villager_clear_gossips()` | bool | `type` 0 to 4 in the order above |
+
 ## Entity NBT
 
 `e:nbt(path?)` returns the whole entity NBT, or the compound at a dotted path. `e:nbt_value(path)` returns one scalar.
@@ -122,6 +192,7 @@ is sent again to the players who can see the entity, and a bee takes its saved f
 | `entity.death` | Field `killer_id` |
 | `entity.target` | Cancellable. A mob picked a new target. `entity_id entity_type world target_id previous_id reason`; `target_id` is editable, -1 clears |
 | `entity.drops` | Editable. A mob died and its loot is about to drop. `entity_id entity_type world x y z drops exp killer_id`; `drops` is one `item\|count` per line, `exp` is editable |
+| `entity.goal` | Fires for plugin goals only. `entity_id entity_type world key phase result`; `phase` is `can_use`, `can_continue`, `start`, `stop` or `tick`, and for the first two `result` (a boolean) is editable |
 | `entity.resurrect` | Cancellable. A totem of undying is about to be used. `entity_id entity_type world hand` |
 | `entity.add` | Notification. A mob was created through the spawner path. `entity_id entity_type world x y z reason` |
 | `entity.potion_effect` | Cancellable. A mob is about to receive an effect. `entity_id entity_type world effect amplifier duration action cause` |

@@ -14,6 +14,12 @@ description: The tick rate, server links, datapacks, advancements, loot tables a
 | `tick.step(n)` | Runs `n` ticks while frozen |
 | `tick.sprint(n)` | Runs `n` ticks as fast as possible; `tick.stop_sprint()` ends it |
 | `tick.pace()` | `{ tps_1m, tps_5m, tps_15m, mean_tick_ms }` |
+| `tick.times()` | The last hundred tick durations in nanoseconds, not sorted by age |
+| `tick.paused()` | Whether the server is ticking nothing because nobody has been online for `pause_when_empty_seconds` |
+
+With nobody online for `pause-when-empty-seconds` (`server.toml`, 60 as in vanilla) the tick loop only serves
+connections. It logs "Server empty for N seconds, pausing" and "Server resumed". A plugin that needs a heartbeat with nobody
+online sets `settings.set("pause_when_empty_seconds", "0")`, or forbids the pause with `pause_allowed`.
 
 ## Server links
 

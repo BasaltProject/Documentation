@@ -63,6 +63,24 @@ Four helpers on `worlds` read block facts:
 | `world:inhabited_time(cx, cz, set?)` | Ticks players stood in the loaded chunk |
 | `world:lightning_target(x, z)` | Where a strike near the column lands, a rod first |
 | `world:game_event(event, x, y, z, source_uuid?)` | Raises a game event that sculk sensors hear |
+| `world.tickable_block_entity_count` | Loaded block entities that run code every tick (furnaces, hoppers, spawners, beacons, signs...) |
+| `world:random_tick(x, y, z)` | One random tick on that block, as the random tick speed gives; true when a block changed |
+| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) |
+| `worlds.block_instrument(state)` | The note block instrument over a state (`harp`, `basedrum`, `bell`, `pling`...), or nil |
+
+Players below the world floor minus 64 take 4 damage, creative players included. `void_damage` turns it off per world.
+
+### Planting trees
+
+`world:place_tree(tree, x, y, z, apply?)` plants a named tree feature as the world generator would, with no sapling
+needed. `tree` is `oak`, `fancy_oak`, `swamp_oak`, `azalea`, `birch`, `super_birch`, `jungle_tree`, `jungle_bush`,
+`mega_jungle`, `spruce`, `pine`, `acacia`, `dark_oak`, `pale_oak`, `pale_oak_creaking`, `mega_spruce`, `mega_pine`,
+`mangrove`, `tall_mangrove` or `cherry`. It returns `{ { x, y, z, before, after } }`, or nil when the tree does not fit.
+With `apply` set to `false` nothing changes and the blocks it would set come back.
+
+```lua
+world:place_tree("oak", 10, 64, 10)
+```
 
 ## Structures, raids and points of interest
 
@@ -95,12 +113,20 @@ Changing these departs from vanilla spawning for as long as the values are set.
 
 `settings` reads a few server settings as text. `settings.keys()` lists them: `motd`, `max_players`, `port`, `bind`,
 `online_mode`, `enforce_secure_profile`, `whitelist`, `gamemode`, `idle_timeout`, `view_distance`,
-`simulation_distance` and `bedrock_port`.
+`simulation_distance`, `bedrock_port`, `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world`
+and `autosave`.
 
 | Call | Does |
 |---|---|
 | `settings.get(key)` | The setting as text (booleans are `true` or `false`), or nil |
-| `settings.set(key, value)` | Writable while running: `motd` and `max_players` (what the server list shows; the cap is not enforced at login), `idle_timeout` in minutes and `gamemode` (the default of every world). False for anything else |
+| `settings.set(key, value)` | Writable while running: `motd` and `max_players` (what the server list shows; the cap is not enforced at login), `idle_timeout` in minutes, `gamemode` (the default of every world), `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world` and `autosave`. False for anything else |
+
+`pause_when_empty_seconds` is the time with nobody online before the tick loop stops (0 never pauses, 60 as in
+vanilla; `pause-when-empty-seconds` in `server.toml`). `spawn_protection` is the block radius around the overworld spawn
+that only operators may change (0 off, 16 as in vanilla, waived while nobody is an operator; `spawn-protection` in
+`server.toml`). `pause_allowed` (`true` or `false`) lets a plugin forbid the pause. `respawn_world` is a loaded world
+name where a player without a spawn point comes back, the default world unless set; dying elsewhere returns the player
+there, switching worlds when needed. `autosave` is the switch behind `/save-on` and `/save-off`.
 
 ## Unloading worlds
 
