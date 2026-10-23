@@ -41,6 +41,8 @@ p:sound_at("minecraft:entity.player.levelup", "player", p.x, p.y, p.z, 1, 1, 0)
 | `fishing_hook` | int | Read only. Entity id of the bobber, -1 for none |
 | `seen_win_screen` | bool | Not saved |
 | `view_distance`, `simulation_distance` | int or nil | Per-player distances in chunks; nil restores the server's |
+| `slot_limit` | int | The most one inventory slot holds, 1 to 99 (default 99); it caps pickups, merges, quick move and cursor stacking, and an item's own limit still applies |
+| `frozen_ticks`, `freeze_locked` | int, bool | Powder snow freezes players: +1 a tick inside, -2 outside, 140 is fully frozen (1 damage every 40 ticks); leather armour and spectators are immune, and `freeze_locked` stops the count either way |
 
 ## Tab list, time and weather
 
@@ -112,6 +114,9 @@ only, -1 for none), `use_remaining` (-1 for none), `visual_fire` (-1 follows the
 | `p:set_profile(name, value, signature, ...)` | | Replaces the profile properties (the skin): the tab list entry is refreshed, the player respawns in place and every viewer sees it again |
 | `p:report_details(key, value, ...)` | | A custom report details packet, at most 32 pairs |
 | `p:clear_dialog()`, `p:delete_chat(hex)` | | Closes a dialog; removes a signed chat message by the hex of its 256 byte signature |
+| `p:show_dialog(dialog)` | bool | Shows a dialog: a string starting with `{` is the dialog in full as SNBT (`type`, `title`, `body`, `inputs`, buttons), any other is a registry dialog id such as `minecraft:server_links`; answers come back through `player.custom_click`, and Bedrock players get the closest form |
+| `p:reenter_configuration()` | bool | Sends the client back to the configuration phase: the player leaves the world, the client runs the configuration again and joins again; false for a client without that phase or translated from another version |
+| `p:as_string()` | string | The player saved as an entity compound in SNBT (position, health, food, experience, game mode, inventory, ender chest, uuid, tags) |
 | `p:window_title(json)` | bool | The open screen again under a new title; the window keeps its contents |
 
 `offers_snbt` is `{offers:[{buy:{id,count,components},buy2:{...},sell:{...},uses,max_uses,xp,price_multiplier,demand,special_price}]}`.

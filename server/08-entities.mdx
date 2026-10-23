@@ -49,7 +49,18 @@ Read them as fields; the ones marked rw can be assigned.
 | `category` | string | r | Mob category: `monster`, `creature`, `ambient`, `water_creature`... |
 | `display_text` | string or nil | rw | Text of a text display, in MiniMessage; clients that already see it get the change |
 | `object_data` | integer | rw | Spawn data, such as the block state id of a falling block |
-| `bolt_visual_only`, `bolt_life`, `bolt_flashes` | boolean, integer, integer | rw | Lightning bolt state |
+| `bolt_visual_only`, `bolt_life`, `bolt_flashes`, `bolt_cause` | boolean, integer, integer, integer | rw | Lightning bolt state; `bolt_cause` is the entity id that caused it, -1 for none |
+| `gliding`, `swimming`, `crouching`, `sprinting` | boolean | rw | Forces the shared flag clients see, and the matching pose |
+| `pose` | integer | rw | Forces a pose by ordinal (0 standing to 17 inhaling); -1 or any other value clears it |
+| `visual_fire` | integer | rw | -1 follows the real fire, 0 never shows fire, 1 always |
+| `freeze_locked`, `jumping`, `no_physics`, `riptiding`, `collidable`, `visible_by_default` | boolean | rw | Frost count lock, jump input, ignores collisions, spin attack, pushing, and false to hide the entity until shown per player |
+| `portal_cooldown`, `no_action_time`, `max_no_damage_ticks`, `max_air` | integer | rw | Ticks before the next portal, idle ticks (despawn timer), hurt cooldown length (20 by default) and air ceiling |
+| `bee_stingers`, `bee_stinger_cooldown`, `arrow_cooldown` | integer | rw | Stuck stingers and arrows and their removal timers |
+| `last_hurt_by_player` | string or nil | rw | Uuid credited as killer; empty clears it |
+| `hurt_direction` | number | rw | Yaw offset of the last hit |
+| `spawn_reason`, `sound_volume` | string, number | r | Why the mob spawned (`natural`, `plugin`, `event`...) and its voice volume |
+| `move_forward`, `move_sideways`, `move_up` | number | rw | Current movement input of the mob controller |
+| `active_slot`, `active_ticks`, `active_used` | integer | r, rw, rw | Hand of an item in use (0 main, 1 off, -1 none), remaining and elapsed ticks |
 
 `e:get(name)` and `e:set(name, value)` reach any property by name, including the ones that are not fields:
 `loot_table` (string) and `loot_seed` (integer). `e:call(operation, args...)` runs an operation by name, such as
@@ -122,6 +133,10 @@ end)
 
 ## Mob state
 
+Vindicators named `Johnny` attack any living thing, evokers cast the wololo spell on blue sheep, fish schools follow a
+leader, witches drink helpful potions by themselves, and players shear sheep, mooshrooms, snow golems, bogged and copper
+golems, as in vanilla.
+
 These properties are read with `e:get(name)` and written with `e:set(name, value)`. A read answers nil, and a write
 false, on an entity the property does not apply to. Nothing here changes what a mob does by default.
 
@@ -143,6 +158,12 @@ bobbing, and `hook_hooked` is the hooked entity id or -1. `boat_status` runs fro
 `fox_flags` uses the bits 4 crouching, 8 interested, 16 pouncing, 64 faceplanted and 128 defending; `panda_flags` uses 2
 sneeze, 4 roll, 8 sit and 16 on back. `copper_weathering_tick` is -2 waxed, -1 unset, else a game tick.
 
+A second set of mob properties: `creeper_ignited`, `creeper_igniter` (id, -1 none), `evoker_wololo` (id of the sheep, -1
+none), `polar_standing`, `strider_shivering`, `turtle_laying_egg`, `turtle_going_home`, `parrot_dancing`,
+`wither_portals`, `cube_wander` (false: a slime, magma cube or sulfur cube never hops by itself), `boost_total` and
+`boost_time` (pig and strider item boost), `boost_active` (r), `witch_drinking` (r), `witch_use_ticks`, `bat_target`
+(`"x,y,z"` or nil), `guardian_moving` (r) and `cart_detonate` (w, the speed squared a tnt minecart blows up with).
+
 Operations go through `e:call(name, args...)`.
 
 | Call | Returns | Does |
@@ -163,9 +184,56 @@ Operations go through `e:call(name, args...)`.
 | `sniffer_explored()`, `sniffer_explore(x, y, z, remove?)` | list | The places it has dug as `x,y,z`; adds or removes one |
 | `warden_anger(id)`, `warden_set_anger(id, n)`, `warden_increase_anger(id, n)`, `warden_clear_anger(id)`, `warden_disturb(x, y, z)` | | The anger book of a warden, keyed by entity id |
 | `villager_restock()`, `villager_update_demand()`, `villager_reset_offers()`, `villager_add_trades(n)`, `villager_shake_head()`, `villager_sleep(x, y, z)`, `villager_wake()` | | Trading and bed; `villager_add_trades(0)` only makes sure the offers exist |
+| `retype(type)` | int | Turns the entity into another type keeping its saved data, uuid and riders; the new entity id, or -1 |
+| `goat_ram(id)` | bool | The goat rams the entity at once |
+| `sniffer_set_state(n)`, `sniffer_can_dig()`, `sniffer_dig_spot()` | bool, bool, string or nil | Moves the sniffer to a state (0 idling to 6 rising) with its sound; tells whether it can dig; a diggable spot as `x,y,z` |
+| `piglin_items(kind)`, `piglin_item_edit(kind, item, add)` | list, bool | The `barter` or `interest` item ids of a piglin; adds or removes one |
+| `piglin_dance(on, ticks)` | bool | Starts or stops the dance; `ticks` -1 dances until stopped |
+| `held_get(kind, slot)`, `held_set(kind, slot, nbt)` | bytes, bool | A stack in a mob's own state: kind `piglin` (8 slots), `villager` (8) or `allay` (1) |
+| `school_follow(id)`, `school_stop()`, `school_info()` | bool, bool, list | Fish school: follow a leader, leave, `{ leader id or -1, size, max size }` |
+| `shear_ready()`, `shear(source)` | bool | Whether the mob could be sheared; shears it (sound source index as in `Sound.Source`) |
+| `wolf_wet()`, `witch_drink(nbt)`, `sulfur_swallow(nbt)` | bool | In water or rain; the witch starts drinking a potion stack (nil stops it); the sulfur cube swallows the stack when it can |
+| `dragon_parts()` | list | The eight hit boxes as `minx,miny,minz,maxx,maxy,maxz` |
+| `wither_target(head)`, `wither_set_target(head, id)` | int, bool | The targets of the three heads (0 centre, 1 left, 2 right) |
+| `bar_info()`, `bar_set(field, value)`, `bar_players()`, `bar_pin(id, shown)` | list, bool, list, bool | The boss bar of a wither: `{ title json, color, overlay, darken, music, fog, progress, visible }`; `bar_set` takes those names; who sees it; shows it to one player or sends them away |
 | `villager_zombify()` | int | Becomes a zombie villager and returns its id, or -1 |
 | `villager_gossips()` | list | Six values a row: player uuid, then major negative, minor negative, minor positive, major positive, trading |
 | `villager_set_gossip(uuid, type, value)`, `villager_clear_gossips()` | bool | `type` 0 to 4 in the order above |
+
+## Projectiles, items and decorations
+
+Every property below reads as what vanilla does until a plugin writes it. `e:get(name)` and `e:set(name, value)` reach
+them.
+
+| Name | Type | Meaning |
+|---|---|---|
+| `bounce` | boolean | A projectile that hits a block or entity reflects its velocity (kept at 80 %) instead of landing |
+| `incendiary` | boolean | An explosive or fireball sets fires; true for fireballs and small fireballs, false elsewhere |
+| `arrow_knockback` | integer | Arrow punch in levels (0.6 of push per level); reads the weapon's punch until set |
+| `arrow_life` | integer | Ticks an arrow has spent in the ground; it despawns at 1200 |
+| `fired_from` | string or nil | Item id of the weapon that fired the arrow; `minecraft:crossbow` plays the crossbow hit sound |
+| `wither_charged` | boolean | Blue (dangerous) wither skull |
+| `trident_glint` | boolean | Enchantment glint on a thrown trident |
+| `attached_to` | integer | Entity id a firework rocket boosts, -1 for none |
+| `eye_despawn`, `eye_drops` | integer, boolean | Ticks an eye of ender has flown (it ends at 80), and whether it drops as an item instead of shattering |
+
+| Call | Returns | Does |
+|---|---|---|
+| `e:hit_entity(id)` | bool | The projectile hits that entity on its next tick, through the code of a real hit |
+| `e:land()` | bool | A thrown potion splashes or a wind charge bursts where it is, on the next tick |
+| `e:hook_retrieve(off_hand)` | int | The hook's owner reels in with the rod in that hand; the rod wear, -1 when there is nothing to reel |
+| `e:hook_own(player_id)` | bool | Registers a hook spawned by a plugin as that player's own bobber, so it fishes and can be reeled in |
+| `e:eye_target()` | list | The x, y, z an eye of ender flies towards, empty when it has none |
+| `e:set_eye_target(x, y, z, reset)` | bool | Aims the eye; `reset` restarts its flight timer |
+
+Item entities take these keys through `nbt_set`: `CanMobPickup` and `CanPlayerPickup` (short 0 or 1; 0 stops mobs that
+gather items, or players, from picking it up) and `FrictionState` (1 removes ground friction). An armor stand takes
+`BasaltNoMove` and `BasaltNoTick` (true stops it from moving, or from ticking at all), and a falling block that lives
+over 600 ticks drops as an item unless `BasaltNoExpire` is true. Experience orbs keep `SpawnReason`, `SourceEntity` and
+`TriggerEntity`, and interactions keep `attack` and `interaction` as `{player, timestamp}`.
+
+Ghast fireballs set fires where they explode when `mob_griefing` is on, arrow punch from the weapon pushes mobs and
+players, and primed TNT honours its `explosion_power` (4 by default).
 
 ## Entity NBT
 
@@ -193,6 +261,7 @@ is sent again to the players who can see the entity, and a bee takes its saved f
 | `entity.target` | Cancellable. A mob picked a new target. `entity_id entity_type world target_id previous_id reason`; `target_id` is editable, -1 clears |
 | `entity.drops` | Editable. A mob died and its loot is about to drop. `entity_id entity_type world x y z drops exp killer_id`; `drops` is one `item\|count` per line, `exp` is editable |
 | `entity.goal` | Fires for plugin goals only. `entity_id entity_type world key phase result`; `phase` is `can_use`, `can_continue`, `start`, `stop` or `tick`, and for the first two `result` (a boolean) is editable |
+| `entity.allied_check` | Editable. A player's sweep attack or mace smash is deciding whom to spare, after the teams said no. `entity_id entity_type world x y z other_id allied`; set `allied` to true to spare `other_id` |
 | `entity.resurrect` | Cancellable. A totem of undying is about to be used. `entity_id entity_type world hand` |
 | `entity.add` | Notification. A mob was created through the spawner path. `entity_id entity_type world x y z reason` |
 | `entity.potion_effect` | Cancellable. A mob is about to receive an effect. `entity_id entity_type world effect amplifier duration action cause` |

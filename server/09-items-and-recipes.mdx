@@ -53,6 +53,10 @@ recipes.add("myplugin:ruby_block",
 | `furnace.burn` | Cancellable. `world x y z cooker fuel burn_time`; `burn_time` is writable |
 | `furnace.start` | `world x y z cooker source total recipe` |
 
+Block entity data a plugin can write with the block entity NBT calls: a furnace saves `Paper.CookSpeedMultiplier` (0 to
+200, higher is faster; it multiplies the fuel speed at once and keeps the progress), a beacon `BeaconRange` (double)
+and a beehive `MaxBees` (int) override the effect range and the occupant limit.
+
 Existing events changed:
 
 - `inventory.close` has a new `reason` field: `player`, `plugin`, `open_new`, `disconnect`, `death`, `teleport` or

@@ -65,8 +65,13 @@ Four helpers on `worlds` read block facts:
 | `world:game_event(event, x, y, z, source_uuid?)` | Raises a game event that sculk sensors hear |
 | `world.tickable_block_entity_count` | Loaded block entities that run code every tick (furnaces, hoppers, spawners, beacons, signs...) |
 | `world:random_tick(x, y, z)` | One random tick on that block, as the random tick speed gives; true when a block changed |
-| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) |
+| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) and `hardcore` (0 or 1) |
+| `world:fluid_flow(x, y, z)` | The flow vector of the fluid at a block as `{ x, y, z }`, zero when none |
 | `worlds.block_instrument(state)` | The note block instrument over a state (`harp`, `basedrum`, `bell`, `pling`...), or nil |
+
+A hardcore world keeps its difficulty on hard, tells a logging-in client it is hardcore, and puts a respawning player in
+spectator. Setting `hardcore` to 1 also moves the difficulty to hard. It is saved with the world, and `hardcore = false`
+in `worlds.toml` `[defaults]` or a world's `settings.toml` is the starting value of a world that has none saved.
 
 Players below the world floor minus 64 take 4 damage, creative players included. `void_damage` turns it off per world.
 
@@ -113,8 +118,9 @@ Changing these departs from vanilla spawning for as long as the values are set.
 
 `settings` reads a few server settings as text. `settings.keys()` lists them: `motd`, `max_players`, `port`, `bind`,
 `online_mode`, `enforce_secure_profile`, `whitelist`, `gamemode`, `idle_timeout`, `view_distance`,
-`simulation_distance`, `bedrock_port`, `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world`
-and `autosave`.
+`simulation_distance`, `bedrock_port`, `hide_online_players`, `level_type`, `initial_enabled_packs`, `initial_disabled_packs`,
+`allow_nether`, `allow_end`, `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world` and
+`autosave`. The six added before `pause_when_empty_seconds` are read only.
 
 | Call | Does |
 |---|---|

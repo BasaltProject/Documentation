@@ -50,7 +50,7 @@ is broadcast; the `x y z` of `player.respawn` are editable.
 | `world.spawn_change` | `world x y z from_x from_y from_z` |
 | `hanging.place` | Cancellable. An item frame or painting is about to be hung. `player_name player_uuid world x y z entity_type face` |
 | `hanging.break` | Cancellable. A frame or painting is knocked off the wall. `entity_id entity_type world x y z cause remover_id` |
-| `projectile.hit` | Notification. A projectile struck a block (`hit_id` is -1) or an entity. `entity_id entity_type world hit_id x y z` |
+| `projectile.hit` | Cancellable. A projectile struck a block (`hit_id` is -1) or an entity, once per strike, for every projectile including wind charges, fireballs, potions and thrown items; cancelling lets it fly on with no damage, landing or removal. `entity_id entity_type world hit_id x y z` |
 | `server.tick_end` | `tick duration_ms remaining_ms` |
 
 Changes to existing events: `block.ignite` fires for the block fire is about to be laid on, and cancelling spares that
