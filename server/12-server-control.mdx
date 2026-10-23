@@ -41,8 +41,8 @@ rescans the folder. Enabling and disabling go through the `/datapack` command.
 |---|---|
 | `advancements.ids()` | Every advancement id |
 | `advancements.info(id)` | `{ id, parent, root, criteria, children, frame, icon }` |
-| `advancements.grant(player, id, criterion)` | Grants a criterion, with the toast, announcement and rewards of `/advancement grant` |
-| `advancements.revoke(player, id, criterion)` | Takes it back |
+| `advancements.grant(player, id, criterion)` | Grants a criterion (required) and returns whether it changed anything, with the toast, announcement and rewards of `/advancement grant` |
+| `advancements.revoke(player, id, criterion)` | Takes it back and returns whether it changed anything |
 | `advancements.progress(player, id)` | `{ [criterion] = obtained_ms }` |
 
 ## Loot

@@ -35,7 +35,7 @@ scoreboards.show(p, board)
 
 ## Boss bars
 
-`boss_bars.create` returns an id. A bar created with a `key` is kept: it lives in the same registry as `/bossbar`,
+`boss_bars.create` returns an id, or `nil` when the bar cannot be made. A bar created with a `key` is kept: it lives in the same registry as `/bossbar`,
 is saved with the world and keeps its flags. A bar without one lives while the server runs.
 
 ```lua
@@ -47,7 +47,7 @@ boss_bars.update(id, { progress = 0.25 })
 
 | Call | Does |
 |---|---|
-| `boss_bars.create{ title, color, style, progress, key, darken_sky, boss_music, fog, visible }` | Makes a bar and returns its id |
+| `boss_bars.create{ title, color, style, progress, key, darken_sky, boss_music, fog, visible }` | Makes a bar and returns its id, or `nil` |
 | `boss_bars.update(id, fields)` | Changes the same fields |
 | `boss_bars.remove(id)` | Removes it |
 | `boss_bars.add_player(id, player)`, `boss_bars.remove_player(id, player)` | Who sees it |

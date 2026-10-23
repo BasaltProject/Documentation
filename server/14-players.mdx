@@ -1,0 +1,118 @@
+---
+title: Players from Lua
+description: The properties and operations of a player object, from movement and the tab list to sounds, signs and resource packs.
+---
+
+A player object is what `players.by_name`, `players.online()` and the `player` field of an event give you. Properties
+are read as `p.name` and written as `p.name = value`; operations are methods, `p:name(...)`. The same surface is also
+reachable by name with `p:get(name)`, `p:set(name, value)` (returns whether it was accepted) and `p:call(name, ...)`.
+
+Times are ticks, distances are blocks and texts are MiniMessage. Speeds use the scale a plugin author expects:
+`fly_speed` 0.1 and `walk_speed` 0.2 are the defaults, within -1 to 1.
+
+```lua
+local p = players.by_name("Steve")
+p.allow_flight = true
+p.fly_speed = 0.05
+p:tab_list("<gold>Welcome", "<gray>basaltmc.org")
+p:sound_at("minecraft:entity.player.levelup", "player", p.x, p.y, p.z, 1, 1, 0)
+```
+
+## Movement and state
+
+| Property | Type | Meaning |
+|---|---|---|
+| `allow_flight` | bool | May fly; resets to the game mode's rule when the game mode changes |
+| `flying` | bool | Is flying (true only when `allow_flight`) |
+| `fly_speed`, `walk_speed` | number | Movement speed; `walk_speed` also writes the `movement_speed` attribute |
+| `sprinting`, `sneaking`, `swimming`, `gliding` | bool | Server-side state flags |
+| `exhaustion`, `saturation` | number | Hunger state |
+| `exp` | number | Progress to the next level, 0 to 1 |
+| `total_experience` | int | Setting it resets the player to level 0 and gives that many points |
+| `exp_to_next_level` | int | Read only. Points the current level needs |
+| `health_scale` | number or nil | Scales the health bar the client draws to this many points; nil is off |
+| `sleeping_ignored`, `collidable`, `affects_spawning`, `flying_fall_damage` | bool | Flags held for plugins |
+| `exp_cooldown` | int | A counter held for plugins |
+| `attack_cooldown` | number | Read only. Attack strength, 0 to 1 |
+| `spectator_target` | int | Entity id the spectator camera follows, -1 for none |
+| `enchantment_seed`, `score` | int | The enchantment seed and the death screen score |
+| `previous_gamemode` | string or nil | Read only. The game mode before the last change |
+| `sleep_ticks` | int | Read only. Ticks asleep |
+| `fishing_hook` | int | Read only. Entity id of the bobber, -1 for none |
+| `seen_win_screen` | bool | Not saved |
+| `view_distance`, `simulation_distance` | int or nil | Per-player distances in chunks; nil restores the server's |
+
+## Tab list, time and weather
+
+| Property | Type | Meaning |
+|---|---|---|
+| `tab_header`, `tab_footer` | string or nil | This player's own header and footer; while either is set the configured tab list stays off for them |
+| `list_name` | string or nil | The name everybody sees in the tab list; nil is the plain name |
+| `listed` | bool | Everybody sees them in the tab list |
+| `list_order` | int | Tab list sort order |
+| `player_time`, `player_time_relative`, `player_weather` | read only | The player's own clock and weather override, nil when none |
+| `compass_target` | list or nil | Read only. `{ x, y, z }` set by `set_compass_target` |
+
+## Client facts
+
+All read only: `locale`, `client_brand`, `virtual_host` (strings), `client_view_distance`, `client_particles`,
+`main_hand` (0 left, 1 right), `skin_parts`, `chat_visibility`, `protocol_version`, `pack_status` (the last resource
+pack answer, -1 for none), and the booleans `chat_colors`, `text_filtering` and `server_listings`.
+
+## Operations
+
+| Call | Returns | Does |
+|---|---|---|
+| `p:give_exp(points)`, `p:give_levels(n)` | true | Adds points or levels |
+| `p:send_health()`, `p:send_experience()` | true | Resends the real values to the client |
+| `p:fake_health(health, food, saturation)`, `p:fake_experience(progress, level)` | bool | Shows the client other values without changing the player |
+| `p:reset_attack_cooldown()` | true | Restarts the attack ticker |
+| `p:title_part(kind, text)` | bool | `kind` is `title`, `subtitle` or `actionbar` |
+| `p:title_times(fade_in, stay, fade_out)`, `p:clear_title(reset?)` | bool | Title timing and clearing |
+| `p:tab_list(header, footer)` | true | Sets both at once; nil clears |
+| `p:update_commands()` | true | Resends the command tree |
+| `p:set_player_time(time, relative?)`, `p:reset_player_time()` | true | This player's own clock; an absolute time freezes it |
+| `p:set_player_weather(kind?)` | true | `downfall`, `clear`, or nil to reset |
+| `p:hide_entity(id)`, `p:show_entity(id)` | bool | Hides or shows an entity or player for this viewer |
+| `p:can_see(id)` | bool | Whether it is visible to this viewer |
+| `p:visible_by_default(id, visible?)` | bool | Reads or sets whether an entity is visible to viewers that did not ask |
+| `p:list_player(entity_id, listed)`, `p:list_unlisted(entity_id)` | bool | This viewer's tab list entry for another player |
+| `p:set_compass_target(x, y, z)` | bool | Where a compass points |
+| `p:cooldown(item)`, `p:set_cooldown(item, ticks)` | int, true | Ticks left; starts or clears an item cooldown |
+| `p:statistic(key)`, `p:set_statistic(key, n)`, `p:inc_statistic(key, n?)` | int, true | Counters by stored key, such as `minecraft:custom/minecraft:jump` or `minecraft:mined/minecraft:stone` |
+| `p:transfer(host, port)` | bool | Moves the client to another server |
+| `p:resource_pack(uuid, url, hash, required?, prompt?)`, `p:remove_resource_pack(uuid?)` | bool | Pushes or pops a pack; nil pops all |
+| `p:border_set(cx, cz, size, warn_blocks?, warn_seconds?)`, `p:border_reset()` | bool | This player's own world border |
+| `p:wake_up()`, `p:swing(offhand?)`, `p:hurt_animation(yaw)` | bool | Animations; swing and hurt reach everyone in the world |
+| `p:look_at(x, y, z, eyes?)` | bool | Turns the client's view toward a point |
+| `p:chat_completions(action, list)` | bool | Custom chat completions: 0 adds, 1 removes, 2 sets |
+| `p:respawn()`, `p:chat(text)`, `p:save_data()` | bool | Respawns a dead player, says something in chat, saves the player record |
+
+## Showing the client something else
+
+These change only what one player sees.
+
+| Call | Does |
+|---|---|
+| `p:sound_at(sound, category, x, y, z, volume, pitch, seed)` | Plays a sound; `category` is `master`, `music`, `record`, `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`, `voice` or `ui` |
+| `p:sound_entity(sound, category, entity_id, volume, pitch, seed)` | A sound at an entity's position |
+| `p:stop_sound(sound?, category?)` | Stops matching sounds; with both nil it stops all |
+| `p:particle_at(name, x, y, z, count, ox, oy, oz, sx, sy, sz, force, randomization, data...)` | A particle; `data` depends on it: block state id, color, dust (rgb, scale), dust transition, spell, number, delay, item id or trail |
+| `p:world_event(id, x, y, z, data)` | A level event |
+| `p:entity_event(entity_id, event)` | An entity event (status byte) |
+| `p:game_event(event, param)` | A raw game event (win game 4, demo 5, elder guardian 10...) |
+| `p:block_change(x, y, z, state_id)` | Shows one block differently |
+| `p:block_damage(x, y, z, stage, entity_id?)` | Cracking stage 0 to 9; -1 clears |
+| `p:sign_text(x, y, z, front, back, color?, glowing?, type?)` | Shows sign text; lines are joined by a newline |
+| `p:open_sign(x, y, z, front?)` | Opens the sign editor |
+| `p:send_equipment(entity_id, slot, snbt)` | Shows an equipment slot differently; slot 0 is the main hand, 7 the saddle, an empty `snbt` clears |
+
+## Stored data
+
+| Call | Returns | Does |
+|---|---|---|
+| `p:known_recipes()`, `p:discover_recipes(list)`, `p:undiscover_recipes(list)`, `p:has_recipe(id)` | list, int, bool | The recipe book |
+| `p:spawn_point()`, `p:set_spawn_point(world, x, y, z, yaw)`, `p:clear_spawn_point()` | list, bool | The respawn point `{ world, x, y, z, yaw }` |
+| `p:last_death()`, `p:set_last_death(dimension, x, y, z)` | list, bool | The recovery compass target |
+| `p:ender_slot(i)`, `p:set_ender_slot(i, snbt)` | string, bool | One ender chest slot as an item compound |
+| `p:post_effects()`, `p:set_post_effects(list)` | list, bool | Shader post effects shown to the player |

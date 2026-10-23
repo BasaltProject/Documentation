@@ -1,0 +1,60 @@
+---
+title: More events
+description: Player, block, world and server events, with their fields and which ones a handler may change.
+---
+
+Fields are set by name on the event. A cancellable event takes `e:cancel()`; a field marked editable may be written by
+the handler. Events are listened to with `on` and `watch` as everywhere else.
+
+```lua
+on("player.kick", function(e)
+  if e.cause == "idle" then e:cancel() end
+end)
+```
+
+## Player
+
+| Event | Notes |
+|---|---|
+| `player.kick` | Cancellable. A session is about to be disconnected. `player_name player_uuid world reason cause`; `reason` is editable plain text; cancelling keeps the player connected |
+| `player.toggle_flight` | Cancellable. The client asked to start or stop flying. `flying`; cancelling resends the abilities |
+| `player.animation` | Cancellable. The client swung its arm. `hand`; cancelling drops the swing and what it would trigger |
+| `player.jump` | Cancellable. The player left the ground moving up. `from_x from_y from_z x y z`; cancelling puts them back |
+| `player.edit_book` | Cancellable. `slot signing title pages`; pages are joined with a form feed; `title`, `pages` and `signing` are editable |
+| `player.exp_change` | Points are about to be given for an orb, after mending. `amount source_id`; `amount` is editable |
+| `player.armor_change` | `slot` (`head`, `chest`, `legs`, `feet`), `old_item`, `new_item` (empty for none) |
+| `player.advancement` | An advancement was completed. `advancement` |
+| `player.resource_pack` | `pack_id status`; status is `accepted`, `declined`, `loaded`, `downloaded`, `failed_download`, `invalid_url`, `failed_reload` or `discarded` |
+| `player.client_options` | The client changed its settings. `locale view_distance chat_colors main_hand skin_parts` |
+| `player.fish` | Cancellable. `state hook_id caught_id exp`; state is `fishing`, `caught_fish`, `caught_entity`, `in_ground` or `reel_in`. Cancelling `fishing` stops the cast and `caught_fish` drops that catch; `exp` is editable |
+| `player.tab_complete` | Cancellable. `buffer completions`; suggestions are joined with newlines and editable |
+| `player.interact_air` | Cancellable. A right click with no block. `item hand` |
+
+Changes to existing events: `player.bed` also fires with `entering = false` when a player gets out of bed;
+`player.login` has an editable `message`, used as the kick reason when a handler cancels without one; `player.interact`
+has a `face` and reports `off_hand` when the off hand clicked; `player.join` and `player.quit` have editable `message`
+(MiniMessage, empty keeps the vanilla line) and `silent` (true drops the line), and the join event runs before the line
+is broadcast; the `x y z` of `player.respawn` are editable.
+
+## Blocks, world and server
+
+| Event | Notes |
+|---|---|
+| `block.burn` | Cancellable. Fire is about to burn the block. `world x y z block igniter_x igniter_y igniter_z` |
+| `block.fertilize` | Cancellable. Bone meal on a block; cancelling spends the meal and grows nothing. `player_name player_uuid world x y z block` |
+| `block.from_to` | Cancellable. A fluid is about to spread. `world x y z block to_x to_y to_z face` |
+| `block.physics` | Cancellable. A block is told a neighbour changed. `world x y z block source_block`; only built while listened to |
+| `block.drops` | Cancellable. A player-broken block is about to drop its loot. `player_name player_uuid world x y z block drops`; `drops` is `id\|count` lines and editable (a changed list loses the stacks' data) |
+| `block.break` | Has an editable `drop_items` (default true); false breaks the block without its loot, experience still drops |
+| `world.structure_grow` | Cancellable. A sapling tries to grow a tree on a random tick. `world x y z species player_name` |
+| `world.spawn_change` | `world x y z from_x from_y from_z` |
+| `hanging.place` | Cancellable. An item frame or painting is about to be hung. `player_name player_uuid world x y z entity_type face` |
+| `hanging.break` | Cancellable. A frame or painting is knocked off the wall. `entity_id entity_type world x y z cause remover_id` |
+| `projectile.hit` | Notification. A projectile struck a block (`hit_id` is -1) or an entity. `entity_id entity_type world hit_id x y z` |
+| `server.tick_end` | `tick duration_ms remaining_ms` |
+
+Changes to existing events: `block.ignite` fires for the block fire is about to be laid on, and cancelling spares that
+block; `block.fade` also reports decaying leaves (`block` is a leaves block, `to_block` is air); `block.dispense`
+fires only for dispensers and droppers; `entity.mount` also fires with `mounting = false` when a rider gets off, and
+cancelling keeps the rider on; `world.weather_change` also fires from `/weather`; `world.chunk_load` also fires for
+chunks generated on demand, and `generated` is true only for chunks made during this run.

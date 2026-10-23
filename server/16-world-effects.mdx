@@ -1,0 +1,109 @@
+---
+title: World effects and environment
+description: Sounds, particles, drops, redstone signals, structures, raids, fluids, spawning rules, server settings and unloading worlds.
+---
+
+These are members of the world object, next to the block calls of the world API page. Faces are
+0 to 5 or `down`, `up`, `north`, `south`, `west`, `east`.
+
+## Border, sound and particles
+
+`world.border` is a snapshot `{ center_x, center_z, size, target_size, lerp_ticks, damage_amount, damage_buffer,
+warning_distance, warning_time }`. `world:set_border(settings)` takes any of those fields plus `seconds` for a moving
+size.
+
+```lua
+world:set_border({ size = 200, center_x = 0, center_z = 0, seconds = 30 })
+world:sound("minecraft:block.bell.use", 0, 64, 0, 1, 1, "blocks")
+world:particle({ type = "minecraft:flame", x = 0, y = 65, z = 0, count = 20, offset_x = 0.3, offset_y = 0.3,
+                 offset_z = 0.3, speed = 0.01 })
+```
+
+| Call | Does |
+|---|---|
+| `world:sound(sound, x, y, z, volume?, pitch?, category?, seed?)` | Plays a sound to the players in range (16 blocks scaled by the volume). Categories: `master`, `music`, `records`, `weather`, `blocks`, `hostile`, `neutral`, `players`, `ambient`, `voice` |
+| `world:particle(spec)` | `spec` is `{ type, x, y, z, count, offset_x, offset_y, offset_z, speed or speed_x/y/z, randomization, force, data, item, player }`. `randomization` is 0 to 2, `item` names the stack of an item particle and `player` (a uuid) shows it to that player only |
+| `world:level_event(type, x, y, z, data?, global?)` | A level event by number (2001 block break with the state id, 1010 record, 2007 splash colour...); non-global reaches players within 64 blocks |
+| `world:block_event(x, y, z, first, second)` | Sends a block event (chest lid, bell, note) to the players within 64 blocks |
+
+`data` in a particle spec is read by the particle's own options in order: block state id; argb colour; argb and
+power; rgb and scale; two rgb and scale; target x y z, rgb and duration (trail); value; delay ticks; block count;
+target block x y z and arrival ticks (vibration).
+
+## Blocks
+
+| Call | Does |
+|---|---|
+| `world:drops(x, y, z, tool_item?, enchantments?)` | What the block would drop, as `{ { item, count, components } }`, without spawning it; `enchantments` is `{ ["minecraft:fortune"] = 3 }` |
+| `world:break_block(x, y, z, tool_item?, enchantments?, drops?)` | Breaks the block like a player, with drops and neighbour updates |
+| `world:bone_meal(x, y, z)` | Spends bone meal on the block; false when nothing there grows |
+| `world:signal(x, y, z, face, direct?)` | The redstone signal, 0 to 15, the block gives toward the face |
+| `world:survives(x, y, z, state)` | Whether the state would stand at the position |
+| `world:grow_tree(x, y, z, sapling_block)` | Grows the tree of a sapling block put at the position |
+| `world:fluid(x, y, z)` | `{ fluid, source, level, falling }`; `fluid` is `empty`, `water` or `lava` |
+
+Four helpers on `worlds` read block facts:
+
+| Call | Gives |
+|---|---|
+| `worlds.block_sounds(state)` | `{ volume, pitch, break, step, place, hit, fall }` with namespaced ids, or nil |
+| `worlds.tool_facts(item, state)` | `{ correct_for_drops, mining_speed }` for an item (empty string for a hand), or nil |
+| `worlds.transform_state(state, rotation, mirror)` | The state after a mirror (0 none, 1 left-right, 2 front-back) and quarter turns clockwise (0 to 3), as structure templates apply them |
+| `worlds.game_rules()` | Each game rule name to `{ type, default }` |
+
+## Chunks, weather and counts
+
+| Member | Does |
+|---|---|
+| `world.player_count`, `world.block_entity_count` | Players in the world and loaded block entities |
+| `world.view_distance` | Readable and writable; applies as players join or change world |
+| `world.sea_level` | Read only |
+| `world.forced_chunks`, `world:force_chunk(cx, cz, forced?)` | The list `{ { x, z } }` and a way to change it |
+| `world.weather_times`, `world:set_weather_times{ rain, thunder, clear }` | Ticks left of each weather |
+| `world:inhabited_time(cx, cz, set?)` | Ticks players stood in the loaded chunk |
+| `world:lightning_target(x, z)` | Where a strike near the column lands, a rod first |
+| `world:game_event(event, x, y, z, source_uuid?)` | Raises a game event that sculk sensors hear |
+
+## Structures, raids and points of interest
+
+```lua
+for _, s in ipairs(world:structures(0, 0)) do
+  log.info(s.structure .. " " .. s.bounds.minx)
+end
+```
+
+| Call | Gives |
+|---|---|
+| `world:structures(cx, cz)` | `{ { structure, chunk_x, chunk_z, bounds, pieces } }`; `bounds` is `{ minx, miny, minz, maxx, maxy, maxz }` and `pieces` is a list of bounds |
+| `world:raids()` | `{ { id, started, ticks_active, omen_level, status, groups_spawned, total_groups, total_health, center, heroes, raiders } }` |
+| `world:set_raid(id, { omen_level, total_groups })` | Changes a raid; returns whether it exists |
+| `world:pois(x, y, z, radius, types?, occupancy?)` | `{ { type, x, y, z, free_tickets } }`; `occupancy` is `free`, `taken` or `any` |
+
+## Spawning rules
+
+`world.spawn_rules` is `{ limits, ticks_per, allow_monsters, allow_animals }` and holds only what a plugin changed.
+`world:set_spawn_rules{ ... }` takes the same fields; a negative value restores vanilla. Categories are `monster`,
+`creature`, `ambient`, `axolotls`, `underground_water_creature`, `water_creature`, `water_ambient` and `misc`.
+
+```lua
+world:set_spawn_rules{ limits = { monster = 20 }, allow_animals = false }
+```
+
+Changing these departs from vanilla spawning for as long as the values are set.
+
+## Server settings
+
+`settings` reads a few server settings as text. `settings.keys()` lists them: `motd`, `max_players`, `port`, `bind`,
+`online_mode`, `enforce_secure_profile`, `whitelist`, `gamemode`, `idle_timeout`, `view_distance`,
+`simulation_distance` and `bedrock_port`.
+
+| Call | Does |
+|---|---|
+| `settings.get(key)` | The setting as text (booleans are `true` or `false`), or nil |
+| `settings.set(key, value)` | Writable while running: `motd` and `max_players` (what the server list shows; the cap is not enforced at login), `idle_timeout` in minutes and `gamemode` (the default of every world). False for anything else |
+
+## Unloading worlds
+
+`worlds.unload(world, save?)` takes a world that holds no player out of play: it stops being listed and ticked, and
+its regions are saved unless `save` is `false`. It returns false for the default world or one with players.
+`worlds.create` with the name of an unloaded world brings it back as it was.
