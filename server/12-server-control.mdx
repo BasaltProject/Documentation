@@ -56,7 +56,17 @@ local drops = loot.roll("minecraft:chests/simple_dungeon", { world = "world", x 
 
 The context takes `world`, `x`, `y`, `z`, `luck`, `seed` (0 rolls without a fixed seed) and `looter` (a uuid).
 
+`loot.enchant{...}` returns `{ item, count, components }`, or nil, for a stack with enchantments rolled as the
+`enchant_with_levels` loot function does. It takes `item`, `count` (1), `components` (SNBT), `levels`, `options` (an
+enchantment id, or a tag with a leading `#`, `#minecraft:in_enchanting_table` by default), `seed` and `world`.
+
+```lua
+local made = loot.enchant{ item = "minecraft:diamond_sword", levels = 30, world = "world" }
+```
+
 ## Maps
 
 `maps.create(world, center_x, center_z, scale)` makes a map and returns its id. `maps.info(id)` returns
 `{ dimension, scale, center_x, center_z, locked }`.
+
+`maps.explorer` makes a map that points at the nearest structure; see [Structures and templates](/docs/server/structures).

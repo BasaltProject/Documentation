@@ -1,0 +1,39 @@
+---
+title: Structures and templates
+description: Read, keep, capture and place structure templates, and find the nearest structure as a map.
+---
+
+Structure templates use the structure file format, a compound with `size`, `palette` or `palettes`, `blocks`,
+`entities` and `DataVersion`. They go to and from Lua as SNBT.
+
+## Templates
+
+| Call | Does |
+|---|---|
+| `structures.ids()` | Every template id: the game data ones, the generated folder and those kept in memory |
+| `structures.read(id)` | The template as SNBT, or nil |
+| `structures.write(id, snbt, to_disk?)` | Keeps a template under the id and returns whether it worked; `to_disk` also saves it in the world's generated folder |
+| `structures.remove(id, from_disk?)` | Forgets a template and returns whether it worked; `from_disk` deletes its generated file |
+| `structures.file(id)` | The generated file path an id is saved to |
+| `structures.capture{...}` | The blocks of a box as a template, or nil |
+| `structures.place(snbt, {...})` | Places a template and returns whether it worked; the loaded chunks it covers change |
+
+`structures.capture` takes `world`, `x`, `y`, `z`, `size_x`, `size_y`, `size_z` and `entities` (true also saves the
+entities in the box). `structures.place` takes `world`, `x`, `y`, `z`, `rotation` (0 to 3), `mirror` (0 to 2),
+`integrity` (1 places every block), `seed`, `entities` (true by default) and `palette` (-1 draws one).
+
+```lua
+local igloo = structures.read("minecraft:igloo/top")
+structures.place(igloo, { world = "world", x = 0, y = 70, z = 0, rotation = 1 })
+```
+
+## Finding structures as a map
+
+`maps.explorer{...}` returns the item components, as SNBT, of a filled map that points at the nearest of the
+structures, or nil when none is found. It takes `world`, `x`, `y`, `z`, `destination` (a list of structure ids, or tags
+with a leading `#`), `decoration`, `zoom`, `radius` and `skip_existing`.
+
+```lua
+local components = maps.explorer{ world = "world", x = 0, z = 0,
+  destination = { "minecraft:buried_treasure" }, decoration = "minecraft:red_x" }
+```

@@ -101,8 +101,10 @@ clearing the slot. Slots are `mainhand`, `offhand`, `feet`, `legs`, `chest`, `he
 
 `e:nbt(path?)` returns the whole entity NBT, or the compound at a dotted path. `e:nbt_value(path)` returns one scalar.
 `e:nbt_set(path, type, value)` writes into the extra data (`type` is `bool`, `byte`, `short`, `int`, `long`, `float`,
-`double` or `string`) and `e:merge_nbt(nbt)` merges a compound: live fields are updated and the rest is kept as extra
-data.
+`double`, `string`, `uuid` or `pos`) and `e:merge_nbt(nbt)` merges a compound: live fields are updated and the rest is kept as extra
+data. A `uuid` value is a uuid string, saved as four ints; a `pos` value is `"x,y,z"`, saved as three ints.
+`e:call("nbt_remove", path)` removes a key at a dotted path and returns whether it did. Every change to the saved data
+is sent again to the players who can see the entity, and a bee takes its saved fields back into its live state.
 
 ## World calls
 

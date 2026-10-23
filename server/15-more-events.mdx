@@ -1,6 +1,6 @@
 ---
 title: More events
-description: Player, block, world and server events, with their fields and which ones a handler may change.
+description: Player, block, entity, world, raid and server events, with their fields and which ones a handler may change.
 ---
 
 Fields are set by name on the event. A cancellable event takes `e:cancel()`; a field marked editable may be written by
@@ -58,3 +58,80 @@ block; `block.fade` also reports decaying leaves (`block` is a leaves block, `to
 fires only for dispensers and droppers; `entity.mount` also fires with `mounting = false` when a rider gets off, and
 cancelling keeps the rider on; `world.weather_change` also fires from `/weather`; `world.chunk_load` also fires for
 chunks generated on demand, and `generated` is true only for chunks made during this run.
+
+## Block events
+
+| Event | Notes |
+|---|---|
+| `block.note_play` | Cancellable. A note block is about to sound, tuned, punched or by redstone; cancelling mutes it. `world x y z instrument note` |
+| `block.sponge_absorb` | Cancellable. A sponge drained water; cancelling puts every drained block back. `world x y z blocks`; `blocks` is `x,y,z` lines |
+| `block.compost` | Cancellable. A player feeds a composter. `player_name player_uuid world x y z item raises`; `raises` is approximate (true for level 0 or a 100% item) |
+| `block.redstone` | A redstone wire changed power; lamps, torches and repeaters do not fire it. `world x y z block old_current new_current`; `new_current` is editable |
+| `block.tnt_prime` | Cancellable. TNT is about to light. `world x y z reason player_name`; `reason` is `item`, `redstone`, `projectile` or `dispenser`. Cancelling keeps the TNT; explosion chains and breaking unstable TNT are not hooked |
+| `block.moisture_change` | Cancellable. Farmland got wetter or drier (turning to dirt is not reported). `world x y z moisture` |
+| `block.bell_ring` | Cancellable. A player rang a bell; redstone and projectiles do not fire it. `player_name player_uuid world x y z direction` |
+| `block.crafter_craft` | Cancellable. A crafter is about to craft. `world x y z result count`; `result` and `count` are editable |
+| `block.can_build` | Runs for every player placement after the replaceable check. `player_name player_uuid world x y z block buildable`; `buildable` is editable |
+| `block.brew_start` | A brewing stand started. `world x y z source total_time` |
+| `block.brew` | Cancellable. A brew finished. `world x y z fuel results`; cancelling keeps the bottles and the ingredient |
+
+## Entity events
+
+| Event | Notes |
+|---|---|
+| `entity.potion_splash` | Cancellable. A thrown splash potion landed. `entity_id entity_type world x y z effect affected`; `affected` is `id\|intensity` lines and editable |
+| `entity.exp_bottle` | A bottle o' enchanting broke. `entity_id entity_type world x y z experience show_effect`; `experience` is editable |
+| `item.merge` | Cancellable. Two dropped stacks are about to merge. `world x y z entity_id item count source_id source_count`; `entity_id` is the stack that stays |
+| `item.despawn` | Cancellable. A dropped item reached its age limit; cancelling restarts the age. `world x y z entity_id item count` |
+| `entity.change_block` | Cancellable. `entity_id entity_type world x y z block to_block cause`; `cause` is `fall` (a falling block landed), `eat` (a sheep ate grass) or `trail` (a snow golem) |
+| `entity.teleport` | Cancellable. Only endermen fire it. `entity_id entity_type world x y z to_x to_y to_z cause` |
+| `entity.unleash` | A lead was cut. `entity_id entity_type world x y z reason drop`; `reason` is `distance`, `holder_gone`, `unknown` or `player` |
+| `player.leash` | Cancellable. A player is about to leash a mob. `entity_id entity_type world x y z player_name player_uuid holder_id` |
+| `player.unleash` | Cancellable. A player is about to take a lead off. `entity_id entity_type world x y z player_name player_uuid` |
+| `entity.toggle_glide` | Cancellable. `entity_id entity_type world x y z gliding` |
+| `entity.toggle_swim` | Cancellable. `entity_id entity_type world x y z swimming` |
+| `entity.air_change` | Cancellable. `entity_id entity_type world x y z amount`; `amount` is editable and only players are changed by it |
+| `entity.orb_merge` | Cancellable. Two experience orbs are about to merge. `entity_id entity_type world x y z source_id` |
+| `entity.transform` | Cancellable. Any mob conversion. `entity_id entity_type world x y z to_type` |
+| `entity.split` | Cancellable. A slime died and splits. `entity_id entity_type world x y z count`; `count` is editable |
+| `entity.piglin_barter` | Cancellable. `entity_id entity_type world x y z outcome`; `outcome` is `id\|count` lines and editable |
+| `entity.firework_explode` | Cancellable. `entity_id entity_type world x y z` |
+| `entity.enter_block` | Cancellable. A bee is entering a hive. `entity_id entity_type world x y z block_x block_y block_z` |
+| `entity.portal_enter` | A player started standing in a nether portal. `entity_id entity_type world x y z kind` |
+| `vehicle.move` | A vehicle moved. `entity_id entity_type world x y z from_x from_y from_z` |
+| `vehicle.entity_collision` | Cancellable. A minecart pushes or picks up an entity. `entity_id entity_type world x y z other_id` |
+
+## Player events
+
+| Event | Notes |
+|---|---|
+| `player.statistic` | Cancellable. Every counter except the clock ones. `player_name player_uuid world statistic previous value` |
+| `player.recipe_discover` | Cancellable. `player_name player_uuid world recipe` |
+| `player.recipe_book_click` | Cancellable. `player_name player_uuid world recipe make_all` |
+| `player.riptide` | A trident riptide started. `player_name player_uuid world item strength` |
+| `player.velocity` | Cancellable. Damage knockback and shield shoves. `player_name player_uuid world vx vy vz`; the three are editable |
+| `player.command_send` | The command list sent to the client. `player_name player_uuid world commands`; `commands` is the root names joined by newlines and editable |
+| `command.unknown` | The player ran a command that does not exist. `player_name player_uuid world command message silent`; `message` (MiniMessage) and `silent` are editable |
+| `player.interact_entity_at` | Cancellable. A click on an entity with the point hit. `player_name player_uuid world entity_id entity_type hand x y z` |
+| `player.take_lectern_book` | Cancellable. `player_name player_uuid world x y z` |
+| `player.lectern_page` | Cancellable. `player_name player_uuid world x y z old_page new_page` |
+| `player.pickup_experience` | Cancellable. `player_name player_uuid world orb_id experience` |
+| `player.pickup_arrow` | Cancellable. `player_name player_uuid world entity_id entity_type` |
+| `inventory.furnace_extract` | A player took the output of a furnace. `player_name player_uuid world x y z item amount experience`; `experience` is editable |
+| `inventory.creative` | Cancellable. A creative slot was set. `player_name player_uuid world slot item count`; `item` and `count` are editable |
+
+`player.interact_entity` now also fires with `action = "interact"` on every right click, and honours the hand.
+`entity.spawn` also fires with `reason = "spawner"` for mob spawners and cancelling is honoured.
+`inventory.trade` and `entity.add` also fire for trade selection and vehicle creation (cancelling `entity.add` has no effect).
+
+## World and raid events
+
+| Event | Notes |
+|---|---|
+| `world.game_event` | Cancellable. Every vibration emitted; cancelling drops it. `world x y z event entity_uuid` |
+| `world.portal_create` | Cancellable. Only lighting a nether portal. `world reason blocks` |
+| `world.unload` | Cancellable. `world` |
+| `world.border_bounds` | Cancellable. Only `/worldborder`. `world old_size new_size duration_ms` |
+| `world.border_center` | Cancellable. Only `/worldborder`. `world old_x old_z new_x new_z` |
+| `raid.trigger` | Cancellable. Only new raids. `player_name player_uuid world x y z` |
+| `raid.wave` | A wave started. `world x y z wave raiders leader_id` |
