@@ -1,0 +1,134 @@
+---
+title: Entities from Lua
+description: Properties, effects, attributes, equipment, movement and the events of mobs, projectiles and vehicles.
+---
+
+An entity object is what `world:entities()`, `world:entity(id)`, the `entity` field of an event and `world:spawn(...)`
+give you. Players answer to the same object through `world:entity(player_entity_id)`, for the subset that applies to
+them. Dropped items (`minecraft:item`) are listed by `world:entities()` too and answer to `nbt`, `nbt_value`,
+`nbt_set`, `merge_nbt`, `push`, `teleport` and `velocity`.
+
+```lua
+local zombie = world:spawn_as("minecraft:zombie", 0, 64, 0, 90, "plugin")
+zombie.max_health = 40
+zombie.health = 40
+zombie:add_effect("minecraft:speed", 600, 1)
+zombie:set_equipment("head", helmet_nbt)
+zombie:move_to(10, 64, 10, 1.2)
+```
+
+## Properties
+
+Read them as fields; the ones marked rw can be assigned.
+
+| Field | Type | Access | Meaning |
+|---|---|---|---|
+| `health`, `max_health`, `absorption` | number | rw | Health is clamped to 0 to `max_health` (use `kill` to die); the `max_health` setter changes the base value |
+| `fire_ticks`, `frozen_ticks`, `air` | integer | rw | Ticks on fire, `TicksFrozen`, air supply |
+| `max_air` | integer | r | 300, or 4800 for dolphins |
+| `fall_distance` | number | rw | Accumulated fall distance |
+| `no_gravity`, `invulnerable`, `glowing`, `silent`, `invisible` | boolean | rw | The vanilla flags |
+| `custom_name`, `custom_name_visible` | string or nil, boolean | rw | Plain custom name; nil or empty clears it |
+| `persistent` | boolean | rw | Never despawns |
+| `ticks_lived` | integer | rw | Ticks since creation |
+| `tags` | list of strings | rw | Scoreboard tags; assigning a table replaces them all |
+| `vehicle`, `passengers` | integer, list | r | Id of what it rides (-1 for none) and the ids of its riders |
+| `no_ai`, `can_pick_up_loot`, `left_handed` | boolean | rw | Mob switches |
+| `target` | integer | rw | Id of the attack target, -1 for none |
+| `last_damage`, `no_damage_ticks` | number, integer | rw | The invulnerability window compares against them |
+| `last_damage_cause`, `last_hurt_by_player` | string, string or nil | r | Damage type of the last hit, and the uuid of the player that hurt it recently |
+| `arrows_in_body` | integer | rw | Stuck arrows |
+| `sleeping` | boolean | r | Asleep |
+| `leash_holder` | integer | rw | Id holding the lead, -1 for none |
+| `breed_age`, `love_ticks`, `love_cause` | integer, integer, string or nil | rw | Growth age (negative is a baby), in love ticks, uuid that fed it |
+| `owner`, `sitting`, `tamed_horse` | string or nil, boolean, boolean | rw | Taming state |
+| `cube_size` | integer | rw | Slime and magma cube size; health and attributes follow |
+| `fuse`, `powered`, `swell` | integer, boolean, integer | rw | Primed tnt fuse, charged creeper, creeper fuse progress |
+| `profession`, `villager_level`, `villager_experience` | string, integer, integer | rw | Villager state; level is 1 to 5 |
+| `owner_id`, `critical`, `arrow_pickup`, `pierce_level`, `explosion_power` | mixed | rw | Projectile state; `arrow_pickup` is 0 disallowed, 1 allowed, 2 creative only |
+| `category` | string | r | Mob category: `monster`, `creature`, `ambient`, `water_creature`... |
+| `display_text` | string or nil | rw | Text of a text display, in MiniMessage; clients that already see it get the change |
+| `object_data` | integer | rw | Spawn data, such as the block state id of a falling block |
+| `bolt_visual_only`, `bolt_life`, `bolt_flashes` | boolean, integer, integer | rw | Lightning bolt state |
+
+`e:get(name)` and `e:set(name, value)` reach any property by name, including the ones that are not fields:
+`loot_table` (string) and `loot_seed` (integer). `e:call(operation, args...)` runs an operation by name, such as
+`is_breed_item(item)`, which tells whether an item is the animal's breeding food.
+
+## Damage and death
+
+```lua
+e:damage(6, "minecraft:magic", attacker.id)  -- through armour, the invulnerability window and events
+e:kill()                                     -- the death sequence
+e:knockback(0.5, attacker.x, attacker.z)     -- away from (x, z)
+e:push(0, 1, 0)                              -- adds to the velocity
+```
+
+`damage(amount, cause?, attacker_id?)` takes a vanilla damage type path (`generic` by default). All of them return
+whether they did something.
+
+## Effects and attributes
+
+| Call | Returns |
+|---|---|
+| `e:add_effect(effect, ticks, amplifier, ambient?, particles?, icon?)` | boolean; `-1` ticks is infinite |
+| `e:remove_effect(effect)`, `e:clear_effects()`, `e:has_effect(effect)` | boolean |
+| `e:effects()` | List of `{ effect, duration, amplifier, ambient, particles, icon }`, values as strings |
+| `e:attribute(id)`, `e:attribute_base(id)`, `e:attribute_default(id)` | Value with modifiers, base value, default for the type |
+| `e:set_attribute_base(id, value)`, `e:has_attribute(id)` | boolean |
+| `e:attribute_modifiers(id)` | List of `{ id, amount, operation }` |
+| `e:add_attribute_modifier(attribute, id, amount, operation)` | boolean; operation is `add_value`, `add_multiplied_base` or `add_multiplied_total` |
+| `e:remove_attribute_modifier(attribute, id)` | boolean |
+
+## Equipment and riding
+
+`e:equipment(slot)` returns the stack as NBT bytes (or nil) and `e:set_equipment(slot, stack_nbt)` writes it, nil
+clearing the slot. Slots are `mainhand`, `offhand`, `feet`, `legs`, `chest`, `head`, `body` and `saddle`.
+`e:drop_chance(slot)` and `e:set_drop_chance(slot, chance)` read and set the chance it drops.
+
+`e:mount(vehicle_id)` rides another entity, `e:dismount()` gets off and `e:eject()` throws every rider off.
+
+## Movement of mobs
+
+| Call | Does |
+|---|---|
+| `e:look_at(x, y, z, yaw_speed?, pitch_speed?)` | Turns the head towards a point, through the mob look control |
+| `e:move_to(x, y, z, speed?)` | Starts walking a path to the point; `speed` is a modifier, 1.0 by default |
+| `e:can_reach(x, y, z)` | Whether a path exists |
+| `e:stop_path()`, `e:has_path()` | Stops walking, tells whether a path is being followed |
+
+## Entity NBT
+
+`e:nbt(path?)` returns the whole entity NBT, or the compound at a dotted path. `e:nbt_value(path)` returns one scalar.
+`e:nbt_set(path, type, value)` writes into the extra data (`type` is `bool`, `byte`, `short`, `int`, `long`, `float`,
+`double` or `string`) and `e:merge_nbt(nbt)` merges a compound: live fields are updated and the rest is kept as extra
+data.
+
+## World calls
+
+| Call | Does |
+|---|---|
+| `w:spawn_as(type, x, y, z, yaw?, reason?)` | Spawns with a facing and the reason the spawn event reports (`plugin` by default) |
+| `w:drop_item(item, x, y, z, vx?, vy?, vz?)` | Puts an item on the ground; `item` is as in `inventory:set` |
+| `w:explode(x, y, z, power, break_blocks?, source_id?)` | An explosion; blocks are spared when `break_blocks` is `false` |
+
+## Events
+
+| Event | Notes |
+|---|---|
+| `entity.damage` | Fields `attacker_id` (the cause, -1 for none) and `direct_id` (the projectile or mob that touched it; `attacker_id` is the owner behind it) |
+| `entity.death` | Field `killer_id` |
+| `entity.target` | Cancellable. A mob picked a new target. `entity_id entity_type world target_id previous_id reason`; `target_id` is editable, -1 clears |
+| `entity.drops` | Editable. A mob died and its loot is about to drop. `entity_id entity_type world x y z drops exp killer_id`; `drops` is one `item\|count` per line, `exp` is editable |
+| `entity.resurrect` | Cancellable. A totem of undying is about to be used. `entity_id entity_type world hand` |
+| `entity.add` | Notification. A mob was created through the spawner path. `entity_id entity_type world x y z reason` |
+| `entity.potion_effect` | Cancellable. A mob is about to receive an effect. `entity_id entity_type world effect amplifier duration action cause` |
+| `entity.launch` | Cancellable. A projectile appeared (seen the tick after it spawns; a refusal removes it). `entity_id entity_type world x y z shooter_id` |
+| `vehicle.damage` | Cancellable, `amount` editable. A boat or minecart was hit. `entity_id entity_type world amount attacker_id` |
+| `vehicle.destroy` | Cancellable. A boat or minecart is about to break. `entity_id entity_type world attacker_id` |
+
+```lua
+on("entity.drops", function(e)
+  e.exp = e.exp * 2
+end)
+```

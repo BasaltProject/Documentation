@@ -1,0 +1,33 @@
+---
+title: Access and permissions
+description: Offline players, operators, the whitelist and bans, and the permissions a plugin grants or denies.
+---
+
+## Access
+
+The global `access` answers about players whether or not they are online. Each call takes a player, a uuid or a name.
+
+| Call | Returns |
+|---|---|
+| `access.is_banned(who)` | Whether the profile is banned |
+| `access.is_whitelisted(who)` | Whether it is on the whitelist |
+| `access.is_operator(who)` | Whether it belongs to the operator group |
+| `access.known(name)` | `{ uuid, name, first_seen, last_seen }`, or `nil` when the server never saw it |
+
+```lua
+if access.is_banned("Steve") then log.info("Steve is banned") end
+```
+
+## Granting and denying permissions
+
+A plugin can grant or deny a permission to one player on top of their group, for the session. The source is the
+calling plugin.
+
+```lua
+p:grant("myplugin.fly")
+p:deny("essentials.spawn")
+p:revoke("myplugin.fly")   -- drops this plugin's entry
+```
+
+An exact node beats a wildcard (`a.b.*`, `*`), the longest wildcard wins, and a denial wins a tie. The server's own
+checks (`player:may(node)`, command permissions and permission levels) consult these entries before the group.

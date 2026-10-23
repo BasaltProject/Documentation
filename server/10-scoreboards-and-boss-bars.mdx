@@ -1,0 +1,55 @@
+---
+title: Scoreboards and boss bars
+description: Private scoreboards per player, teams, and boss bars that are kept or last as long as the server runs.
+---
+
+## Scoreboards
+
+A board is an integer handle. Board 0 is the server board, the one `/scoreboard` and `/team` edit, and players see it
+from the moment they join. `scoreboards.create()` makes a board of your own and `scoreboards.show(player, board)`
+draws it for that player instead of the one they had. Text arguments are MiniMessage.
+
+```lua
+local board = scoreboards.create()
+scoreboards.objective_add(board, "kills", "dummy", "<red>Kills")
+scoreboards.display(board, "sidebar", "kills")
+scoreboards.set_score(board, "Steve", "kills", 3)
+scoreboards.show(p, board)
+```
+
+| Call | Does |
+|---|---|
+| `scoreboards.main()`, `scoreboards.create()`, `scoreboards.release(board)` | The server board, a new board, drop a board |
+| `scoreboards.objectives(board)` | Objective names |
+| `scoreboards.objective_add(board, name, criterion?, title?, hearts?)`, `scoreboards.objective_remove(board, name)` | Add and remove an objective |
+| `scoreboards.display(board, slot, name\|false)` | Shows an objective in a slot: `list`, `sidebar`, `below_name` or `sidebar.team.<color>`. With a nil third argument it returns the objective shown |
+| `scoreboards.score(board, entry, objective)` | A score |
+| `scoreboards.set_score(board, entry, objective, value)` | Writes it |
+| `scoreboards.reset_score(board, entry, objective?)` | Clears one objective, or all when omitted |
+| `scoreboards.entries(board)`, `scoreboards.teams(board)` | Entries and team names |
+| `scoreboards.team_add(board, name)`, `scoreboards.team_remove(board, name)` | Teams |
+| `scoreboards.team_set(board, name, options)` | `display_name`, `prefix`, `suffix`, `color`, `friendly_fire`, `see_invisible`, `name_tags`, `death_messages`, `collision` |
+| `scoreboards.team_join(board, team, entry)`, `scoreboards.team_leave(board, team, entry)` | Membership |
+| `scoreboards.team_of(board, entry)` | The team of an entry |
+| `scoreboards.show(player, board)` | Draws a board for a player; with a nil board it returns the one shown |
+
+## Boss bars
+
+`boss_bars.create` returns an id. A bar created with a `key` is kept: it lives in the same registry as `/bossbar`,
+is saved with the world and keeps its flags. A bar without one lives while the server runs.
+
+```lua
+local id = boss_bars.create{ title = "<red>Dragon", color = "red", style = "progress", progress = 0.5,
+                             darken_sky = true }
+boss_bars.add_player(id, p)
+boss_bars.update(id, { progress = 0.25 })
+```
+
+| Call | Does |
+|---|---|
+| `boss_bars.create{ title, color, style, progress, key, darken_sky, boss_music, fog, visible }` | Makes a bar and returns its id |
+| `boss_bars.update(id, fields)` | Changes the same fields |
+| `boss_bars.remove(id)` | Removes it |
+| `boss_bars.add_player(id, player)`, `boss_bars.remove_player(id, player)` | Who sees it |
+| `boss_bars.players(id)` | The players who see it |
+| `boss_bars.kept()` | The kept bars |

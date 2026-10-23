@@ -1,0 +1,62 @@
+---
+title: Server control
+description: The tick rate, server links, datapacks, advancements, loot tables and maps.
+---
+
+## Tick
+
+`tick` is the machinery behind `/tick`.
+
+| Call | Does |
+|---|---|
+| `tick.rate()`, `tick.set_rate(rate)` | Reads or sets the tick rate |
+| `tick.frozen(frozen?)` | With no argument reads whether ticking is frozen; with a boolean sets it |
+| `tick.step(n)` | Runs `n` ticks while frozen |
+| `tick.sprint(n)` | Runs `n` ticks as fast as possible; `tick.stop_sprint()` ends it |
+| `tick.pace()` | `{ tps_1m, tps_5m, tps_15m, mean_tick_ms }` |
+
+## Server links
+
+The links in the client's pause menu. Clients read the list when they log in.
+
+```lua
+server_links.set({
+  { kind = "website", url = "https://example.org" },
+  { label = '{"text":"Rules"}', url = "https://example.org/rules" },
+})
+```
+
+`server_links.list()` returns `{ { kind, url }, ... }`. A kind is `bug_report`, `community_guidelines`, `support`,
+`status`, `feedback`, `community`, `website`, `forums`, `news` or `announcements`; a link without a kind carries a
+JSON `label`.
+
+## Datapacks
+
+`datapacks.list()` returns `{ id, enabled, required, compatibility, source }` for each pack and `datapacks.refresh()`
+rescans the folder. Enabling and disabling go through the `/datapack` command.
+
+## Advancements
+
+| Call | Returns |
+|---|---|
+| `advancements.ids()` | Every advancement id |
+| `advancements.info(id)` | `{ id, parent, root, criteria, children, frame, icon }` |
+| `advancements.grant(player, id, criterion)` | Grants a criterion, with the toast, announcement and rewards of `/advancement grant` |
+| `advancements.revoke(player, id, criterion)` | Takes it back |
+| `advancements.progress(player, id)` | `{ [criterion] = obtained_ms }` |
+
+## Loot
+
+`loot.tables()` lists the loot table ids. `loot.roll(table, context)` rolls one and returns
+`{ { item, count, components }, ... }`, with `components` as SNBT.
+
+```lua
+local drops = loot.roll("minecraft:chests/simple_dungeon", { world = "world", x = 0, y = 64, z = 0, luck = 1 })
+```
+
+The context takes `world`, `x`, `y`, `z`, `luck`, `seed` (0 rolls without a fixed seed) and `looter` (a uuid).
+
+## Maps
+
+`maps.create(world, center_x, center_z, scale)` makes a map and returns its id. `maps.info(id)` returns
+`{ dimension, scale, center_x, center_z, locked }`.
