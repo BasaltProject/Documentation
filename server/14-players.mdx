@@ -44,6 +44,8 @@ p:sound_at("minecraft:entity.player.levelup", "player", p.x, p.y, p.z, 1, 1, 0)
 | `slot_limit` | int | The most one inventory slot holds, 1 to 99 (default 99); it caps pickups, merges, quick move and cursor stacking, and an item's own limit still applies |
 | `frozen_ticks`, `freeze_locked` | int, bool | Powder snow freezes players: +1 a tick inside, -2 outside, 140 is fully frozen (1 damage every 40 ticks); leather armour and spectators are immune, and `freeze_locked` stops the count either way |
 
+Players take cactus, fire and magma floor damage as in vanilla. A game mode change reports its `cause` to `player.gamemode_change`.
+
 ## Tab list, time and weather
 
 | Property | Type | Meaning |

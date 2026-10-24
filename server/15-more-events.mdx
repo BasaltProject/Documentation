@@ -135,3 +135,28 @@ chunks generated on demand, and `generated` is true only for chunks made during 
 | `world.border_center` | Cancellable. Only `/worldborder`. `world old_x old_z new_x new_z` |
 | `raid.trigger` | Cancellable. Only new raids. `player_name player_uuid world x y z` |
 | `raid.wave` | A wave started. `world x y z wave raiders leader_id` |
+
+## Changes to existing events
+
+- `world.save` fires on every save (`/save-all` and autosave), not only at shutdown. `world.lightning` fires for every bolt
+  (summoned, trident or plugin), and cancelling removes it. `world.time_skip` names the world, not the clock.
+  `world.chunk_load` has `generated` true for chunks the generation pipeline finished.
+- `player.effect` also fires for `/effect give` on players. `player.gamemode_change` has a `cause` (`command`, `plugin`,
+  `hardcore_death` or `unknown`). `player.recipe_discover` also fires for `/recipe give`. `player.pickup_arrow` only fires
+  for an arrow the player can take. `player.armor_change` reports the right `slot`.
+- `player.death` has editable `drops` (SNBT items, one per line), `exp`, `keep_inventory` and `keep_level`, and
+  `show_messages`. The server drops the inventory (vanishing curse items are destroyed) and `min(level * 7, 100)`
+  experience unless `keep_inventory` is on.
+- `player.food_change` has `item` (empty for hunger) and fires when a player eats; cancelling keeps food and saturation.
+- `block.damage` has `face` and `insta_break`, fires in creative too, and cancelling puts the block back.
+  `block.dispense` has the `item` being shot and `face`; cancelling stops the shot.
+- `entity.heal` has `fast_regen`, and `cause` is `regeneration`, `satiated`, `magic` or `magic_regen`. `entity.breed` has
+  `breeder` and an editable `experience`; cancelling resets the love of both parents and spawns nothing.
+- `item.spawn` has `entity_id`, fires for every dropped item entity, and `cause` is `drop` when a player threw it and
+  `spawn` otherwise; cancelling discards the item.
+- `player.bucket` reports the block the bucket acts on in `x y z`, plus `face`. `inventory.enchant_prepare` and
+  `inventory.enchant` have the `x y z` of the table. `inventory.trade` has the villager in `entity_id` and the window in
+  `container_id`. `entity.portal_enter` reports `kind` `nether` for a player in a Nether portal.
+- `projectile.hit` fires once per thrown projectile. Players can throw snowballs, eggs, experience bottles, wind charges
+  and splash and lingering potions, which raise `entity.launch`, `projectile.hit`, `entity.potion_splash` and
+  `entity.exp_bottle`.

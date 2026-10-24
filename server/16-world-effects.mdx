@@ -65,13 +65,25 @@ Four helpers on `worlds` read block facts:
 | `world:game_event(event, x, y, z, source_uuid?)` | Raises a game event that sculk sensors hear |
 | `world.tickable_block_entity_count` | Loaded block entities that run code every tick (furnaces, hoppers, spawners, beacons, signs...) |
 | `world:random_tick(x, y, z)` | One random tick on that block, as the random tick speed gives; true when a block changed |
-| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) and `hardcore` (0 or 1) |
+| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) `hardcore` (0 or 1), `loot_refill` (0 or 1) and `loot_reloot_seconds` (-1 for never) |
 | `world:fluid_flow(x, y, z)` | The flow vector of the fluid at a block as `{ x, y, z }`, zero when none |
+| `world:sculk_shriek(x, y, z, player_uuid)` | The sculk shrieker at the block tries to shriek for that player, as when they step on it; returns whether it did |
+| `world:sculk_bloom(x, y, z, source_x, source_y, source_z, charge)` | The sculk catalyst blooms and starts a sculk charge of `charge` at the source block; returns whether it did |
+| `world:creaking_heart(action, x, y, z)` | `"spawn"` gives the heart a creaking and answers its uuid; `"resin"` spreads one resin clump and answers its `"x,y,z"`; nil when it cannot |
 | `worlds.block_instrument(state)` | The note block instrument over a state (`harp`, `basedrum`, `bell`, `pling`...), or nil |
 
 A hardcore world keeps its difficulty on hard, tells a logging-in client it is hardcore, and puts a respawning player in
 spectator. Setting `hardcore` to 1 also moves the difficulty to hard. It is saved with the world, and `hardcore = false`
 in `worlds.toml` `[defaults]` or a world's `settings.toml` is the starting value of a world that has none saved.
+
+With `loot_refill` on, loot containers keep their table after the first opening and fill again later; `loot_reloot_seconds`
+is how long a player waits to loot a refilled container again. It is not vanilla, so it is off by default; see
+`worlds.toml` for the `loot-refill*` keys. A container keeps `Paper.LootableData` (`lastFill`, `nextRefill`,
+`numRefills` and `lootedPlayers`, in milliseconds of the real clock). Other block entity data a plugin can use through the
+NBT calls: a ringing bell keeps `Basalt.BellShaking`, `Basalt.BellTicks`, `Basalt.BellResonating` and
+`Basalt.BellResonationTicks`; a campfire takes `Paper.StopCooking` (four ints, 1 for a slot that does not cook); a sculk
+sensor takes `Paper.ListenerRange`; the trial spawner reads `normal_config`, `ominous_config`, `target_cooldown_length` and
+`required_player_range`; raids keep `BukkitValues`.
 
 Players below the world floor minus 64 take 4 damage, creative players included. `void_damage` turns it off per world.
 

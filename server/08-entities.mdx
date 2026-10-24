@@ -60,6 +60,8 @@ Read them as fields; the ones marked rw can be assigned.
 | `hurt_direction` | number | rw | Yaw offset of the last hit |
 | `spawn_reason`, `sound_volume` | string, number | r | Why the mob spawned (`natural`, `plugin`, `event`...) and its voice volume |
 | `move_forward`, `move_sideways`, `move_up` | number | rw | Current movement input of the mob controller |
+| `nav_pass_doors`, `nav_can_float` | boolean | rw | Ground navigation may path through doors (false also stops door opening, true by default), and may cross water at the surface instead of routing around (false by default) |
+| `trading_player` | integer | r | Entity id of the player trading with a villager, -1 for none |
 | `active_slot`, `active_ticks`, `active_used` | integer | r, rw, rw | Hand of an item in use (0 main, 1 off, -1 none), remaining and elapsed ticks |
 
 `e:get(name)` and `e:set(name, value)` reach any property by name, including the ones that are not fields:
@@ -119,7 +121,7 @@ as in vanilla, and a mob without plugin goals pays nothing. Mobs that run on a b
 | `e:remove_goal(key)` | int | Retires every goal with that key, vanilla ones by name (`panic`, `look_at_player`, `bee_enter_hive`...) |
 | `e:remove_goals(flags?)` | int | Retires every goal that locks one of the flags, or all of them when none is given |
 | `e:has_goal(key)` | bool | Whether a live goal with that key exists |
-| `e:goals()` | list | `{ key, priority, running, plugin, flags }` for each goal |
+| `e:goals()` | list | `{ key, priority, running, plugin, usable, flags }` for each goal; `usable` is whether the goal could start (or keep going while it runs) at the selector's last check |
 
 A vanilla goal key is the vanilla goal class name in snake case without `Goal`; the `minecraft:` prefix is optional. A
 running goal that is removed stops on the next AI turn. The `entity.goal` event below drives a plugin goal.
@@ -164,6 +166,14 @@ none), `polar_standing`, `strider_shivering`, `turtle_laying_egg`, `turtle_going
 `boost_time` (pig and strider item boost), `boost_active` (r), `witch_drinking` (r), `witch_use_ticks`, `bat_target`
 (`"x,y,z"` or nil), `guardian_moving` (r) and `cart_detonate` (w, the speed squared a tnt minecart blows up with).
 
+Sulfur cubes have a `fuse` (integer, rw): the ticks left on the lit fuse, -1 when it is not primed. When it runs out the
+cube explodes with power 3, breaking blocks only with `mob_griefing` and requiring `tnt_explodes`. Fire, an explosion,
+flint and steel, a fire charge or a powered position light it, and a cube holding an item shrugs off plain hits. Turtles
+lay eggs, go home and travel in water with the vanilla goals: `has_egg` and `home_pos` are set with `nbt_set` (`"bool"`
+and `"pos"` as `"x,y,z"`). A wandering trader stops drinking its invisibility potion or milk when `Paper.CanDrinkPotionDisabled`
+or `Paper.CanDrinkMilkDisabled` is true. Non-player entities in a nether portal frame travel at once and rest 300 ticks;
+the wither does not unless `wither_portals` is true.
+
 Operations go through `e:call(name, args...)`.
 
 | Call | Returns | Does |
@@ -196,6 +206,8 @@ Operations go through `e:call(name, args...)`.
 | `dragon_parts()` | list | The eight hit boxes as `minx,miny,minz,maxx,maxy,maxz` |
 | `wither_target(head)`, `wither_set_target(head, id)` | int, bool | The targets of the three heads (0 centre, 1 left, 2 right) |
 | `bar_info()`, `bar_set(field, value)`, `bar_players()`, `bar_pin(id, shown)` | list, bool, list, bool | The boss bar of a wither: `{ title json, color, overlay, darken, music, fog, progress, visible }`; `bar_set` takes those names; who sees it; shows it to one player or sends them away |
+| `sulfur_can_explode()` | bool | The cube holds an explosive item (tnt), is alive and its fuse is not lit |
+| `sulfur_prime(imminent)` | bool | Lights the fuse (120 ticks, a short random one when `imminent`); false when it cannot explode or `tnt_explodes` is off |
 | `villager_zombify()` | int | Becomes a zombie villager and returns its id, or -1 |
 | `villager_gossips()` | list | Six values a row: player uuid, then major negative, minor negative, minor positive, major positive, trading |
 | `villager_set_gossip(uuid, type, value)`, `villager_clear_gossips()` | bool | `type` 0 to 4 in the order above |
@@ -250,7 +262,7 @@ is sent again to the players who can see the entity, and a bee takes its saved f
 |---|---|
 | `w:spawn_as(type, x, y, z, yaw?, reason?)` | Spawns with a facing and the reason the spawn event reports (`plugin` by default) |
 | `w:drop_item(item, x, y, z, vx?, vy?, vz?)` | Puts an item on the ground; `item` is as in `inventory:set` |
-| `w:explode(x, y, z, power, break_blocks?, source_id?)` | An explosion; blocks are spared when `break_blocks` is `false` |
+| `w:explode(x, y, z, power, break_blocks?, source_id?, fire?)` | An explosion; blocks are spared when `break_blocks` is `false`, and fires are set when `fire` is `true` |
 
 ## Events
 
@@ -261,6 +273,7 @@ is sent again to the players who can see the entity, and a bee takes its saved f
 | `entity.target` | Cancellable. A mob picked a new target. `entity_id entity_type world target_id previous_id reason`; `target_id` is editable, -1 clears |
 | `entity.drops` | Editable. A mob died and its loot is about to drop. `entity_id entity_type world x y z drops exp killer_id`; `drops` is one `item\|count` per line, `exp` is editable |
 | `entity.goal` | Fires for plugin goals only. `entity_id entity_type world key phase result`; `phase` is `can_use`, `can_continue`, `start`, `stop` or `tick`, and for the first two `result` (a boolean) is editable |
+| `entity.move` | Cancellable. A mob moved during its own tick, never a player (see `player.move`). `entity_id entity_type world from_x from_y from_z x y z from_yaw from_pitch yaw pitch`; cancelling puts the mob back at `from_*`, and it costs nothing while nobody listens |
 | `entity.allied_check` | Editable. A player's sweep attack or mace smash is deciding whom to spare, after the teams said no. `entity_id entity_type world x y z other_id allied`; set `allied` to true to spare `other_id` |
 | `entity.resurrect` | Cancellable. A totem of undying is about to be used. `entity_id entity_type world hand` |
 | `entity.add` | Notification. A mob was created through the spawner path. `entity_id entity_type world x y z reason` |

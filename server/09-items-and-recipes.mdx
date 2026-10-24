@@ -34,6 +34,9 @@ smoking, campfire cooking, stonecutting, smithing and transmute.
 | `recipes.ids()` | Every id: the datapack's first, then the added ones |
 | `recipes.clear()` | Empties the list |
 | `recipes.reset()` | Puts back the datapack's recipes and drops the added ones |
+| `recipes.reset_brewing()` | Drops the brewing recipes a plugin added and brings back the ones the game ships |
+
+`recipes.add` also takes brewing recipes (kind 6 in the recipe compound): `base` is the input bottle and `ingredient` the reagent.
 
 ```lua
 recipes.add("myplugin:ruby_block",

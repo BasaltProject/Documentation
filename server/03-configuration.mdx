@@ -50,6 +50,16 @@ one that did not start.
 `worlds.toml` holds the defaults every world inherits. A single world overrides
 them in `worlds/<name>/settings.toml`, and only the keys it sets.
 
+Loot containers can refill like Paper's. This is not vanilla, so it is off by default:
+
+```toml
+loot-refill = false
+loot-refill-min-seconds = 43200
+loot-refill-max-seconds = 172800
+loot-max-refills = -1
+loot-reloot-seconds = -1
+```
+
 ## Permissions
 
 Groups are native, with names like `basalt.command.gamemode`, wildcards,

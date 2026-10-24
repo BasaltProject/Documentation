@@ -70,6 +70,8 @@ enchantment id, or a tag with a leading `#`, `#minecraft:in_enchanting_table` by
 local made = loot.enchant{ item = "minecraft:diamond_sword", levels = 30, world = "world" }
 ```
 
+Containers refill their loot only when the world turns on `loot-refill` (see the worlds configuration); rolling with `loot.roll` is unaffected.
+
 ## Maps
 
 `maps.create(world, center_x, center_z, scale)` makes a map and returns its id. `maps.info(id)` returns
