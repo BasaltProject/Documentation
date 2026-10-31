@@ -1,0 +1,167 @@
+---
+title: Running behind a proxy
+description: The forwarding schemes the server understands, how to pair it with Basalt Proxy, Velocity or BungeeCord, and how to keep the port safe.
+---
+
+A proxy in front of the server connects on behalf of every player. Without help the server sees one address and one offline UUID, the proxy's. Forwarding is how the proxy tells the server who is really there. Every forwarding mode replaces the login handshake: the proxy authenticates players against Mojang, and this server trusts what the proxy says about them.
+
+That trust is the whole risk. A server that is reachable from the internet with forwarding on and no way to prove who is talking lets anybody claim to be anybody. Read [Choosing a mode](#choosing-a-mode) before you turn one on.
+
+## The forwarding table
+
+All of it is `[network.forwarding]` in `config/server.toml`. Forwarding is off unless you set a mode.
+
+```toml
+[network.forwarding]
+mode = "basalt"
+trusted-keys = ["9b1f...64 hex characters..."]
+backend-id = "lobby"
+```
+
+| Key | Default | Used by | Meaning |
+|---|---|---|---|
+| `mode` | `"none"` | all | `none`, `bungeecord`, `bungeeguard`, `safenet`, `velocity` or `basalt` |
+| `secret` | `""` | `velocity` | The content of the proxy's `forwarding.secret`, not the path to it |
+| `trusted-keys` | `[]` | `basalt` | Public keys, 64 hex characters each, whose signature is accepted |
+| `backend-id` | `""` | `basalt` | The name of this server, 1 to 64 bytes. It is part of what the proxy signs |
+| `session-envelope` | `false` | `basalt` | Offers the proxy to forward each player's original packets so this server translates them, instead of the proxy doing it. Applies when the proxy accepts the offer |
+| `tokens` | `[]` | `bungeeguard`, `safenet` | The tokens or passphrases accepted. More than one so a key can be rotated without restarting everything at once |
+| `property-name` | `"safe_net_passphrase"` | `safenet` | The property SafeNET carries its passphrase in, if you changed `property-name.handshake` on the proxy |
+
+A mode without what it needs is refused at start, naming the file:
+
+| Message | Cause |
+|---|---|
+| `forwarding mode must be one of none, bungeecord, bungeeguard, safenet, velocity, basalt, not "x"` | A misspelled `mode` |
+| `bungeeguard forwarding needs at least one token in tokens` | `tokens` is empty |
+| `safenet forwarding needs at least one passphrase in tokens` | `tokens` is empty |
+| `velocity forwarding needs the proxy's forwarding.secret` | `secret` is empty |
+| `basalt forwarding needs at least one trusted-keys entry` | `trusted-keys` is empty |
+| `basalt forwarding needs a backend-id of 1 to 64 bytes` | `backend-id` is empty or too long |
+| `trusted-keys entries must be 64 hex characters, not "x"` | A malformed key |
+
+## Choosing a mode
+
+| Mode | What proves the proxy is the proxy | Safe on a reachable port |
+|---|---|---|
+| `none` | Nothing is forwarded. The server authenticates its own players | Yes |
+| `bungeecord` | Nothing. The data rides in the handshake | No |
+| `bungeeguard` | A token the proxy injects, which you list in `tokens` | Only as strong as the token's secrecy |
+| `safenet` | A passphrase, in `tokens` | Only as strong as the passphrase's secrecy |
+| `velocity` | An HMAC with the shared `secret`; the signature cannot be forged without it | Yes, while the secret stays secret |
+| `basalt` | A one-time challenge that the proxy answers with an Ed25519 signature | Yes |
+
+The first three give the server a way to be lied to by anyone who can reach the port. `bungeecord` has no secret at all, so with it the port must be unreachable from anywhere but the proxy: bind it to a private interface or firewall it, and enable `ip_forward` on the proxy. The server says so in the log when the mode is on (`bungeecord forwarding carries no secret: anybody who can reach port 25565 can claim to be any player. Firewall it, or use bungeeguard, safenet or velocity instead.`).
+
+Prefer `basalt` between Basalt Proxy and Basalt Server, `velocity` when the proxy is Velocity. Use the others only when the proxy cannot speak those.
+
+<x-docs.callout type="warning" title="Do not leave the port open">
+Whatever the mode, a server that only a proxy should reach should only be reachable by it. Set `bind` under `[network.java]` to `127.0.0.1` when the proxy is on the same machine, or put the backend on a private network. Mode `bungeecord` depends entirely on this.
+</x-docs.callout>
+
+## Basalt Proxy
+
+The two Basalt programs use a scheme built for them. Each login is a challenge and a response:
+
+1. The proxy connects and sends the real handshake, host and port included.
+2. The server answers with a one-time challenge: 32 random bytes and its own `backend-id`.
+3. The proxy signs the challenge, the `backend-id` and the identity of the player (UUID, name, skin properties, real address, virtual host, whether it verified the player against Mojang) with its private key, and sends it back.
+4. The server verifies the signature against `trusted-keys`, and only then does the player exist.
+
+Because the signature covers a challenge this server just invented, a captured login cannot be replayed, and because it covers `backend-id`, one collected from another backend is useless here. The server stores **public keys only**: a leaked `server.toml` forges nothing, and a compromised backend cannot impersonate the proxy to the others. The private key never leaves the proxy.
+
+### Setting it up
+
+1. Start Basalt Proxy once. It generates its key and logs the line to use:
+
+   ```
+   Forwarding key 3f2a9c1b5d7e0a44. Add to each basalt backend: trusted-keys = ["<64 hex characters>"]
+   ```
+
+   The private key is kept in the file named by `key-file` under `[forwarding]` in the proxy's `proxy.toml` (`.basalt/forwarding.key` by default), readable only by its owner. Back it up like any secret. It is generated on first use, and the same key is announced again on every later start.
+
+2. In the proxy's `backends.toml`, set `forwarding = "basalt"` on the backend.
+
+3. On this server, in `config/server.toml`:
+
+   ```toml
+   [network.java]
+   bind = "127.0.0.1"
+
+   [network.forwarding]
+   mode = "basalt"
+   trusted-keys = ["<the key from step 1>"]
+   backend-id = "lobby"
+   ```
+
+4. Set `online-mode = false` (see [Online mode](#online-mode)) and restart.
+
+Check the log. A correct setup prints `Player data is forwarded by a basalt proxy.` at start.
+
+### Rotating the key
+
+Keys are a list so that rotation needs no downtime:
+
+1. Add the new public key to `trusted-keys` on every backend, next to the old one, and restart them.
+2. Switch the proxy to the new private key.
+3. Remove the old public key from the backends.
+
+When the proxy signs with a key a backend does not list, the backend logs the key's id (`the response is signed with key 3f2a9c1b5d7e0a44, which is not trusted`), so you can see which one is missing.
+
+## Velocity
+
+On the proxy set `player-info-forwarding-mode = "modern"`, and copy the content of its `forwarding.secret` file into this server:
+
+```toml
+[network.forwarding]
+mode = "velocity"
+secret = "the content of forwarding.secret"
+```
+
+## BungeeCord, BungeeGuard and SafeNET
+
+For `bungeecord`, enable `ip_forward` on the proxy and set `mode = "bungeecord"`. For `bungeeguard`, install the plugin on the proxy and put its token in `tokens`:
+
+```toml
+[network.forwarding]
+mode = "bungeeguard"
+tokens = ["the-token-from-the-proxy"]
+```
+
+For `safenet`, `tokens` holds the passphrase, and `property-name` is the property it travels in. More than one token is accepted, which is how you rotate one. If the proxy is Basalt Proxy, you choose the mode per backend in its `backends.toml` (`forwarding`), and the `secret` of that backend is the token.
+
+## Online mode
+
+With any forwarding mode on, the server does not do the Mojang session exchange: the proxy already authenticated everyone. `online-mode` in `server.toml` becomes irrelevant, and the server warns while it is `true`:
+
+```
+online-mode is on and a proxy is forwarding: the proxy authenticates, so this server will not. Set online-mode = false to stop this warning.
+```
+
+Set it to `false`. This only means that this server relies on the proxy, which is why the port has to be private.
+
+## Addresses behind a load balancer
+
+Forwarding carries the player's real address from a Minecraft proxy. A different mechanism covers the HAProxy PROXY protocol: set `proxy-protocol = true` in `[network.java]` and the server takes the player's address from a PROXY v1 or v2 header at the start of every connection. A connection without the header is dropped, so turn it on only when the port cannot be reached any other way.
+
+## Refusals
+
+A player the server turns away sees:
+
+> This server only accepts players coming through its proxy.
+> If that is you, its forwarding is not set up on both ends.
+
+The player is never told which check failed. The log is: it writes a warning of the form `Refused <name> from <address>: <reason>.`
+
+| Reason in the log | Cause |
+|---|---|
+| `the connection did not answer the forwarding query` | Somebody connected to this port directly, or the proxy is not speaking `velocity` or `basalt` |
+| `the handshake carries no forwarded data (N of at least 3 parts); either the proxy is not forwarding or somebody connected to this port directly` | `bungeecord`, `bungeeguard` or `safenet` mode and the proxy has `ip_forward` off |
+| `the forwarded profile carries no "bungeeguard-token" property` | The proxy is not sending the token |
+| `the "bungeeguard-token" property does not match any configured token` | The token differs from every entry of `tokens` |
+| `the forwarded payload is not signed with the configured secret` | `velocity` mode and the wrong `secret` |
+| `the proxy forwards version N, and this server reads up to M` | The proxy is newer than the forwarding this server speaks |
+| `the response is signed with key <id>, which is not trusted` | `basalt` mode and the key is not in `trusted-keys` |
+| `the forwarding signature does not validate` | `basalt` mode, a listed key id but a signature that is wrong, often a backend name the proxy did not sign |
+| `the proxy chose version N, outside the range ...` | A version mismatch between proxy and server |
+| `the forwarded identity is malformed` | The response was corrupted or sent by something that is not the proxy |

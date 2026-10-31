@@ -1,0 +1,119 @@
+---
+title: Client versions and Bedrock
+description: Which Java versions can join and how to limit them, how Bedrock Edition joins the same server, and what differs for those players.
+---
+
+One server, three kinds of client: the current Java client, older Java clients, and Bedrock Edition. They share worlds, players and chat. Neither of the two others is a layer on top of the Java one: each has its own table in `config/server.toml`, with its own port and its own answer to how old a client may be.
+
+## Java: older clients
+
+The server speaks Minecraft 26.3 (protocol 777) natively. A client on an older version is translated at the edge of its connection: the worlds, the entities, the plugins and the tick loop never know there is more than one version. Translation is a chain of one step per neighbouring version, so a 1.21.6 client is brought up one version at a time.
+
+| Release line | Protocols (versions) |
+|---|---|
+| 26.x | 777 (26.3, native), 776 (26.2), 775 (26.1 to 26.1.2) |
+| 1.21.x | 774 (1.21.11), 773 (1.21.9 to 1.21.10), 772 (1.21.7 to 1.21.8), 771 (1.21.6), 770 (1.21.5), 769 (1.21.4), 768 (1.21.2 to 1.21.3), 767 (1.21 to 1.21.1) |
+| 1.20.x | 766 (1.20.5 to 1.20.6), 765 (1.20.3 to 1.20.4), 764 (1.20.2), 763 (1.20 to 1.20.1) |
+| 1.19.x | 762 (1.19.4), 761 (1.19.3), 760 (1.19.1 to 1.19.2), 759 (1.19) |
+| 1.18.x | 758 (1.18.2), 757 (1.18 to 1.18.1) |
+| 1.17.x | 756 (1.17.1), 755 (1.17) |
+| 1.16.x | 754 (1.16.4 to 1.16.5), 753 (1.16.3), 751 (1.16.2), 736 (1.16.1), 735 (1.16) |
+| 1.15.x | 578 (1.15.2), 575 (1.15.1), 573 (1.15) |
+| 1.14.x | 498 (1.14.4), 490 (1.14.3), 485 (1.14.2), 480 (1.14.1), 477 (1.14) |
+| 1.13.x | 404 (1.13.2), 401 (1.13.1), 393 (1.13) |
+| 1.12.x | 340 (1.12.2), 338 (1.12.1), 335 (1.12) |
+| 1.11.x | 316 (1.11.1 to 1.11.2), 315 (1.11) |
+| 1.10 to 1.8 | 210 (1.10 to 1.10.2), 110 (1.9.3 to 1.9.4), 109 (1.9.2), 108 (1.9.1), 107 (1.9), 47 (1.8 to 1.8.9) |
+
+`/version` prints the Basalt version, the Minecraft version and protocol, and the client versions the running server accepts. The start-up line says how many older versions it translates and the oldest one:
+
+```
+Done (4.2s)! Java on TCP port 25565 (online-mode) with 49 older versions down to 1.8-1.8.9 (47), and Bedrock on UDP port 19132 (...).
+```
+
+Each translated login is logged: `Steve is on 1.20.3-1.20.4 (765), translated to 26.3.`
+
+When a block or an item exists in 26.3 but not in the client's version, the client is shown something similar instead, which is all that client can draw. With `name-substitutes` on, what stands in is also renamed to what it really is: a 26.2 block reads as `Cinnabar (26.2)` in the inventory rather than `Red Sandstone`. An item somebody named themselves keeps its name.
+
+### Choosing which versions may join
+
+These keys are in `[network.java]` of `config/server.toml`.
+
+```toml
+[network.java]
+backwards = "all"
+future-protocols = "refuse"
+snapshots = "refuse"
+name-substitutes = true
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `backwards` | `"all"` | `"all"` is every version this build can translate, so updating the server adds versions without editing the file. A list of protocol numbers fixes it to those: `backwards = [775, 774]`. An empty list leaves only the native version |
+| `future-protocols` | `"refuse"` | A client newer than this server. `accept` lets it in, `warn` lets it in and says so in the log, `refuse` turns it away with an explanation |
+| `snapshots` | `"refuse"` | Snapshots are recognised on their own (bit 30 of the protocol number) and get their own answer, because a development version changes from one day to the next. The same three values |
+| `name-substitutes` | `true` | Rename the stand-ins for content an old client never had, as above |
+
+The native version is always allowed, whatever the list says. Anything other than `"all"` or a list of numbers is refused at start: `config/server.toml: backwards must be "all" or a list of protocol numbers`. A number the build cannot translate is warned about and ignored: `server.toml asks for protocols this build cannot translate: ...`.
+
+`future-protocols` defaults to `refuse` because a newer client cannot finish joining: when versions change, the packets of the configuration phase move and every block state number changes. Letting one in means it disconnects halfway with a decoding error instead of reading why. `accept` and `warn` are there for whoever wants to try the day a version lands, and `warn` logs `<name> is on <version>, which this build does not know. Letting them in untranslated; anything may happen.`
+
+### What a refused client reads
+
+| Case | Text |
+|---|---|
+| Older than every version this build knows | `Your version is too old for this server.` and `It runs Minecraft 26.3.` |
+| A snapshot, with `snapshots = "refuse"` | `This server does not accept snapshots.` |
+| Newer than the server, or excluded by the `backwards` list | `This server does not accept your version.` |
+
+Write your own wording once for all of them with `outdated-client` in [`messages.toml`](/docs/server/interface).
+
+<x-docs.callout type="note" title="Behind a proxy">
+When the server runs behind Basalt Proxy, the proxy can do the translation itself or leave it to the server. The proxy decides per backend; see [Running behind a proxy](/docs/server/proxy-and-forwarding) and the Proxy documentation.
+</x-docs.callout>
+
+## Bedrock Edition
+
+Phones, consoles and Windows Bedrock clients join the same worlds. It is on by default, on a UDP port of its own.
+
+```toml
+[network.bedrock]
+enabled = true
+port = 19132
+prefix = "."
+protocols = "all"
+future-protocols = "warn"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Turns the Bedrock door on. `[network.java] enabled` and this cannot both be `false` |
+| `port` | `19132` | The UDP port, which is the one every Bedrock client tries first. Open it in the firewall as UDP |
+| `prefix` | `"."` | Put in front of a Bedrock player's name inside the server, so a Steve from each edition is two players and not one. Set it to `""` on a server where only Bedrock players join; then two accounts with the same name are two players shown with the same name |
+| `protocols` | `"all"` | Which Bedrock protocols may join. `"all"` is every one this build speaks (`1001`, `2168`, `2169` and `2193` today), so updating the server adds versions. A list fixes it to those, such as `protocols = [2193]` |
+| `future-protocols` | `"warn"` | A client newer than anything this server speaks. Bedrock updates itself and will not let anyone stay behind, so the day a version lands half the players are locked out until the server is updated. `warn` lets them in and says so, `accept` lets them in quietly, `refuse` turns them away with the screen that offers to update the server |
+
+A protocol you list that this build cannot speak is reported and ignored (`server.toml asks for Bedrock protocols this build cannot speak: ...`). The start-up line shows the port, the game version and the protocols in use: `Bedrock on UDP port 19132 (<game version>, protocol 1001, 2168, 2169, 2193)`.
+
+If the UDP port cannot be bound the server keeps running without Bedrock and says so:
+
+```
+Could not bind UDP port 19132 for Bedrock. Something else is on it, which is usually the last run of this server still letting go of it: try again, or change `port` under [network.bedrock] in config/server.toml.
+```
+
+A refused Bedrock client reads either `This server runs Minecraft <version>. Update your game and come back.` (too old) or `This server runs Minecraft <version> and does not speak your version yet.` (too new). The log has `A Bedrock client on protocol N was turned away: ...`; with `future-protocols = "warn"` it has `A Bedrock client on protocol N is newer than this server speaks and was let in anyway; it may not get far.`
+
+### How Bedrock players appear
+
+- A player's name inside the server is the gamertag with `prefix` in front, in lists, chat, commands and the log.
+- Their UUID is derived from the XUID of their account, in a space of its own, so it never collides with the offline UUIDs Java derives from a name.
+- The server list entry that a Bedrock client sees comes from the same `server_list.toml` profiles: the MOTD becomes its two lines, and the counts are the online and maximum player counts. In a condition, `%basalt_player_host%` is `bedrock` for such a ping.
+- The tab list header and footer are Java only, because Bedrock has nowhere to put them.
+
+### What is not the same
+
+<x-docs.callout type="warning" title="Bedrock identity is not verified">
+The gamertag and XUID come from the login the client sends, and the server does not check them against Xbox Live. The log marks logins that carry no XUID as `(unauthenticated)`, but a name and an XUID are claims, not proofs, even when present. `online-mode` does not apply to Bedrock. Do not give Bedrock players permissions you would not give to anyone able to type the same name, and keep the prefix in place so they cannot take over the name of a Java player.
+</x-docs.callout>
+
+The whitelist, the bans and the player limit are checked when a Java client logs in. Bedrock players are admitted without those checks, so `/ban`, `/whitelist` and `max-players` do not keep a Bedrock client out. If you rely on them, set `enabled = false` under `[network.bedrock]`.
