@@ -10,8 +10,9 @@ and **DevTools** brings the same checks, plus completion and documentation for t
 ## Kiln
 
 Kiln is a native command line with no dependencies. It runs the same Lua 5.5 as the server, so what it compiles loads
-there as it is. Build it from its repository with CMake, Ninja and Clang (`cmake --preset release && cmake --build
-build/release`) and put the `kiln` executable on your `PATH`.
+there as it is. Download the executable for your platform from the [Kiln releases](https://github.com/BasaltProject/Kiln/releases)
+(Linux, macOS and Windows; every commit to `main` publishes one), make it executable, rename it to `kiln` and put it on
+your `PATH`. `kiln --version` prints which one you have.
 
 | Command | Does |
 |---|---|
@@ -67,7 +68,8 @@ The Basalt DevTools extension turns VS Code into a place to write plugins. It us
 
 DevTools gives the language server the API of the product you target, and shows Kiln's findings in the Problems panel.
 
-Requirements: VS Code 1.90 or newer, and `kiln` on the `PATH` or its location in `basalt.kilnPath`. The extension turns on
+Install it from `Basalt-DevTools-VSCode-<version>.vsix` on the [DevTools releases](https://github.com/BasaltProject/DevTools/releases)
+with `Extensions: Install from VSIX`. Requirements: VS Code 1.90 or newer, and `kiln` on the `PATH` or its location in `basalt.kilnPath`. The extension turns on
 when the open folder contains a `plugin.toml`.
 
 | Feature | Detail |
@@ -89,6 +91,6 @@ The extension is a `.vsix` file, installed with `Extensions: Install from VSIX`.
 
 The completion data is a set of `---@meta` definition files for the Lua language server, one per target, in
 `definitions/<target>/basalt.lua` of the DevTools repository. Any editor that runs the Lua language server can use them
-by adding that folder to `Lua.workspace.library`. The JetBrains plugin (IntelliJ IDEA 2025.3 and newer) runs Kiln from the
+by adding that folder to `Lua.workspace.library`. The JetBrains plugin (IntelliJ IDEA 2025.3 and newer, `Basalt-DevTools-IntelliJ-<version>.zip` on the same releases page, installed with `Install Plugin from Disk`) runs Kiln from the
 `Tools | Basalt` menu, lists its findings in a Basalt tool window, and has `Sync API Definitions`, which copies the
 definitions into the project's `.basalt/api/` folder.
