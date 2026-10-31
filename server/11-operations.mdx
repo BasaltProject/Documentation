@@ -1,0 +1,280 @@
+---
+title: Operations
+description: Remote access with RCON, query and the management API, logging, performance tuning and what to watch, profiling, backups, security hardening and troubleshooting.
+---
+
+This page is about running a server day to day. How to install and start it is in [Installation](/docs/server/installation), and the exit codes a supervisor sees are there too.
+
+## Remote access
+
+There are three ways in from outside the process, all configured under `[network]` in `config/server.toml`.
+
+| Door | Default | Port | For |
+|---|---|---|---|
+| Management API | on, loopback only | TCP 25580 | Scripts, panels and dashboards. Prefer it to RCON |
+| RCON | off | TCP 25575 | Tools that only speak RCON |
+| Query | off | UDP 25565 | Server list sites and monitoring tools that ask for the player list |
+
+### Management API
+
+REST under `/v1`, and a WebSocket console. Every route needs a bearer token.
+
+```toml
+[network.api]
+enabled = true
+bind = "127.0.0.1"
+port = 25580
+tls = false
+tls-cert = ""
+tls-key = ""
+max-failures = 5
+lockout-seconds = 30
+requests-per-minute = 120
+max-connections = 32
+max-connections-per-address = 8
+max-body-bytes = 65536
+idle-seconds = 60
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Turns the API on |
+| `bind` | `"127.0.0.1"` | The address it listens on. Loopback until you say otherwise |
+| `port` | `25580` | |
+| `tls`, `tls-cert`, `tls-key` | `false` | Serve HTTPS and WSS. Needs PEM files; `tls = true` without both paths stops the start. Without TLS the token crosses the network in the clear off loopback |
+| `max-failures`, `lockout-seconds` | `5`, `30` | Bad tokens from one address before it is locked out, and for how long the first lockout lasts. Each further lockout doubles it |
+| `requests-per-minute` | `120` | Requests one address may make per minute |
+| `max-connections` | `32` | Connections open at once |
+| `max-connections-per-address` | `8` | Connections open at once from one address |
+| `max-body-bytes` | `65536` | The largest request body |
+| `idle-seconds` | `60` | How long a connection may stay silent before it is dropped |
+
+The token is generated on the first start and kept in `.basalt/remote-token`, readable only by its owner. The log says `Management API token generated and stored in .basalt/remote-token.` once, and never prints the token. Delete the file and restart to replace it.
+
+```bash
+TOKEN=$(cat .basalt/remote-token)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:25580/v1/status
+```
+
+| Route | Does |
+|---|---|
+| `GET /v1/status` | `{ "version", "minecraft", "protocol", "tps", "mspt", "uptime_seconds", "players": { "online", "max" } }`. `tps` is the one-minute average and `mspt` the mean of the recent ticks |
+| `GET /v1/players` | `{ "players": [ { "name", "uuid", "world", "x", "y", "z" } ] }` |
+| `GET /v1/plugins` | `{ "plugins": [ { "id", "name", "version", "origin", "disabled", "errors", "commands" } ] }` |
+| `POST /v1/command` | Body `{"command": "<command>"}`. Runs it as the console and answers `{ "cancelled": false, "output": "..." }` |
+| `GET /v1/console` | A WebSocket |
+
+Errors are `{ "error": "..." }`: `401` for a missing or wrong token, `404` for an unknown route, `405` for the wrong method, `413` for a body over the limit, `429` with `Retry-After` for a lockout or when `requests-per-minute` is exceeded. Chunked request bodies are not supported.
+
+On the WebSocket the server sends every log line as it is written, as `{"type": "log", "line": "..."}`. Send a command either as plain text or as `{"command": "...", "id": ...}`; the answer is `{"type": "result", "id": ..., "cancelled": ..., "output": "..."}` with your `id` echoed. A browser cannot set a header on a WebSocket, so the token may be passed as the subprotocol `bearer.<token>` instead.
+
+A command from the API runs as the source `Api`, with all permissions, and is logged: `Remote command from <address> (api): <command>`.
+
+### RCON
+
+```toml
+[network.rcon]
+enabled = false
+bind = "127.0.0.1"
+port = 25575
+password = ""
+max-failures = 5
+lockout-seconds = 30
+max-connections-per-address = 8
+```
+
+RCON is plaintext: the password and every command cross the network unencrypted, so keep it on loopback or behind a VPN. It refuses to start with an empty password:
+
+```
+RCON stays off: [network.rcon] has enabled = true but an empty password, and an open console with no password is never safe. Set a password in config/server.toml.
+```
+
+When it is on, the log warns that it is plaintext at every start. A failed login is logged as `Failed RCON login from <address>.`, and repeated failures lock the address out, the lockout doubling each time up to a day. `max-connections-per-address` is 1 to 16.
+
+The API and RCON cannot share a port: `[network.rcon] and [network.api] cannot share one port`. A key written in these two tables that the server does not know stops the start: `unknown key "x" in [network.rcon]`.
+
+### Query
+
+```toml
+[network.query]
+enabled = false
+port = 25565
+```
+
+Answers GameSpy 4 status queries over UDP, IPv4 only. It reports the first line of the MOTD of the default server list profile as the server name, the default world's name, the version, the port, the player counts and the names. It may use the same number as the Java port, since one is TCP and the other UDP.
+
+## Logging
+
+```toml
+[logging]
+level = "info"
+log-ips = true
+file = true
+keep-days = 14
+color = "auto"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `level` | `"info"` | `trace`, `debug`, `info`, `warn` or `error` |
+| `log-ips` | `true` | Put each player's address in the log line of their login. Off logs `IP hidden` instead, for servers that must not keep addresses in their logs |
+| `file` | `true` | Mirror everything the console shows into `.basalt/logs/latest.log` |
+| `keep-days` | `14` | How many days of archived logs to keep. `0` keeps them for ever |
+| `color` | `"auto"` | `auto` colours only when writing to a terminal, so redirected output and log files stay clean; `always` or `never` |
+
+On every start the previous `latest.log` is compressed into `.basalt/logs/archive/<date>-<n>.log.gz` and archives older than `keep-days` are deleted. Rotation happens at start: a server that stays up for months writes one `latest.log` for all of it. The logging settings are read once at start, so changing them needs a restart.
+
+To follow a problem, set `level = "debug"` while you reproduce it and put it back after.
+
+## Performance
+
+The targets are 20 ticks per second, steadily, with players moving all over the world, and almost no CPU when nobody is online. Basalt measures a tick against a 50 ms budget.
+
+### What to watch
+
+| Where | Shows |
+|---|---|
+| `/tick query` | The tick rate, the mean tick time over the last minute against the budget, and whether ticking is running, frozen or sprinting |
+| `/timings` | Ticks per second over 5 seconds, 1 and 5 minutes, and the tick duration (min, median, 95th percentile, max) over 10 seconds, 1 and 5 minutes |
+| `%basalt_server_tps%` | Ticks per second, over one, five or fifteen minutes (`_5`, `_15`). The `_colored` variants turn yellow below 18 and red below 15. See [Placeholders](/docs/server/interface#placeholders) |
+| `GET /v1/status` | `tps` and `mspt` for monitoring tools |
+| `%basalt_server_cpu%`, `%basalt_server_ram_used%` | CPU as a percentage of one core, and the memory in use |
+
+The number to react to is the 95th percentile and the maximum of the tick time, not the mean: players feel the tick that was slow, not the average one. A mean close to 50 ms means the server is out of headroom.
+
+With nobody online for `pause-when-empty-seconds` (60 by default) the server stops ticking and only serves connections; the log says `Server empty for 60 seconds, pausing` and `Server resumed`. Set it to `0` to never pause.
+
+### Knobs
+
+In order of how much each usually matters:
+
+| Setting | File | Effect |
+|---|---|---|
+| `simulation-distance` | `worlds.toml` and per world | Radius in chunks around each player inside which the world ticks. Lowering it is the strongest way to spare the tick on a busy server. It never ticks farther than the view distance |
+| `view-distance` | `worlds.toml` and per world | Radius in chunks sent to a client. Costs bandwidth and generation work |
+| `chunk-send-rate` | `[performance]` | Most chunks sent to one player per second. `0` leaves it to the client, which asks for up to 1280. Lower it to ease the load of players who fly fast or join together, at the price of slower loading. Not vanilla below 1280 |
+| `entity-broadcast-range-percentage` | `[server]` | How far other entities are drawn, as a percentage (10 to 1000). 50 halves the work of showing entities, 200 doubles it. Never beyond the view distance |
+| `max-joins-per-tick` | `[server]` | Players let through the last step of logging in each tick. Smooths a flood of joins. `0` is no limit. Not vanilla |
+| `max-chained-neighbor-updates` | `[server]` | How many block updates one change may set off in a row. Lowering it makes looping redstone machines stall sooner. Not vanilla below 1000000 |
+| `compression-threshold`, `compression-level` | `[network.java]` | Packets of at least that many bytes are compressed (`-1` off, `0` everything); `0` to `9` for the zlib level, `-1` for the default. Lower the level for CPU, lower the threshold on a slow link |
+| `player-autosave-seconds` | `[server]` | Saves players alone this often, on top of the world save interval. `0` saves them with the world only |
+| `save-interval-seconds` | `worlds.toml` | How often changes are written to the region files: a crash costs at most this much |
+| `tcp-no-delay` | `[network.java]` | Sends each packet at once, as vanilla does |
+| `instructions-per-turn`, `memory-mb` | `[plugins]` | The budget of one plugin: Lua instructions per turn and megabytes of its own objects. A plugin over budget fails alone and cannot stall the tick |
+
+`generation-metrics` in `[performance]` counts noise evaluations and per-phase timings while generating chunks and logs a report once the startup chunks are ready. It also forces startup generation onto one thread, so leave it off unless you are measuring.
+
+The generation threads are sized from the machine and have no setting; they yield to the tick, so the tick stays at its rate while the world generates.
+
+### The watchdog
+
+`watchdog-seconds` in `[performance]` (60 by default; `0` turns it off) is the longest one tick may take before the server decides it has crashed. It logs the following and exits:
+
+```
+A single server tick took 63.2 seconds (should be max 0.05); considering it to be crashed, the server will forcibly shut down.
+```
+
+The process exits with code `1` without saving, so run the server under a supervisor that restarts it. A plugin or a data pack function that never returns is the usual cause.
+
+### Profiling
+
+| Command | Does |
+|---|---|
+| `/perf start` then `/perf stop` | Measures the server's sections for a window and writes a report when it stops |
+| `/timings start`, `stop`, `reset`, `report` | The same measurements, without ending the window. `report` writes the file now |
+| `/debug start` then `/debug stop` | Vanilla's profiling command: measures the same way and reports the ticks and ticks per second of the window |
+
+Reports are JSON files in `.basalt/timings/`, named after the time. A report holds the server's version, the tick rates and durations, counts of what is loaded (chunks, worlds, caches), CPU use and memory, and a list of sections with the calls, total, average and maximum time of each. A section nobody called is absent: if the report has no sections, start measuring, let the server do the slow thing, then report. `/timings report` says so when that is the case.
+
+## Backups
+
+Everything the server writes is in its directory:
+
+| Path | Holds | Back up |
+|---|---|---|
+| `worlds/` | Every world's regions and settings | Yes |
+| `players.db` | Player data, group membership, the whitelist and bans | Yes, see below |
+| `config/` | Your configuration | Yes |
+| `plugins/` | Plugin packages and their data | Yes |
+| `eula.toml` | The EULA acceptance | Yes |
+| `maps/` | Filled maps | Yes |
+| `.basalt/` | The unpacked Mojang data, logs, reports and the API token | No: it is rebuilt or disposable. Keep `remote-token` only if tools depend on it |
+
+To copy a running server consistently:
+
+```
+/save-all flush
+/save-off
+(copy the files)
+/save-on
+```
+
+`/save-off` stops automatic saving so the files hold still while you copy; do not forget `/save-on`. `players.db` is a database in write-ahead mode: while the server runs, copy it together with `players.db-wal` and `players.db-shm`, whichever exist. The simplest consistent backup is the one taken after `/stop`.
+
+Player data deliberately lives outside the worlds, so a world can be restored without touching anyone's inventory, and the reverse. See [Worlds](/docs/server/worlds#backups) for restoring one.
+
+## Hardening
+
+- **Only open what you use.** The ports are listed in [Installation](/docs/server/installation#ports). The API, RCON and query ship loopback or off.
+- **Keep the management API on loopback** and put a reverse proxy with TLS in front of it, or set `tls = true` with a certificate. The server warns at start when the API is reachable beyond loopback without TLS.
+- **Prefer the API to RCON.** RCON is plaintext. If you need it, bind it to loopback or a VPN and give it a long password.
+- **Keep `online-mode = true`** unless a proxy forwards your players, and then see [Running behind a proxy](/docs/server/proxy-and-forwarding) to make the backend unreachable except through it.
+- **Give out permissions narrowly.** Nodes like `basalt.command.stop`, `basalt.command.op` and `basalt.command.group` are the whole server. Build moderator groups from named nodes rather than `*`, and leave out `basalt.admin.broadcast` unless they should count as operators. See [Groups and permissions](/docs/server/groups-and-permissions).
+- **Limit abuse at the edge.** `connection-throttle-ms` and `max-connections-per-address` in `[network.java]` slow a flood of logins from one address (loopback is never throttled), and `limits.toml` bounds packets per second and chat or command spam.
+- **Restrict names** with `username-pattern` (a regular expression every player name must match) when you want only a known set of characters.
+- **Whitelist** with `whitelist = true` and `enforce-whitelist = true` so that removing a name also removes the player.
+- **Plugins** get what their `[plugins.allow]` entry grants and nothing more: `packets`, `network` and `commands` are the three powers, and a plugin that asks for one that is not listed loads without it. Only list what you have read.
+- **Back up the proxy key and the API token** like any secret, and never commit `config/` with a `secret`, a `password` or a token in it.
+- **Run as an unprivileged user**, as in the systemd example in [Installation](/docs/server/installation#running-under-systemd).
+
+## Troubleshooting
+
+When something is wrong the log says what, and the first line to read is the one with `ERROR` or `WARN`. These are the messages you will actually meet.
+
+### The server will not start
+
+| Message | What to do |
+|---|---|
+| `config/server.toml: <key> must be between X and Y` (exit 2) | A value out of range. The file and key are named |
+| `config/server.toml: <key> must be a whole number` (exit 2) | A number written as text or a decimal |
+| `config/server.toml: username-pattern is not a valid regular expression: ...` | Fix the pattern |
+| `config/groups.toml must mark exactly one group as `default`, found N.` (or `operator`) | Exactly one of each |
+| `Group 'x' inherits from 'y', which does not exist.` / `Group inheritance in ... forms a cycle through 'x'.` | Fix `inherits` |
+| `config/server_list.toml must mark exactly one profile as `default`, found N.` | The same for profiles of any of the interface files |
+| `config/messages.toml: kick.x is not a message this server sends` | A key that is not on the list in [Interface](/docs/server/interface) |
+| `Could not bind 0.0.0.0 port 25565. Another server is probably already running on it; stop it or change `port` in [network.java] of config/server.toml.` (exit 3) | Something else holds the port, often the last run |
+| `Invalid Java bind address: x` (exit 3) | `bind` must be a literal IPv4 or IPv6 address |
+| `Remote access could not start: ... Change [network.rcon] or [network.api] in config/server.toml.` (exit 3) | A bad bind, a port in use, or two doors on one port |
+| `players.db: ...` (exit 4) | The player database cannot be opened or its layout is not the expected one. Do not delete it: it holds your players |
+| The EULA message (exit 78) | See [Installation](/docs/server/installation#the-eula) |
+
+A data pack that fails validation does not stop the start: the server logs the errors and falls back to vanilla's data alone. Start with `--safeMode` to do that on purpose.
+
+### Players cannot join
+
+| Symptom | Cause |
+|---|---|
+| `Your version is too old for this server.` | The client is older than 1.8, or older than the `backwards` list allows. See [Client versions](/docs/server/compatibility) |
+| `This server does not accept your version.` | A newer client with `future-protocols = "refuse"`, or an excluded version |
+| `This server only accepts players coming through its proxy.` | Forwarding is on and the player came straight to the port, or the two ends do not match. The warning `Refused <name> from <address>: <reason>.` names the reason, see [Running behind a proxy](/docs/server/proxy-and-forwarding) |
+| `The server is full!` | `max-players` reached. A group with `basalt.bypass.player-limit` gets in |
+| `Connection throttled! Please wait before reconnecting.` | `connection-throttle-ms` |
+| `Server transfers are disabled` | A transfer arrived and `accepts-transfers` is `false` |
+| A Bedrock client cannot see the server | UDP 19132 is not open, or it is a different edition's port |
+
+### Commands and text
+
+- A player without the node for a command is told it does not exist, as if it were mistyped. Check [Groups and permissions](/docs/server/groups-and-permissions), and `/reload` if you just edited `groups.toml`.
+- An edit to `commands.toml` `[commands.*]` or `[messages]` does nothing until the server restarts. `/reload` re-reads `groups.toml`, the server list, the tab list, the sidebar, the boss bar, animations, messages and limits.
+- A placeholder that shows as `%basalt_...%` could not be filled in. The log explains why once (`... cannot be filled in here: ...` or `... is not a placeholder this server knows.`). Test it with `/placeholder parse me <text>`.
+- `Condition '...' of server list profile 'x' was skipped: ...` means the profile's `when` used a placeholder that has no value in a ping. Use the protocol, host and ip placeholders there.
+- `Server list icon ... not found` or `... is not a 64x64 PNG` means the icon file is not where `icon` says, relative to `config/`.
+- `Boss bar profile 'x' in config/boss_bar.toml has an unknown colour 'y'; using white.` is only a warning. The same goes for an unknown overlay.
+
+### The server is slow
+
+1. `/tick query` and `/timings`: is the tick over budget all the time, or does it spike?
+2. If it spikes, start `/timings start`, wait for the spike, `/timings report`, and read the sections that cost the most.
+3. If the cost is world ticking, lower `simulation-distance`. If it is chunk sending or generation, lower `view-distance` or set `chunk-send-rate`.
+4. If it is a plugin, `/plugins` shows `off after N in a row` for one that has failed repeatedly and was switched off by the server, and `N error(s)` for one that is failing but running. A plugin that overruns its budget fails alone, it does not stall the tick.
+5. A tick of many seconds is the watchdog's business, see above.
