@@ -1,12 +1,37 @@
 ---
 title: Introduction
-description: The native Basalt Proxy executable and shared network library.
+description: What Basalt Proxy does, what it is for and when to put it in front of your servers.
 ---
 
-Basalt Proxy is written in C++23 and distributed as a native executable.
-It uses Wire, the network library shared with
-[Basalt Server](../server/introduction.mdx).
+Basalt Proxy sits in front of one or more Minecraft Java servers and gives players a single address. It authenticates players, picks a backend for them, relays the game, and can move a player from one backend to another without disconnecting them. It is written in C++23 and ships as one native executable per platform: no Java runtime is needed on the machine that runs it.
 
-The executable loads and validates TOML configuration, opens a native TCP listener
-and answers Minecraft server-list status and ping requests. See
-[Installation](installation.mdx) for building and invoking it.
+It shares its network layer with [Basalt Server](/docs/server/introduction), but a Basalt Server behind it is optional. A backend can be a vanilla server, Paper, Spigot, Fabric or Basalt Server, as long as the proxy and the backend agree on a [forwarding scheme](/docs/proxy/forwarding) and a protocol version.
+
+## What it does
+
+- **Single entry point.** One public address (`25565` by default) in front of any number of named backends. Players are routed by the hostname they typed, see [Backends and routing](/docs/proxy/backends-and-routing).
+- **Authentication in one place.** With `online-mode = true` the proxy checks every Java player with Mojang, and passes the verified identity to the backend using one of the [forwarding schemes](/docs/proxy/forwarding).
+- **Moving between servers.** A player is moved with the `send` console command, by a plugin, or by a backend that uses the BungeeCord plugin channel. From Minecraft 1.20.2 the client reconfigures in place instead of reconnecting.
+- **Version bridging.** Clients from 1.8 up to 26.2 can join a 26.3 backend, and 26.3 clients can reach backends from 1.21.5 up to 26.2. See [Bedrock and versions](/docs/proxy/bedrock-and-versions).
+- **Bedrock players.** An optional UDP listener lets Bedrock Edition players join a Java backend.
+- **Lua plugins.** Off by default. Plugins add commands, react to player events and move players, see [Plugins](/docs/proxy/plugins).
+- **Protection.** Token-bucket admission control per origin address and globally, bounded buffers, timeouts for every stage of a connection. See [Operations](/docs/proxy/operations).
+
+## When to use it
+
+Use a proxy when you run more than one server and want players to share an address, a lobby and a login, or when you want authentication and connection limiting to live on a machine of its own. If you run a single server, you do not need one.
+
+<x-docs.callout type="warning" title="The proxy is a security boundary">
+When a backend trusts forwarded identities, anyone who can reach the backend directly can claim to be anyone. Pick a signed scheme (`basalt` or `velocity`) and keep the backend ports reachable only from the proxy. Details in [Forwarding](/docs/proxy/forwarding).
+</x-docs.callout>
+
+## How the documentation is organised
+
+| Page | Covers |
+|---|---|
+| [Installation](/docs/proxy/installation) | Downloading, running, systemd, Docker, updating |
+| [Configuration](/docs/proxy/configuration) | Every key of `proxy.toml` and `plugins.toml` |
+| [Backends and routing](/docs/proxy/backends-and-routing) | `backends.toml`, forced hosts, fallback, commands |
+| [Forwarding](/docs/proxy/forwarding) | Identity schemes and the matching backend configuration |
+| [Bedrock and versions](/docs/proxy/bedrock-and-versions) | Bedrock listener, client and backend versions |
+| [Operations](/docs/proxy/operations) | Logging, statistics, hardening, troubleshooting |

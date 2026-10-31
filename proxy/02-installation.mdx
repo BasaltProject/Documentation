@@ -1,11 +1,134 @@
 ---
 title: Installation
-description: Building and invoking the native proxy executable.
+description: Download, run and update Basalt Proxy, with systemd and Docker setups.
 ---
+
+## Download
+
+Binaries are published on the [Proxy releases page](https://github.com/BasaltProject/Proxy/releases). Each file is a single executable named after its version, platform and architecture:
+
+```
+BasaltProxy-<version>-<Platform>-<arch>
+```
+
+| Platform | Architecture | Platform in the name |
+|---|---|---|
+| Linux | x86-64 | `Linux-x64` |
+| Linux | ARM64 | `Linux-arm64` |
+| macOS | Intel | `macOS-x64` |
+| macOS | Apple Silicon | `macOS-arm64` |
+| Windows | x86-64 | `Windows-x64` |
+
+Two kinds of build are published:
+
+- **Releases.** A tagged release (`v<version>`) is published every Monday at 09:00 in Madrid, when something changed since the previous one. Versions look like `26.3.4`: the Minecraft version, then a counter.
+- **Nightly.** A single prerelease called `nightly` that is replaced by every push to the main branch. Its versions end in `-n<k>`. Use it to try a fix, not for a network you care about.
+
+Every release carries a `SHA256SUMS` file. Verify the download before running it:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+On Linux and macOS, make the file executable:
+
+```bash
+chmod +x BasaltProxy-26.3.4-Linux-x64
+```
+
+## First start
+
+Run the executable from the directory where you want its configuration and state to live. All relative paths (`config/`, `.basalt/`, `plugins/`) are resolved from the working directory.
+
+```bash
+mkdir basalt-proxy && cd basalt-proxy
+./BasaltProxy-26.3.4-Linux-x64
+```
+
+On the first start the proxy writes commented `proxy.toml`, `backends.toml` and `plugins.toml` into `./config/`, then starts with them. Existing files are never overwritten. The default `backends.toml` defines a single backend, `lobby`, at `127.0.0.1:25566`, so edit it before players join (see [Backends and routing](/docs/proxy/backends-and-routing)).
+
+You can type [console commands](/docs/proxy/backends-and-routing#console-commands) in the terminal while it runs. Stop it with `stop`, Ctrl+C or SIGTERM.
+
+## Command line
+
+| Option | Meaning |
+|---|---|
+| `--config <dir>` | Directory holding the configuration files. Default: `./config` |
+| `-v`, `--version` | Print the version, Minecraft version and protocol number, then exit |
+| `-h`, `--help` | Print the usage and exit |
+
+`--help` and `--version` do not create any file. An unknown option, or `--config` without a directory, prints a message and exits with code `2`. A configuration file that fails validation is named in the error and the process exits with code `1`; a normal stop exits with `0`.
+
+## Ports
+
+| Port | Protocol | Setting | Default |
+|---|---|---|---|
+| Java clients | TCP | `[network] port` | `25565` |
+| Bedrock clients | UDP | `[bedrock] port`, only when `[bedrock] enabled = true` | `19132` |
+
+Open only these on the proxy's firewall. The backends' ports should accept connections from the proxy and nobody else.
+
+## Running as a service
+
+A systemd unit for Linux, assuming the binary is installed as `/opt/basalt-proxy/basalt-proxy` and runs as an unprivileged user:
+
+```ini
+[Unit]
+Description=Basalt Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=basalt
+WorkingDirectory=/opt/basalt-proxy
+ExecStart=/opt/basalt-proxy/basalt-proxy
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+LimitNOFILE=65536
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`SIGHUP` reloads `backends.toml` and the plugins, the same as the `reload` console command (see [Hot reload](/docs/proxy/configuration#hot-reload)). `SIGTERM` stops the proxy cleanly. With `StandardInput=null` the console reads nothing, which is harmless: the proxy keeps running.
+
+## Docker
+
+The proxy needs no runtime beyond the executable. A minimal image that downloads a release:
+
+```dockerfile
+FROM ubuntu:24.04
+ARG VERSION=26.3.4
+ADD https://github.com/BasaltProject/Proxy/releases/download/v${VERSION}/BasaltProxy-${VERSION}-Linux-x64 /opt/basalt-proxy
+RUN chmod +x /opt/basalt-proxy
+WORKDIR /data
+EXPOSE 25565/tcp
+ENTRYPOINT ["/opt/basalt-proxy"]
+```
+
+And a compose file that keeps configuration, the forwarding key and logs in a volume:
+
+```yaml
+services:
+  proxy:
+    build: .
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./data:/data
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+```
+
+`stdin_open` and `tty` let you reach the console with `docker attach`. Inside a container, `localhost` is the container itself, so backend hosts in `backends.toml` must be service names or addresses reachable from it. Add `19132:19132/udp` to `ports` if you enable Bedrock.
+
+Back up `data/` before upgrading: it holds the forwarding key (`.basalt/forwarding.key`) that your backends trust.
 
 ## Building from source
 
-Clone with Wire, its network-library submodule:
+You need CMake 3.28 or newer, Ninja and Clang. Clone with submodules, because the network library (Wire) is one:
 
 ```bash
 git clone --recurse-submodules https://github.com/BasaltProject/Proxy.git
@@ -14,27 +137,12 @@ cmake --preset release
 cmake --build build/release
 ```
 
-You need CMake 3.28 or newer, Ninja and Clang. ccache is used when available.
-The executable lands in `build/release/bin/`, with its version, platform and
-architecture in the filename, such as `BasaltProxy-26.3.0-dev-Linux-x64`.
+The executable lands in `build/release/bin/` with the same naming as the downloads.
 
-## Command line
+## Updating
 
-Use the filename produced by your build:
+1. Download the new executable and verify its checksum.
+2. Stop the proxy (`stop`). Players are disconnected.
+3. Replace the executable and start it again. Configuration and the forwarding key are read from the working directory and carry over.
 
-```bash
-./build/release/bin/BasaltProxy-26.3.0-dev-Linux-x64 --help
-./build/release/bin/BasaltProxy-26.3.0-dev-Linux-x64 --version
-./build/release/bin/BasaltProxy-26.3.0-dev-Linux-x64 --config /etc/basalt-proxy
-```
-
-`--help` describes the arguments. `--version` prints the build version and native
-Minecraft protocol. `--config` selects the configuration directory, defaulting to
-`./config`. Startup creates commented `proxy.toml` and `backends.toml` files when
-missing, preserves existing files and validates their settings. An invalid file
-is named in the error and the process exits with code 1. `--help` and `--version`
-do not generate configuration files.
-
-The listener address and port are set under `[network]` in `proxy.toml`. Startup
-reports its port, then continues serving local status and ping/pong requests.
-SIGINT (Ctrl+C) or SIGTERM stops the owners and closes their sessions.
+Existing configuration files are not rewritten when the proxy is updated, so new keys do not appear in them; their defaults apply until you add them. Compare against [Configuration](/docs/proxy/configuration) after an upgrade. An unknown key is a startup error, so remove keys that a release no longer accepts.
