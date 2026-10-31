@@ -42,8 +42,11 @@ Every page opens with a front matter head:
 ---
 title: Installation
 description: One sentence, shown under the title and in search results.
+group: Configuration
 ---
 ```
+
+`group` is optional: consecutive pages with the same group sit under one heading in the sidebar.
 
 The body is markdown. It can also use components, which is what the `.mdx`
 extension is for:
