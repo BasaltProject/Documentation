@@ -1,0 +1,126 @@
+---
+title: Operations
+description: Logging, statistics, tuning, hardening and troubleshooting for a running Basalt Proxy.
+---
+
+## Logging
+
+The proxy logs to the console and, with `[logging] file = true`, to `.basalt/logs/latest.log` under the working directory. On the next start the previous `latest.log` is archived as `.basalt/logs/archive/<date>-<n>.log.gz`, and archives older than `keep-days` (default 14, `0` keeps all) are deleted.
+
+`level` chooses the minimum severity: `trace`, `debug`, `info` (default), `warn` or `error`. Colour is used on a terminal only, unless `color` is `always` or `never`. See [Configuration](/docs/proxy/configuration#logging). Logging settings need a restart to change.
+
+A normal start looks like this:
+
+```
+Reading configuration from ./config.
+Configuration validated: 2 backend(s).
+Listening on port 25565.
+```
+
+If a backend uses `forwarding = "basalt"` it also logs `Forwarding key <id>. Add to each basalt backend: trusted-keys = ["..."]`. With Bedrock on: `Bedrock status on UDP port 19132.`, and a line for each joining player (`<name> is joining from Bedrock.`). Plugins log under `Plugin <id>`.
+
+## Statistics
+
+The `status` console command is the only metrics output; there is no metrics endpoint. It prints one line:
+
+```
+Sessions: 12; retained buffer bytes: 4194304; accepted: 340; rejected: 3; bytes toward clients: ...; toward backends: ...; logins: 337; backend changes: 20; ended in handshake or status: 250, login: 10, configuration: 2, play: 78; cpu seconds: 4.2; peak memory MiB: 38
+```
+
+| Field | Meaning |
+|---|---|
+| Sessions | Connections currently open. |
+| retained buffer bytes | Network buffer memory held, against `max-buffered-bytes`. |
+| accepted, rejected | Connections taken, and connections dropped by [admission control](#rate-limits) or because a limit was full. |
+| bytes toward clients, toward backends | Traffic relayed since start. |
+| logins, backend changes | Completed logins and completed moves between backends. |
+| ended in ... | Where sessions ended: handshake or status (server-list pings), login, configuration, play. |
+| cpu seconds, peak memory | Process usage (Linux and macOS). |
+| Bedrock players | Appended when Bedrock is enabled. |
+
+
+## Performance
+
+The settings that matter:
+
+| Setting | Guidance |
+|---|---|
+| `[runtime] io-loops` | Threads that own sessions. Raise it on machines with many cores and thousands of players. |
+| `[runtime] workers` | Authentication and DNS. Raise it if logins queue up at busy times; `max-pending-work` bounds the queue. |
+| `[runtime] max-sessions` | Hard cap on connections. Also the maximum shown in the server list. |
+| `[runtime] max-buffered-bytes` | Global memory budget for network buffers; a full budget rejects new connections instead of using more memory. |
+| `[network] compression-threshold` | Packets of at least this size are compressed toward clients. Raise it, or set `-1`, to spend less CPU on compression; lower it to save bandwidth. |
+
+A slow client cannot grow memory without bound: reads from its backend pause above `high-water-bytes` queued bytes and resume below `low-water-bytes`.
+
+The server list the proxy answers is its own: the description is `Basalt Proxy` and the maximum is `max-sessions`. It does not forward a backend's list.
+
+## Hardening
+
+- **Run unprivileged**, in a dedicated directory, with a firewall that opens only the proxy's ports.
+- **Isolate the backends.** Bind them to a private interface or firewall them to the proxy. This matters most for `bungeecord`, `bungeeguard`, `safenet` and `none` ([Forwarding](/docs/proxy/forwarding)).
+- **Keep `online-mode = true`** and leave `forwarding` signed (`basalt` or `velocity`).
+- **Protect secrets.** `backends.toml` holds shared secrets and `.basalt/forwarding.key` the private key; make them readable by the proxy user only. The key file is created with owner-only permissions on Linux and macOS.
+- **Keep `accept-transfers = false`** unless another server legitimately sends players here with a transfer. Transfers still authenticate, but the setting widens what the proxy accepts.
+- **Tune `[admission]`** (below).
+- **Keep timeouts at defaults or lower.** Every stage of a connection has a deadline (`handshake-timeout-ms`, `login-timeout-ms`, `read-timeout-ms`, `write-timeout-ms`), so a connection that stalls is closed.
+- **Plugins**: grant `commands`, `network` and `packets` in `plugins.toml` only to plugins you trust. A plugin cannot run longer than `instructions-per-turn` or use more than `memory-mib`.
+
+### Rate limits
+
+`[admission]` uses token buckets. Each new connection spends one token from a global bucket and one from the bucket of its source IP. A bucket refills at `*-rate` tokens per second up to `*-burst`. With the defaults, one address can open 20 connections at once and then 10 per second, and the proxy as a whole 400 then 200 per second. A refused connection is closed without an answer and counted in `rejected`. Attempts denied by the per-address limit still spend global tokens, so a flood from one address also eats into the global capacity.
+
+Per-address tracking is bounded by `max-origins`. When the table is full, connections from new addresses are rejected until idle entries expire (`origin-expiry-ms`).
+
+<x-docs.callout type="warning" title="Behind a load balancer or tunnel">
+Admission works on the address of the TCP peer. Players connecting through a tunnel, NAT or load balancer share one address and one bucket; raise `origin-rate` and `origin-burst` if all your players come from one.
+</x-docs.callout>
+
+## Troubleshooting
+
+### Startup
+
+| Message | Cause and fix |
+|---|---|
+| `<file>: <key> is unknown` | A misspelled or removed key. Check the spelling against [Configuration](/docs/proxy/configuration). |
+| `<file>: <key> is outside its integer range` | The value is too large, too small or not an integer. |
+| `backends.<name>.forwarding must be chosen explicitly for this backend` | Add `forwarding` to the backend. |
+| `backends.<name>.secret must contain 1..4096 bytes without NUL for this scheme` | `velocity`, `bungeeguard` and `safenet` need a `secret`. |
+| `backends.<name>.secret is unused by this scheme; remove it or choose the matching scheme` | Remove `secret` from a `basalt`, `bungeecord` or `none` backend. |
+| `backends.<name>.host must be a hostname or literal IP address without a port` | Put the port in `port`. |
+| `routing.default references an unknown backend` | A name in the route is not defined under `[backends]`. |
+| `network.bind must be a literal IPv4 or IPv6 address` | `bind` takes an address, not a hostname. |
+| `network.dual-stack requires an IPv6 bind address` | Use `bind = "::"` with `dual-stack = true`. |
+| `could not bind the public listener` | The port is in use or needs privileges. Another proxy or server may hold it. |
+| `forwarding key file <path> must hold 64 hex characters` | The key file was edited or truncated. Restore it from backup or delete it to generate a new one (then update every backend's `trusted-keys`). |
+| `Could not bind UDP port <port> for Bedrock.` | The Bedrock port is in use. |
+
+### Reload
+
+`Reload rejected, nothing changed: ...` means the new configuration was refused as a whole and the old one still runs. `changing [network] requires a restart` lists the sections that differ from the running ones; only `backends.toml` reloads.
+
+### Players
+
+| What the player sees | Cause |
+|---|---|
+| `No server is available right now. Please try again shortly.` | Every backend of the route failed to connect. Check the host, port and that the backend is running and reachable from the proxy. |
+| `No backend is available. Please reconnect later.` | The backend dropped during play and no other backend of the route could take them. |
+| `Your game version is not supported on this network.` | The client's version has no support. See [Bedrock and versions](/docs/proxy/bedrock-and-versions). |
+| `No server here can take your game version.` | The backends of the route do not accept this client version. |
+| `This player is already connected.` | A session with the same UUID is already open on the proxy. |
+| `Login could not be completed.` | Authentication failed, for example when the Mojang session server is unreachable, the account is not verified, or `prevent-client-proxy-connections` does not match. |
+| Connection closed with no message | The admission limit, a full session or buffer budget, or a timeout. Look at `rejected` in `status`. |
+
+### A player connects, then the backend rejects them
+
+The scheme or the credential does not match. Check, in order: the backend's `online-mode` is `false`; the scheme is the same on both sides; for `velocity` the secrets are byte-for-byte equal; for `basalt` the printed public key is in the backend's `trusted-keys` and `backend-id` equals the backend's name in `backends.toml`; for `bungeeguard` and `safenet` the token is in the backend's list. The proxy never retries with a weaker scheme.
+
+Rejection reasons for `basalt` forwarding are written to the **backend's** log only, never to the player.
+
+### Changing backend does nothing
+
+`send` reports `Unknown backend.`, `Player not found (names are case-sensitive).` or `Backend change unavailable: session is not in play, destination is current, or change is busy.` If the version of the client and the target have no route, the change is refused and the player stays where they are.
+
+## Crashes
+
+If the proxy crashes it reports its version and the issue tracker, `https://github.com/BasaltProject/Proxy/issues`. Attach that report and the end of `.basalt/logs/latest.log` to the issue.

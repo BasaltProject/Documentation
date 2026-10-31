@@ -1,0 +1,98 @@
+---
+title: Bedrock and versions
+description: Which Java client and backend versions the proxy bridges, and how Bedrock Edition players join a Java backend.
+---
+
+## Java versions
+
+The proxy is built for Minecraft 26.3 (protocol 777). A session has one client version and, for each backend it reaches, one backend version. The proxy checks the pair at the handshake and refuses combinations it has no route for, before anything else happens.
+
+| Client | Backend | What happens |
+|---|---|---|
+| 26.3 | 26.3 | Relayed as is. |
+| 1.8 to 26.2 | 26.3 | Translated by the proxy, or by a Basalt Server itself (below). |
+| 26.3 | 26.2 (776), 26.1 (775), 1.21.11 (774), 1.21.9 or 1.21.10 (773), 1.21.7 or 1.21.8 (772), 1.21.6 (771), 1.21.5 (770) | The backend's packets are translated upward for the client. Set `protocol` to the backend's number. |
+| N | the same version N | Relayed without translation, for the versions in the list below. |
+| anything else | | Refused. |
+
+Backends older than 1.21.5 are therefore only reachable by clients of exactly their own version.
+
+Same-version relay (client and backend on one protocol) is available for these protocol numbers: 47, 107 to 110, 210, 315, 316, 335, 338, 340, 393, 401, 404, 477, 480, 485, 490, 498, 573, 575, 578, 735, 736, 751 and 753 to 776. When a player's pairing has no route, they are told at login:
+
+| Message | Meaning |
+|---|---|
+| `Your game version is not supported on this network.` | The client's protocol is not one the proxy can serve at all. |
+| `No server here can take your game version.` | No backend of the player's route accepts this client version. |
+
+When one backend of a route is incompatible with a client and another is not, the compatible one is used. A player whose current backend and a requested backend have no route between them stays where they are.
+
+<x-docs.callout type="note" title="What is not translated">
+Registries and content are never invented for a version that lacks them: a player always sees the registries of the backend they are on, resent when they change backend. Item components that changed shape between versions (such as a trim with an inline material, pot decorations and teleport effects) are not converted.
+</x-docs.callout>
+
+### Who translates
+
+`[translation] mode` in `proxy.toml` decides.
+
+- `auto` (default): when a backend is a Basalt Server with `forwarding = "basalt"` and `session-envelope = true`, the proxy forwards the player's original packets and the server translates. Otherwise the proxy translates where it has a verified route.
+- `proxy`: the proxy always translates.
+- `off`: no translation at all. Client and backend must speak the same protocol.
+
+### Mixing backends
+
+A network may mix a Basalt Server (26.3, translated for older clients) and a Paper of the player's own version. From 1.20.2 the player moves between the two without reconnecting. Before 1.20.2 a session works with one kind of backend only. When the player changes backend, the proxy clears the tab list entries and boss bars it saw from the previous one for clients that receive a new join packet.
+
+### Modded backends
+
+Fabric, Forge and NeoForge backends without mods work. Modern forwarding on a modded backend needs a forwarding mod, and modpack compatibility is not guaranteed: the proxy relays configuration and play traffic, it does not understand mod channels.
+
+## Bedrock Edition
+
+Bedrock support is off by default. Enable it in `proxy.toml`:
+
+```toml
+[bedrock]
+enabled = true
+port = 19132
+motd = "My Network"
+```
+
+The proxy then listens on UDP `19132` (open it on the firewall) and answers Bedrock server-list pings. If it cannot bind the port, startup fails with `Could not bind UDP port <port> for Bedrock.`
+
+### How a Bedrock player joins
+
+A Bedrock player connects to the Bedrock port. The proxy authenticates them, opens a Java connection to the **first backend of the default route** as if it were a Java client, and translates the game between the two editions: chunks, position and movement, chat and commands, entities, inventory, health, titles and boss bars. Bedrock players do not use `[forced-hosts]`.
+
+The proxy advertises game version 1.26.50 and accepts Bedrock protocols 1001, 2168, 2169 and 2193. A client older than that sees `This server runs Minecraft 1.26.50. Update your game and come back.`
+
+### Authentication and identity
+
+With `online-mode = true` a Bedrock player must be signed in to Xbox Live; a client without a signed login chain is turned away with `Sign in to Xbox Live to play here.` With `online-mode = false` an unsigned player is let in under the name it gives.
+
+The proxy does not invent a Java premium identity for a Bedrock account. The backend sees:
+
+| Part | Value |
+|---|---|
+| Name | `_` followed by the gamertag, with characters outside letters, digits and `_` replaced by `_`, at most 16 bytes |
+| UUID | The offline UUID of that name, never a Mojang profile id |
+| Skin | None |
+
+The leading `_` keeps a gamertag from colliding with a real Java name. Two gamertags that clean up to the same name get the same identity.
+
+Only `forwarding = "basalt"` carries the fact that the player is on Bedrock, and the Xbox user id (XUID), to the backend. The other schemes have no place for it, so a backend that has to tell the editions apart must use `basalt`. Use `delegate = true` to let a Basalt Server backend serve Bedrock players itself instead of the proxy translating, see [Configuration](/docs/proxy/configuration#bedrock).
+
+### Chat and messages
+
+By default messages from a backend that are translation keys (join and leave lines, death messages) arrive raw. Set `[bedrock] language` to the path of a Minecraft server jar or an `en_us.json` file and the proxy puts them into words. Nothing is downloaded.
+
+### Limits
+
+A Bedrock player behind the proxy can walk, see, chat, run commands, build, use inventory slots, armour and the off hand, work with chests, shulker boxes, dispensers, hoppers and furnaces, switch backends and be moved by plugins. These are not translated:
+
+- crafting tables and the other windows, stack splits and crafting;
+- forms, particles and numbered sounds (named sounds work);
+- the equipment and skins of other players, effects on other entities, and mob variants;
+- scoreboards other than the sidebar;
+- linking a Bedrock account to a Java account, and a player list that shows the real gamertag.
+
+Resource packs a backend asks for are answered on the player's behalf: accepted if required, declined if optional, and never shown. A backend with `bungee-messages = true` can use `Connect`, `GetServer`, `GetServers` and `UUID` for Bedrock players too.
