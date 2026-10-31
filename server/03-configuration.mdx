@@ -67,7 +67,3 @@ A malformed file never starts the server quietly on defaults, because a server r
 - **A world's own `settings.toml` or `mobs.toml`** is the exception: the world keeps the inherited defaults and the log warns with the reason, so one world's typo does not stop the server.
 
 Both editions switched off in `server.toml`, no world declared, or more than one default world, stop the start too; see [Worlds](/docs/server/worlds).
-
-## Profiles and placeholders
-
-The files that draw something for players (`server_list.toml`, `tab_list.toml`, `scoreboard.toml`, `boss_bar.toml`) share one profile system and one placeholder registry, which plugins can extend. Each of those files documents its own keys.

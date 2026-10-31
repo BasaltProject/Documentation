@@ -1,7 +1,134 @@
 ---
-title: Access and permissions
-description: Offline players, operators, the whitelist and bans, and the permissions a plugin grants or denies.
+title: Groups and permissions
+description: groups.toml, how permissions are resolved, the node of every built-in command, how players are put in a group, and the access calls a plugin can make.
 ---
+
+Permissions in Basalt are native: there is no permissions plugin to install. `config/groups.toml` says what each group can do, and the player database says which group each player is in.
+
+## groups.toml
+
+```toml
+[groups.default]
+default = true
+permissions = [
+    "basalt.command.help",
+    "basalt.command.list",
+    "basalt.command.me",
+]
+
+[groups.operator]
+operator = true
+permissions = ["*"]
+```
+
+That is the file the server writes on first start. A group is a table under `[groups]`; its name is the key, compared in lower case.
+
+| Key | Meaning |
+|---|---|
+| `permissions` | The list of permission rules the group grants or denies |
+| `inherits` | The name of one other group whose rules this group also has |
+| `default = true` | The group every player starts in. Exactly one group must set it |
+| `operator = true` | The group `/op` puts a player in. Exactly one group must set it |
+
+The server refuses to start, naming the file, when:
+
+- no group is declared, or `[groups]` is missing;
+- zero or several groups are marked `default`, or zero or several are marked `operator`;
+- a group inherits from one that does not exist, or inheritance loops back on itself.
+
+```toml
+[groups.moderator]
+inherits = "default"
+permissions = [
+    "basalt.command.kick",
+    "basalt.command.teleport",
+    "-basalt.command.seed",
+]
+```
+
+## Writing a rule
+
+A permission is a dotted name such as `basalt.command.gamemode`.
+
+| Written | Meaning |
+|---|---|
+| `a.b.c` | Exactly that node |
+| `a.b.*` | `a.b` itself and everything under it |
+| `*` | Every node |
+| `-a.b.c` | A denial: any of the forms above with a leading `-` takes the permission away instead of granting it |
+
+A node that no rule mentions is denied. There is no hidden ranking behind the groups: what a group can do is exactly what is written for it and for the groups it inherits from.
+
+### Which rule wins
+
+When several rules match a node, the most specific one wins, regardless of the order they are written in. Specificity is the number of dotted segments the rule names: `basalt.command.stop` (3) beats `basalt.command.*` (2), which beats `basalt.*` (1), which beats `*` (0).
+
+With the same specificity:
+
+1. A rule in the player's own group beats one inherited from a parent, and a parent's beats a grandparent's.
+2. Inside one group, the rule listed first wins.
+
+```toml
+[groups.builder]
+inherits = "default"
+permissions = ["basalt.command.*", "-basalt.command.stop", "-basalt.command.op"]
+```
+
+Here a builder may use every command except `/stop` and `/op`, because each denial names a node more precisely than the wildcard does.
+
+<x-docs.callout type="note" title="Plugins can override a group">
+A plugin may grant or deny a node to one player for the session, and those entries are consulted before the group. See [Granting and denying permissions](#granting-and-denying-permissions) below.
+</x-docs.callout>
+
+## Permission nodes
+
+Every built-in command asks for `basalt.command.<name>`, where `<name>` is the command's own name: `basalt.command.gamemode`, `basalt.command.ban-ip`, `basalt.command.save-all`. An alias asks for the node of the command it points to. A node covers the whole command, with all of its subcommands. [`commands.toml`](/docs/server/commands) can point a command at a different node.
+
+The console, command blocks and RCON are not checked against nodes.
+
+The commands that vanilla opens to everyone still need their node here: the default group ships with only `help`, `list` and `me`. Add `basalt.command.msg`, `basalt.command.teammsg`, `basalt.command.trigger` and `basalt.command.random` to it if your players should have them.
+
+These are the commands, grouped by the level vanilla gives them. The level is a guide to how much to trust each node; for a player only the node counts.
+
+| Vanilla level | Commands |
+|---|---|
+| Everyone | `help`, `list`, `me`, `msg` (`tell`, `w`), `random`, `teammsg` (`tm`), `trigger` |
+| Game master | `advancement`, `attribute`, `bossbar`, `clear`, `clone`, `compute`, `damage`, `data`, `datapack`, `defaultgamemode`, `dialog`, `difficulty`, `effect`, `enchant`, `execute`, `experience` (`xp`), `fill`, `fillbiome`, `forceload`, `function`, `gamemode`, `gamerule`, `give`, `item`, `kill`, `locate`, `loot`, `particle`, `place`, `playsound`, `posteffect`, `recipe`, `reload`, `return`, `ride`, `rotate`, `say`, `schedule`, `scoreboard`, `seed`, `setblock`, `setworldspawn`, `spawnpoint`, `spectate`, `spreadplayers`, `stopsound`, `stopwatch`, `summon`, `swing`, `tag`, `team`, `teleport` (`tp`), `tellraw`, `test`, `time`, `title`, `version`, `waypoint`, `weather`, `world`, `worldborder` |
+| Admin | `ban`, `ban-ip`, `banlist`, `debug`, `deop`, `fetchprofile`, `group`, `jfr`, `kick`, `op`, `pardon`, `pardon-ip`, `perf`, `placeholder`, `plugins`, `restart`, `save-all`, `save-off`, `save-on`, `setidletimeout`, `tick`, `timings`, `transfer`, `whitelist` |
+| Owner | `import-players`, `publish`, `stop`, `unpublish` |
+
+What each command does is in [Commands](/docs/server/commands).
+
+### Other nodes
+
+| Node | Effect |
+|---|---|
+| `basalt.admin.broadcast` | Marks a player as an operator for everything that is not a command. The player gets the `op-permission-level` of `server.toml` on their client, sees the feedback of commands that other operators and the console run, is not kicked for chat or command spam, and may build inside the spawn protection. `*` includes it, so the operator group has it |
+| `basalt.bypass.player-limit` | The player can join when the server is full (`max-players`). It is read from the player's recorded group, since the player is not online yet |
+| `basalt.antixray.bypass` | The player sees real ores through the anti-xray obfuscation |
+| `basalt.plugin.<plugin id>.<command>` | The default node of a command a plugin registers. A plugin can name another node, or an empty one to open the command to everyone |
+
+Give `basalt.admin.broadcast` to a group only when you want its members treated as operators in those respects. A moderator group that should not be one leaves it out.
+
+## Who is in which group
+
+Group membership is player state, not configuration, so it is never written in `groups.toml`. It lives in `players.db`, next to the worlds, and a player with no group recorded is in the default group.
+
+| Command | Does |
+|---|---|
+| `/group <player> <group>` | Puts the player in that group |
+| `/op <player>` | Puts the player in the group marked `operator` |
+| `/deop <player>` | Puts the player back in the group marked `default` |
+
+All three take effect at once, and an online player gets a new command tree so tab completion matches the new group. The player can be offline, as long as they have joined this server before; otherwise the command answers `No player named 'x' is online or has ever joined this server.` An unknown group name is refused with the list of declared groups.
+
+A player whose recorded group is no longer declared in `groups.toml` is treated as being in the default group.
+
+`/op` and `/deop` are the vanilla names for moving between two groups, and nothing else. What a player may do is still read from the group's rules, so removing `*` from the operator group changes what `/op` gives.
+
+<x-docs.callout type="tip" title="Applying changes">
+`/reload` re-reads `groups.toml` and applies it to everybody online without a restart. A file that does not validate is reported and the running groups stay as they were.
+</x-docs.callout>
 
 ## Access
 
@@ -13,7 +140,6 @@ The global `access` answers about players whether or not they are online. Each c
 | `access.is_whitelisted(who)` | Whether it is on the whitelist |
 | `access.is_operator(who)` | Whether it belongs to the operator group |
 | `access.known(name)` | `{ uuid, name, first_seen, last_seen }`, or `nil` when the server never saw it |
-
 | `access.statistic(uuid, key)` | A stored statistic counter of a player who may be offline, such as `minecraft:custom/minecraft:jump` |
 | `access.set_statistic(uuid, key, value)` | Sets that counter in the player database; returns whether it did |
 | `access.last_death(uuid)` | `{ dimension, x, y, z }` where the player last died, or `nil` |
@@ -24,14 +150,13 @@ if access.is_banned("Steve") then log.info("Steve is banned") end
 
 ## Granting and denying permissions
 
-A plugin can grant or deny a permission to one player on top of their group, for the session. The source is the
-calling plugin.
+A plugin can grant or deny a permission to one player on top of their group, for the session. The source is the calling plugin.
 
 ```lua
 p:grant("myplugin.fly")
 p:deny("essentials.spawn")
-p:revoke("myplugin.fly")   -- drops this plugin's entry
+p:revoke("myplugin.fly")        -- drops this plugin's entry
+p:may("basalt.command.kick")    -- what the server's own checks would answer
 ```
 
-An exact node beats a wildcard (`a.b.*`, `*`), the longest wildcard wins, and a denial wins a tie. The server's own
-checks (`player:may(node)`, command permissions and permission levels) consult these entries before the group.
+An exact node beats a wildcard (`a.b.*`, `*`), the longest wildcard wins, and a denial wins a tie. The server's own checks (`p:may(node)` and command permissions) consult these entries before the group.
