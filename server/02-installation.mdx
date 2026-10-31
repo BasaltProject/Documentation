@@ -142,7 +142,7 @@ WantedBy=multi-user.target
 
 `RestartPreventExitStatus` keeps systemd from restart-looping on a configuration mistake or a missing EULA. Accept the EULA once with `--accept-eula` in `ExecStart`, or by editing `eula.toml`. A stop signal saves and shuts the server down like `/stop`.
 
-With no terminal there is no console. Run commands through the management API or RCON ([Server control](/docs/server/server-control)).
+With no terminal there is no console. Run commands through the management API or RCON ([Operations](/docs/server/operations)).
 
 ## Running in Docker
 
@@ -181,7 +181,7 @@ services:
 Everything the server writes goes to `/data`, so that one volume holds the configuration, worlds, plugins and state. `stdin_open` and `tty` let you reach the console with `docker attach`; leave them out if you drive the server through the API.
 
 <x-docs.callout type="warning" title="The management API in a container">
-The API listens on loopback inside the container, so publishing its port reaches nothing. To use it from outside, set `bind` in `[network.api]` and keep it on a private network or behind TLS. See [Server control](/docs/server/server-control).
+The API listens on loopback inside the container, so publishing its port reaches nothing. To use it from outside, set `bind` in `[network.api]` and keep it on a private network or behind TLS. See [Operations](/docs/server/operations).
 </x-docs.callout>
 
 ## Updating
