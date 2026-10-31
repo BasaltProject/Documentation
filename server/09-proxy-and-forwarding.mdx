@@ -1,6 +1,7 @@
 ---
 title: Running behind a proxy
 description: The forwarding schemes the server understands, how to pair it with Basalt Proxy, Velocity or BungeeCord, and how to keep the port safe.
+group: Administration
 ---
 
 A proxy in front of the server connects on behalf of every player. Without help the server sees one address and one offline UUID, the proxy's. Forwarding is how the proxy tells the server who is really there. Every forwarding mode replaces the login handshake: the proxy authenticates players against Mojang, and this server trusts what the proxy says about them.

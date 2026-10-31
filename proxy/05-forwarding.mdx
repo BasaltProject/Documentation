@@ -1,6 +1,7 @@
 ---
 title: Forwarding
 description: How the proxy passes a player's real identity to a backend, which scheme to pick and how to configure the backend to match.
+group: Configuration
 ---
 
 The proxy authenticates the player, then opens its own connection to a backend. Without help, the backend would see every player as the proxy's address with an offline UUID. A **forwarding scheme** is how the proxy tells the backend who is really there, and how the backend knows the claim comes from the proxy and not from someone who connected to it directly.

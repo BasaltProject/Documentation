@@ -1,6 +1,7 @@
 ---
 title: Server settings
 description: Every key of server.toml and limits.toml, with its type, default and meaning.
+group: Configuration
 ---
 
 `config/server.toml` holds everything about the process itself; `config/limits.toml` holds the limits on what one connection may do. Both are read at startup (`limits.toml` can also be reloaded with `/reload`). See [Configuration](/docs/server/configuration) for how files are generated, upgraded and reloaded.
