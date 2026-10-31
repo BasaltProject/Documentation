@@ -1,6 +1,7 @@
 ---
 title: Entities from Lua
 description: Properties, effects, attributes, equipment, movement, mob goals and state, and the events of mobs, projectiles and vehicles.
+group: Plugin reference
 ---
 
 An entity object is what `world:entities()`, `world:entity(id)`, the `entity` field of an event and `world:spawn(...)`
@@ -124,7 +125,7 @@ as in vanilla, and a mob without plugin goals pays nothing. Mobs that run on a b
 | `e:goals()` | list | `{ key, priority, running, plugin, usable, flags }` for each goal; `usable` is whether the goal could start (or keep going while it runs) at the selector's last check |
 
 A vanilla goal key is the vanilla goal class name in snake case without `Goal`; the `minecraft:` prefix is optional. A
-running goal that is removed stops on the next AI turn. The `entity.goal` event below drives a plugin goal.
+running goal that is removed stops on the next AI turn. The [`entity.goal` event](/docs/server/events-entities#entity-events) drives a plugin goal.
 
 ```lua
 e:add_goal("my:wave", 3, "look")
@@ -266,21 +267,9 @@ is sent again to the players who can see the entity, and a bee takes its saved f
 
 ## Events
 
-| Event | Notes |
-|---|---|
-| `entity.damage` | Fields `attacker_id` (the cause, -1 for none) and `direct_id` (the projectile or mob that touched it; `attacker_id` is the owner behind it) |
-| `entity.death` | Field `killer_id` |
-| `entity.target` | Cancellable. A mob picked a new target. `entity_id entity_type world target_id previous_id reason`; `target_id` is editable, -1 clears |
-| `entity.drops` | Editable. A mob died and its loot is about to drop. `entity_id entity_type world x y z drops exp killer_id`; `drops` is one `item\|count` per line, `exp` is editable |
-| `entity.goal` | Fires for plugin goals only. `entity_id entity_type world key phase result`; `phase` is `can_use`, `can_continue`, `start`, `stop` or `tick`, and for the first two `result` (a boolean) is editable |
-| `entity.move` | Cancellable. A mob moved during its own tick, never a player (see `player.move`). `entity_id entity_type world from_x from_y from_z x y z from_yaw from_pitch yaw pitch`; cancelling puts the mob back at `from_*`, and it costs nothing while nobody listens |
-| `entity.allied_check` | Editable. A player's sweep attack or mace smash is deciding whom to spare, after the teams said no. `entity_id entity_type world x y z other_id allied`; set `allied` to true to spare `other_id` |
-| `entity.resurrect` | Cancellable. A totem of undying is about to be used. `entity_id entity_type world hand` |
-| `entity.add` | Notification. A mob was created through the spawner path. `entity_id entity_type world x y z reason` |
-| `entity.potion_effect` | Cancellable. A mob is about to receive an effect. `entity_id entity_type world effect amplifier duration action cause` |
-| `entity.launch` | Cancellable. A projectile appeared (seen the tick after it spawns; a refusal removes it). `entity_id entity_type world x y z shooter_id` |
-| `vehicle.damage` | Cancellable, `amount` editable. A boat or minecart was hit. `entity_id entity_type world amount attacker_id` |
-| `vehicle.destroy` | Cancellable. A boat or minecart is about to break. `entity_id entity_type world attacker_id` |
+The events of mobs, projectiles and vehicles (`entity.damage`, `entity.drops`, `entity.target`, `entity.goal`,
+`entity.move`, `vehicle.damage`...) are listed with their fields in the
+[entity, item and inventory events](/docs/server/events-entities).
 
 ```lua
 on("entity.drops", function(e)

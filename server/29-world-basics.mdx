@@ -1,0 +1,120 @@
+---
+title: Worlds, positions, NPCs and holograms
+description: Find, create and unload worlds, read and change a world's time and weather, spawn entities, and place NPCs and holograms.
+group: Plugin reference
+---
+
+A world object is what `worlds.default()`, `worlds.by_name(name)` and `worlds.all()` give you, and the `world` an event
+reports by name. The calls for blocks in bulk, sections, biomes and light are in the [world API](/docs/server/world-api);
+sounds, particles, structures and spawning rules in [World effects](/docs/server/world-effects).
+
+## Finding worlds
+
+| Call | Does |
+|---|---|
+| `worlds.default()` | The default world, or nil |
+| `worlds.by_name(name)` | A loaded world, or nil |
+| `worlds.all()` | A list of every loaded world |
+| `worlds.create{ name, dimension?, type?, seed? }` | Creates a world, or loads an unloaded world of that name, and returns it. `dimension` is `overworld` (the default), `nether` or `end`, `type` is `normal` (the default), `flat`, `void`, `amplified`, `large_biomes` or `debug`, and `seed` a whole number, see [Worlds](/docs/server/worlds). Returns nil for an unknown dimension or type |
+| `worlds.unload(name, [save])` | Takes a world that holds no player out of play: it stops being listed and ticked and is saved first unless `save` is `false`. Returns false for the default world or one with players. `worlds.create` with the same name brings it back as it was |
+| `worlds.delete(name)` | Deletes an unloaded world that is not the default one, from the server's own storage. A table `{ name = ... }` is accepted too. Returns whether it did |
+
+`name` for the last two may also be a table with a `name` field.
+
+## Reading a world
+
+| Member | Meaning |
+|---|---|
+| `w.name`, `w.dimension` | The world name and its dimension id, such as `minecraft:overworld` |
+| `w.seed` | The world seed |
+| `w.min_height`, `w.height` | The lowest block y and the number of blocks from it to the top |
+| `w.time` | The world's age in ticks |
+| `w.day_time` | The world clock in ticks |
+| `w.raining`, `w.thundering` | The weather |
+| `w.difficulty` | `peaceful`, `easy`, `normal` or `hard` |
+| `w.rules` | The ids of the game rules |
+| `w:rule(name)`, `w:rule(name, value)` | Reads a game rule as text, or sets it from text (`"true"`, `"3"`) and returns whether the value was accepted |
+| `w:block(x, y, z)` | The block id at a position, such as `minecraft:oak_stairs`, or nil when the chunk is not loaded |
+| `w:block_state(x, y, z)` | The block with its properties, `minecraft:oak_stairs[facing=east,half=top]` |
+| `w:set_block(x, y, z, block)` | Sets a block from an id or a state text. Returns whether it worked |
+| `w:biome(x, y, z)`, `w:set_biome(x, y, z, biome)` | The biome id at a block position, or nil; and setting it |
+| `w:highest(x, z, [kind])` | The y of the highest block of a column, using the heightmap `kind`: `motion_blocking` (the default), `surface` or `ocean_floor` |
+| `w:chunk_loaded(cx, cz)` | Whether the chunk is loaded |
+| `w:load_chunk(cx, cz, [generate])` | Loads a chunk, generating it unless `generate` is `false`. Returns whether it worked |
+| `w:unload_chunk(cx, cz)` | Unloads a chunk. Returns whether it did |
+| `w:entities()` | A list of every entity in the world, see [Entities](/docs/server/entities) |
+
+Wherever a call takes `x, y, z`, a position can be given in their place: `w:block(p.pos)`, `w:set_block(p.pos, "minecraft:stone")`.
+
+## Changing a world
+
+| Call | Does |
+|---|---|
+| `w:set_time(ticks)` | Sets the world clock |
+| `w:set_weather(raining, thundering)` | Sets the weather, both `false` by default |
+| `w:set_spawn(x, y, z)` | Sets the world spawn |
+| `w:spawn(type, x, y, z)` or `w:spawn(type, pos)` | Spawns an entity of that type and returns it, or nil |
+| `w:spawn_as(type, x, y, z, [yaw], [reason])` | Spawns with a facing and the reason `entity.spawn` reports (`plugin` by default) |
+| `w:drop_item(item, x, y, z, [vx], [vy], [vz])` | Puts an item on the ground and returns its entity |
+| `w:explode(x, y, z, power, [break_blocks], [source_id], [fire])` | An explosion; blocks are spared when `break_blocks` is `false`, fires are set when `fire` is `true` |
+
+## Positions
+
+`pos(world, x, y, z)` makes a position, and `p.pos` and `entity.pos` give one. It is a table, so it can be passed to
+anything that takes coordinates:
+
+| Member | Meaning |
+|---|---|
+| `pos.world`, `pos.x`, `pos.y`, `pos.z` | Where |
+| `pos.chunk_x`, `pos.chunk_z` | The chunk it is in |
+| `pos:offset(dx, dy, dz)` | A new position moved by that much |
+| `pos:distance(other)` | The straight-line distance to another position |
+
+## NPCs
+
+A fake player standing in a world:
+
+```lua
+local guard = worlds.default():npc{
+    name = { "<gold>Guard", "<gray>Click me" },
+    pos = pos("world", 0, 64, 0),
+    skin = { texture = "...", signature = "..." },
+    on_click = function(player)
+        player:send("Halt!")
+    end,
+}
+```
+
+| Option | Meaning |
+|---|---|
+| `pos` | Required |
+| `name` | A string, or a list of lines |
+| `skin` | `{ texture, signature }` |
+| `on_click` | `function(player)`, called when a player clicks the NPC. It cannot `wait` |
+
+`world:npc` returns the NPC, or nil if it could not be made:
+
+| Member | Meaning |
+|---|---|
+| `npc.id`, `npc.uuid`, `npc.world`, `npc.x`, `npc.y`, `npc.z`, `npc.alive` | Read only |
+| `npc.name` | Read and write |
+| `npc.audience` | The uuids of the players it is shown to, or nil for everyone |
+| `npc:skin(texture, [signature])`, `npc:skin_from(player_name)` | Sets the skin, or copies the one of a known player. `skin_from` returns whether it found them |
+| `npc:look(yaw, [pitch])` | Points it somewhere; it stops following players |
+| `npc:looks_at_players([follow])` | Makes it turn to nearby players (the default) or stop |
+| `npc:teleport(x, y, z)` or `npc:teleport(pos)` | Moves it |
+| `npc:show_only_to(players)`, `npc:show_to_all()` | Limits it to a list of players (player objects or uuids) or shows it to everyone |
+| `npc:remove()` | Removes it |
+
+## Holograms
+
+Floating text:
+
+```lua
+local sign = worlds.default():hologram("<yellow>Welcome", pos("world", 0, 66, 0))
+sign.text = "<yellow>Welcome back"
+```
+
+`world:hologram(text, pos)` or `world:hologram(text, x, y, z)` returns the hologram, or nil. Its members are `id`, `type`,
+`world`, `x`, `y`, `z`, `alive` and `audience` (read only), `text` (read and write), and `remove()`,
+`teleport(x, y, z)`, `show_only_to(players)` and `show_to_all()`, which work as on an NPC.

@@ -1,9 +1,10 @@
 ---
 title: World effects and environment
 description: Sounds, particles, drops, redstone signals, structures, raids, fluids, spawning rules, server settings and unloading worlds.
+group: Plugin reference
 ---
 
-These are members of the world object, next to the block calls of the world API page. Faces are
+These are members of the world object, next to the [basics](/docs/server/world-basics) and the block calls of the [world API](/docs/server/world-api). Faces are
 0 to 5 or `down`, `up`, `north`, `south`, `west`, `east`.
 
 ## Border, sound and particles
@@ -65,7 +66,7 @@ Four helpers on `worlds` read block facts:
 | `world:game_event(event, x, y, z, source_uuid?)` | Raises a game event that sculk sensors hear |
 | `world.tickable_block_entity_count` | Loaded block entities that run code every tick (furnaces, hoppers, spawners, beacons, signs...) |
 | `world:random_tick(x, y, z)` | One random tick on that block, as the random tick speed gives; true when a block changed |
-| `world:tunable(key)`, `world:set_tunable(key, number)` | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla) and `simulation_distance` (chunks, also sent to clients without an override) `hardcore` (0 or 1), `loot_refill` (0 or 1) and `loot_reloot_seconds` (-1 for never) |
+| `world:tunable(key)`, `world:set_tunable(key, number)` | Per-world switches by name: `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset` (blocks relative to the world floor, -64 as in vanilla), `simulation_distance` (chunks, also sent to clients without an override), `hardcore` (0 or 1), `loot_refill` (0 or 1) and `loot_reloot_seconds` (-1 for never) |
 | `world:fluid_flow(x, y, z)` | The flow vector of the fluid at a block as `{ x, y, z }`, zero when none |
 | `world:sculk_shriek(x, y, z, player_uuid)` | The sculk shrieker at the block tries to shriek for that player, as when they step on it; returns whether it did |
 | `world:sculk_bloom(x, y, z, source_x, source_y, source_z, charge)` | The sculk catalyst blooms and starts a sculk charge of `charge` at the source block; returns whether it did |
@@ -125,29 +126,3 @@ world:set_spawn_rules{ limits = { monster = 20 }, allow_animals = false }
 ```
 
 Changing these departs from vanilla spawning for as long as the values are set.
-
-## Server settings
-
-`settings` reads a few server settings as text. `settings.keys()` lists them: `motd`, `max_players`, `port`, `bind`,
-`online_mode`, `enforce_secure_profile`, `whitelist`, `gamemode`, `idle_timeout`, `view_distance`,
-`simulation_distance`, `bedrock_port`, `hide_online_players`, `level_type`, `initial_enabled_packs`, `initial_disabled_packs`,
-`allow_nether`, `allow_end`, `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world` and
-`autosave`. The six added before `pause_when_empty_seconds` are read only.
-
-| Call | Does |
-|---|---|
-| `settings.get(key)` | The setting as text (booleans are `true` or `false`), or nil |
-| `settings.set(key, value)` | Writable while running: `motd` and `max_players` (what the server list shows; the cap is not enforced at login), `idle_timeout` in minutes, `gamemode` (the default of every world), `pause_when_empty_seconds`, `spawn_protection`, `pause_allowed`, `respawn_world` and `autosave`. False for anything else |
-
-`pause_when_empty_seconds` is the time with nobody online before the tick loop stops (0 never pauses, 60 as in
-vanilla; `pause-when-empty-seconds` in `server.toml`). `spawn_protection` is the block radius around the overworld spawn
-that only operators may change (0 off, 16 as in vanilla, waived while nobody is an operator; `spawn-protection` in
-`server.toml`). `pause_allowed` (`true` or `false`) lets a plugin forbid the pause. `respawn_world` is a loaded world
-name where a player without a spawn point comes back, the default world unless set; dying elsewhere returns the player
-there, switching worlds when needed. `autosave` is the switch behind `/save-on` and `/save-off`.
-
-## Unloading worlds
-
-`worlds.unload(world, save?)` takes a world that holds no player out of play: it stops being listed and ticked, and
-its regions are saved unless `save` is `false`. It returns false for the default world or one with players.
-`worlds.create` with the name of an unloaded world brings it back as it was.

@@ -1,10 +1,12 @@
 ---
 title: Packets
 description: Listen to, change, cancel and send packets of any connection state from Lua.
+group: Plugin reference
 ---
 
 A plugin can see every packet of every connection state: handshake, status, login, configuration and play, in both
-directions. It needs the capability in its manifest, and the server operator has to grant it.
+directions. It needs the capability in its manifest, and the operator has to grant it, see
+[Manifest and layout](/docs/server/plugin-manifest#capabilities).
 
 ```toml
 [capabilities]
@@ -51,13 +53,41 @@ A packet nobody listens to costs one atomic read. Listen to the narrowest name t
 ```lua
 packet.send(player, "clientbound.set_title_text", bytes)       -- to one player
 packet.receive(player, "serverbound.play.chat", bytes)         -- as if the client had sent it
-p:send("clientbound.set_title_text", bytes)                    -- on the connection that packet travels on
 ```
 
-The last argument, `intercept`, defaults to `false`: the packet goes past the listeners. Pass `true` to run them on
-it too. Both return `false` when the player has no Java connection, which is the case for Bedrock players.
+Inside a packet listener, the packet object can do the same on the connection it travels on:
 
-## Plugin channels and commands
+```lua
+packet.on("serverbound.play.chat", function(p)
+    p:send("clientbound.set_title_text", bytes)
+    p:receive("serverbound.play.chat", other_bytes)
+    p:cancel()                    -- the same as p.cancelled = true
+end)
+```
 
-`channel.on(name, fn)` and `channel.send(player, name, bytes)` carry plugin messages on the channels a plugin declares
-under `network` in its manifest. `run(command)` runs a command as the console and needs `commands = true`.
+`bytes` is a list of numbers from 0 to 255, the body of the packet without its id. The last argument, `intercept`,
+defaults to `false`: the packet goes past the listeners. Pass `true` to run them on it too. All of these return `false`
+when the player has no Java connection, which is the case for Bedrock players, and raise an error when the name is not a
+packet of that direction.
+
+## Plugin channels
+
+Plugin messages are custom payloads on named channels, the way mods and proxies talk to a server. A plugin lists the
+channels it uses in its manifest and the operator grants `network`, see
+[Manifest and layout](/docs/server/plugin-manifest#capabilities):
+
+```toml
+[capabilities]
+network = ["arena:lobby"]
+```
+
+```lua
+channel.on("arena:lobby", function(player, bytes)
+    -- bytes is a list of numbers from 0 to 255; player is nil when the sender is unknown
+end)
+
+channel.send(player, "arena:lobby", { 1, 2, 3 })       -- returns whether it was sent
+```
+
+A channel that is not in the manifest raises an error that lists the ones that are. The handler answers at once and cannot
+`wait`.

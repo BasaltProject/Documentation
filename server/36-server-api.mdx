@@ -1,6 +1,7 @@
 ---
-title: Server control
-description: The tick rate, server links, datapacks, advancements, loot tables and maps.
+title: Server control from Lua
+description: The tick rate, server settings, server links, datapacks, advancements, loot tables and maps.
+group: Plugin reference
 ---
 
 ## Tick
@@ -11,15 +12,40 @@ description: The tick rate, server links, datapacks, advancements, loot tables a
 |---|---|
 | `tick.rate()`, `tick.set_rate(rate)` | Reads or sets the tick rate |
 | `tick.frozen(frozen?)` | With no argument reads whether ticking is frozen; with a boolean sets it |
-| `tick.step(n)` | Runs `n` ticks while frozen |
-| `tick.sprint(n)` | Runs `n` ticks as fast as possible; `tick.stop_sprint()` ends it |
-| `tick.pace()` | `{ tps_1m, tps_5m, tps_15m, mean_tick_ms }` |
+| `tick.step(n)` | Runs `n` ticks while frozen. Returns whether it started |
+| `tick.sprint(n)` | Runs `n` ticks as fast as possible; `tick.stop_sprint()` ends it. Both return a boolean |
+| `tick.pace()` | A list of four numbers: the ticks per second over the last 1, 5 and 15 minutes, and the mean tick time in milliseconds |
 | `tick.times()` | The last hundred tick durations in nanoseconds, not sorted by age |
 | `tick.paused()` | Whether the server is ticking nothing because nobody has been online for `pause_when_empty_seconds` |
 
 With nobody online for `pause-when-empty-seconds` (`server.toml`, 60 as in vanilla) the tick loop only serves
 connections. It logs "Server empty for N seconds, pausing" and "Server resumed". A plugin that needs a heartbeat with nobody
-online sets `settings.set("pause_when_empty_seconds", "0")`, or forbids the pause with `pause_allowed`.
+online sets `settings.set("pause_when_empty_seconds", "0")` or `settings.set("pause_allowed", "false")`, see
+[Settings](#settings).
+
+## Settings
+
+`settings` reads and changes a few settings of the running server. Values travel as text, and booleans are `"true"` or
+`"false"`.
+
+| Call | Does |
+|---|---|
+| `settings.keys()` | The list of keys |
+| `settings.get(key)` | The value as text, or nil for an unknown key |
+| `settings.set(key, value)` | Changes a writable key until the server stops, and returns whether the value was accepted |
+
+| Key | Writable | Meaning |
+|---|---|---|
+| `motd` | yes | What the server list shows. Overrides the configured entry |
+| `max_players` | yes | The number the server list shows. It is not enforced at login |
+| `gamemode` | yes | The default game mode of every world: `survival`, `creative`, `adventure` or `spectator` |
+| `idle_timeout` | yes | Minutes before an idle player is kicked, 0 for never |
+| `pause_when_empty_seconds` | yes | Seconds with nobody online before the tick loop pauses; 0 never pauses (`pause-when-empty-seconds` in `server.toml`) |
+| `pause_allowed` | yes | `false` forbids the pause altogether |
+| `spawn_protection` | yes | The block radius around the overworld spawn that only operators may change (`spawn-protection` in `server.toml`) |
+| `respawn_world` | yes | The name of a loaded world where a player without a spawn point comes back; the default world unless set |
+| `autosave` | yes | The switch behind `/save-on` and `/save-off` |
+| `port`, `bind`, `online_mode`, `enforce_secure_profile`, `whitelist`, `view_distance`, `simulation_distance`, `bedrock_port`, `hide_online_players`, `level_type`, `initial_enabled_packs`, `initial_disabled_packs`, `allow_nether`, `allow_end`, `rcon_enabled`, `rcon_port`, `api_enabled`, `api_port` | no | What the server started with |
 
 ## Server links
 
@@ -32,7 +58,7 @@ server_links.set({
 })
 ```
 
-`server_links.list()` returns `{ { kind, url }, ... }`. A kind is `bug_report`, `community_guidelines`, `support`,
+`server_links.list()` returns `{ { kind, label, url }, ... }`. A kind is `bug_report`, `community_guidelines`, `support`,
 `status`, `feedback`, `community`, `website`, `forums`, `news` or `announcements`; a link without a kind carries a
 JSON `label`.
 
@@ -74,7 +100,7 @@ Containers refill their loot only when the world turns on `loot-refill` (see the
 
 ## Maps
 
-`maps.create(world, center_x, center_z, scale)` makes a map and returns its id. `maps.info(id)` returns
+`maps.create(world, center_x, center_z, [scale])` makes a map and returns its id; `scale` is 0 by default. `maps.info(id)` returns
 `{ dimension, scale, center_x, center_z, locked }`.
 
 `maps.explorer` makes a map that points at the nearest structure; see [Structures and templates](/docs/server/structures).

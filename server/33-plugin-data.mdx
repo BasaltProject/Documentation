@@ -1,0 +1,30 @@
+---
+title: Plugin data on worlds and entities
+description: Store a plugin's own data on a world, a chunk, a block entity or an entity as SNBT.
+group: Plugin reference
+---
+
+A world, a chunk, a block entity and an entity can each hold a compound that belongs to plugins and is saved with its
+holder. It goes in and out as SNBT text, the notation `/data` uses. For data about a player or the whole server use
+[Storage](/docs/server/storage) instead.
+
+| Read | Write | Holder | Saved with |
+|---|---|---|---|
+| `world:plugin_data()` | `world:set_plugin_data(snbt)` | The world | The world |
+| `world:chunk_data(cx, cz)` | `world:set_chunk_data(cx, cz, snbt)` | A chunk, while it is loaded | The chunk |
+| `world:block_entity_data(pos)` | `world:set_block_entity_data(pos, snbt)` | A block entity | The block entity |
+| `world:entity_data(entity)` | `world:set_entity_data(entity, snbt)` | An entity | The entity |
+
+Reads return the compound as SNBT text; writes take SNBT text and return whether they worked. `pos` is a position or three
+coordinates, and `entity` is an entity object or its id.
+
+```lua
+local world = worlds.default()
+world:set_plugin_data("{myplugin:{visits:3}}")
+print(world:plugin_data())
+```
+
+The compound is shared by every plugin and a write replaces all of it, so read it, change your own key and write it back.
+Keep to one key named after your plugin id.
+
+Player data is not kept on the world: it lives in the server's player database, so resetting a world never touches it.

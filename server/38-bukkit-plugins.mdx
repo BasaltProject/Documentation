@@ -1,0 +1,81 @@
+---
+title: Bukkit plugins
+description: Dropping Bukkit and Paper jars into plugins/, how their calls map to the native API, and what is known to work.
+group: Plugin reference
+---
+
+Basalt runs Bukkit, Spigot and Paper plugins next to Lua plugins, without a Java installation on the host. The Java side
+runs on Basalt Shim, an embedded Java machine that lives inside the server binary.
+
+## Drop it in
+
+Put the `.jar` in `plugins/` and start the server. Lua plugins live in the same folder:
+
+```
+plugins/
+  my-lua-plugin/        Lua plugin (a folder with plugin.toml)
+  other.bspkg           Lua plugin (a package)
+  WorldEdit.jar         Bukkit plugin (a jar with plugin.yml or paper-plugin.yml)
+```
+
+What is inside the file decides its kind, not its name. `/plugins` lists both kinds, marked `[Lua]` or `[Bukkit]`. A jar
+without a `plugin.yml` or `paper-plugin.yml` is reported in the log and ignored. The folder is scanned when the server
+starts, so a jar added later needs a restart. The old `plugins-bukkit/` folder is no longer read; the server warns if it
+still holds jars.
+
+<x-docs.callout type="note" title="Nothing starts until you need it">
+With no Bukkit jar in `plugins/`, no Java machine starts and nothing Java is read. With one, the server starts Shim and
+loads the jar. If Shim cannot start, the log says so once, with what to do.
+</x-docs.callout>
+
+The first time a jar is present, the server unpacks the embedded runtime into `.basalt/bukkit/` and downloads the few
+libraries the Bukkit API needs (the Paper API and what it uses, such as Adventure, Guava and Gson) into
+`.basalt/bukkit/lib/`, each checked against its published SHA-1. After that it starts offline. Nothing from Mojang is
+involved. A server build made without Bukkit support logs that the jars cannot load.
+
+## How it maps to the native API
+
+A Bukkit call is not a second server inside Basalt. Each one is translated into the same services the Lua API uses, so a
+Lua plugin and a Bukkit plugin see one world.
+
+| Bukkit | Native service |
+|---|---|
+| Events and `Listener` priorities | The Basalt event bus (`on` and `watch`); a priority maps to the equivalent one and `MONITOR` is an observer. An event nobody listens to costs nothing |
+| `World`, `Block`, `BlockData`, `Chunk` | The [world API](/docs/server/world-api): sections, block entities, biomes |
+| `Entity`, `Player`, `Inventory` | The entity and player objects |
+| Plugin messaging channels | `channel.on` and `channel.send` |
+| Netty pipelines (PacketEvents) | The [packet API](/docs/server/packets) |
+| Commands from `plugin.yml` | Server commands. The Bukkit permission of the command is its permission, and a command with none is open to everyone |
+
+Synchronous code runs on the tick thread. Bukkit's asynchronous tasks run on worker threads, and calls into the world made
+from them are handed to the tick thread, which they wait for.
+
+Block edits made through the usual calls (`setType`, `setBlockData`, `BlockState.update`) are grouped per chunk section and
+sent to the world when the plugin's callback, be it an event, a command or a task, returns. Reads inside the callback see
+the pending writes.
+
+## Worked with
+
+- **WorldEdit and FastAsyncWorldEdit** load and run through the adapter for this Minecraft version that they carry
+  themselves: selections, `//set`, `//replace`, `//copy`, `//paste`, `//undo`, `//redo`, `//sphere`, `//fill` and
+  `//schem save` and `//schem load` change the blocks players see and the blocks the server reads back. Any plugin that
+  carries the WorldEdit adapter interface gets the matching Basalt add-on; nothing is looked up by plugin name.
+- **PacketEvents** loads, injects into every connection and sends packets, also alongside FastAsyncWorldEdit on the same
+  server.
+
+## Limits
+
+- A plugin that reaches into Minecraft's internals (reflection on NMS classes) gets only what the packet and WorldEdit
+  support above provides.
+- Bedrock players have no Java packets, so packet listeners never see them.
+
+## When to use which
+
+| You want | Use |
+|---|---|
+| Maximum performance, native execution | Native Lua plugins |
+| Existing plugins | Bukkit and Paper jars |
+| Both | Both, side by side |
+
+Native plugins are the fast path: no process boundary, no serialization and no second heap. Bukkit support exists so that
+adopting Basalt does not mean giving up the plugins your server relies on while you migrate.

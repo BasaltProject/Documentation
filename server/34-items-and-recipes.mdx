@@ -1,0 +1,81 @@
+---
+title: Items, recipes and windows
+description: Data components on items, the recipes table and the events of containers, anvils, enchanting and furnaces.
+group: Plugin reference
+---
+
+## Items
+
+An item is a table, or just an id string for a stack of one: `{ id = "minecraft:bread", count = 3 }`. The fields are `id`
+(required), `count` (1), `name` (a string), `lore` (a list of strings), `damage` (a whole number), `enchantments` (a map
+from an enchantment id to a level) and `components`, below. Items read back from an inventory or a menu have the same
+fields.
+
+## Data components
+
+Every item table (the argument of `inventory:set`, `inventory:add`, menu items) and every item read back
+(`inventory:get`, `inventory.held`) has an optional `components` field: a map from a component name to its value
+written as SNBT text. These are the vanilla data components in their datapack form: `custom_name`, `lore`,
+`enchantments`, `custom_model_data`, `unbreakable`, `attribute_modifiers`, `custom_data`, `profile`,
+`potion_contents` and the rest.
+
+```lua
+player.inventory:set(0, {
+  id = "minecraft:stick",
+  components = { ["minecraft:custom_model_data"] = "{floats:[3.0f]}" },
+})
+```
+
+The older `name`, `lore`, `damage` and `enchantments` fields keep working, and win over the same component in
+`components`.
+
+## Recipes
+
+`recipes` registers and removes recipes written in the datapack's own JSON. The recipe types it reads are
+`minecraft:crafting_shaped`, `crafting_shapeless`, `crafting_transmute`, `smelting`, `blasting`, `smoking`,
+`campfire_cooking`, `stonecutting`, `smithing_transform`, `smithing_trim`, `brewing`, and the special crafting recipes
+(`crafting_dye`, `crafting_imbue`, `crafting_decorated_pot` and the `crafting_special_*` ones).
+
+| Call | Does |
+|---|---|
+| `recipes.add(id, json)` | Registers a recipe; `false` when the id is taken or the JSON is not a recipe |
+| `recipes.remove(id)` | Takes a recipe, the server's own included, out of every lookup |
+| `recipes.has(id)` | Whether it exists |
+| `recipes.ids()` | Every id: the datapack's first, then the added ones |
+| `recipes.clear()` | Empties the list |
+| `recipes.reset()` | Puts back the datapack's recipes and drops the added ones |
+| `recipes.reset_brewing()` | Drops the brewing recipes a plugin added and brings back the ones the game ships |
+
+A brewing recipe has an `input` (the bottle, optionally limited to some `potion_contents` `potions`), a `reagent` (an
+`item`) and an `output` (`id`, `count` and `components`):
+
+```lua
+recipes.add("myplugin:swift_water",
+  '{"type":"minecraft:brewing","input":{"item":"minecraft:potion","potion_contents":{"potions":"minecraft:water"}},'
+  .. '"reagent":{"item":"minecraft:sugar"},"output":{"id":"minecraft:potion","count":1}}')
+```
+
+A shapeless crafting recipe:
+
+```lua
+recipes.add("myplugin:ruby_block",
+  '{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:diamond"],"result":{"id":"minecraft:stone","count":1}}')
+```
+
+## Block entity data
+
+Besides its saved fields, some block entities take extra keys through the block entity NBT calls of the
+[world API](/docs/server/world-api#block-entities): a furnace saves `Paper.CookSpeedMultiplier` (0 to 200, higher is
+faster; it multiplies the fuel speed at once and keeps the progress), a beacon `BeaconRange` (double) and a beehive
+`MaxBees` (int) override the effect range and the occupant limit.
+
+## Events
+
+The events of windows, anvils, enchanting tables and furnaces (`inventory.*` and `furnace.*`) are listed with their fields
+in the [entity, item and inventory events](/docs/server/events-entities).
+
+```lua
+on("inventory.prepare", function(e)
+  if e.kind == "anvil" then e.cost = 1 end
+end)
+```

@@ -1,6 +1,7 @@
 ---
 title: Players from Lua
 description: The properties and operations of a player object, from movement and the tab list to sounds, signs and resource packs.
+group: Plugin reference
 ---
 
 A player object is what `players.by_name`, `players.online()` and the `player` field of an event give you. Properties
@@ -17,6 +18,65 @@ p.fly_speed = 0.05
 p:tab_list("<gold>Welcome", "<gray>basaltmc.org")
 p:sound_at("minecraft:entity.player.levelup", "player", p.x, p.y, p.z, 1, 1, 0)
 ```
+
+## Finding players
+
+| Call | Returns |
+|---|---|
+| `players.online()` | A list of every player online |
+| `players.by_name(name)` | The online player with that name, or nil |
+| `players.by_uuid(uuid)` | The online player with that uuid string, or nil |
+| `players.count()` | How many are online |
+
+For people who are not online, `access.known(name)` and the other `access` calls are in
+[Groups and permissions](/docs/server/groups-and-permissions).
+
+## The basics
+
+| Member | Access | Meaning |
+|---|---|---|
+| `p.name`, `p.uuid` | read | Name and uuid string |
+| `p.online` | read | Whether the player is connected. A player object kept after they left reports `false` |
+| `p.health`, `p.food`, `p.level` | read, write | Health (a number), food (whole number) and experience level |
+| `p.gamemode` | read, write | `survival`, `creative`, `adventure` or `spectator` |
+| `p.world` | read | The name of the world they are in |
+| `p.x`, `p.y`, `p.z` | read | Position |
+| `p.pos` | read | The position as a table `{ world, x, y, z, chunk_x, chunk_z }` with `offset(dx, dy, dz)` and `distance(other)` |
+| `p.ping` | read | Latency in milliseconds |
+| `p.sneaking` | read | Whether they are sneaking |
+| `p.held_item` | read | The id of the item in the main hand, or nil |
+| `p.attributes` | read | The names of the attributes that exist |
+| `p.inventory` | read | The inventory object, below |
+| `p.data` | read | Values saved for this player by this plugin, see [Storage](/docs/server/storage#player-data-and-store) |
+
+| Call | Does |
+|---|---|
+| `p:send(text, [args])` | A chat message. Text rules, `@key` and `{name}` arguments are in [Config and lang files](/docs/server/config-and-lang#text) |
+| `p:action_bar(text, [args])` | The text above the hotbar |
+| `p:title(text, [subtitle], [times])` | A title. `times` is `{ fade_in, stay, fade_out }` in ticks, 10, 70 and 20 by default |
+| `p:kick([text])` | Disconnects the player with that message |
+| `p:teleport(pos)`, `p:teleport(world, x, y, z)`, `p:teleport(x, y, z)` | Moves the player, in the same world for the last form. Returns whether it did |
+| `p:give(id, [count])` | Puts items in the inventory and returns whether it worked |
+| `p:effect(id, [seconds], [level])` | Gives a potion effect: `level` counts from 1, no `seconds` makes it last until removed, `0` seconds removes it. Returns whether the effect exists |
+| `p:attribute(name)`, `p:attribute(name, value)` | Reads an attribute (a number or nil) or sets it, returning whether it did |
+| `p:sound(id, [volume], [pitch])` | Plays a sound to this player at their position |
+| `p:particle(id, [pos], [count], [speed])` | Shows particles to this player, at their position when no `pos` is given |
+| `p:may(node)` | Whether they hold a permission |
+| `p:grant(node)`, `p:deny(node)`, `p:revoke(node)` | Grants or denies a permission for the session on top of their group; `revoke` drops this plugin's entry. See [Groups and permissions](/docs/server/groups-and-permissions) |
+
+The inventory object has 41 slots: 0 to 26 are the storage rows, 27 to 35 the hotbar (the selected one is
+`27 + inventory.held_slot`), 36 to 39 armour and 40 the off hand.
+
+| Member | Does |
+|---|---|
+| `inv.size`, `inv.held_slot` | The number of slots and the selected hotbar position, 0 to 8 |
+| `inv.held` | The item in the selected slot, or nil |
+| `inv:get(slot)` | The item in a slot, or nil. An item is `{ id, count, name, lore, damage, enchantments, components }` |
+| `inv:set(slot, item)` | Puts an item (a table, or an id string) in a slot; `nil` empties it |
+| `inv:add(item, [count])` | Adds an item where it fits; returns how many could not be placed |
+| `inv:remove(id, [count])` | Takes up to `count` (1) of an item; returns how many were taken |
+| `inv:count(id)` | How many of that item the player has |
+| `inv:clear()` | Empties the whole inventory |
 
 ## Movement and state
 

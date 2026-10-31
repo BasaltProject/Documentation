@@ -1,6 +1,7 @@
 ---
 title: The world from Lua
 description: Blocks, sections, block entities, entity NBT, biomes and light in the native API.
+group: Plugin reference
 ---
 
 `worlds.default()`, `worlds.by_name(name)` and `p.pos.world` give you a world object. Single blocks use the calls
@@ -32,7 +33,7 @@ world:set_section(0, 4, 0, states)
 | `world:section(cx, sy, cz, load?)` | The 4096 ids, or `nil` when the chunk is not loaded and `load` is `false` |
 | `world:set_section(cx, sy, cz, states, notify?)` | Writes a section; `notify` (default `true`) shows it to the players who see it |
 | `world:apply_chunk(cx, cz, sections, options?)` | Writes several sections of one chunk |
-| `world:apply_chunks(chunks, options?)` | Writes many chunks at once |
+| `world:apply_chunks(chunks, options?)` | Writes many chunks at once; `chunks` is a list of `{ x, z, sections }` and the options are the same |
 | `world.block_version` | Changes whenever a block changes or a chunk loads or unloads |
 
 In `apply_chunk` and `apply_chunks`, `sections` maps a section y to its 4096 ids, and a negative id keeps the block
@@ -58,7 +59,7 @@ A change of blocks can set off more than the blocks. `world:apply_changes(positi
 states and then runs `effects` for the blocks that changed, the way `Level.setBlock` does in the official server;
 `world:update_neighbors(positions, effects?, previous?)` runs them for blocks that are already written, and `previous`
 (a state id per position) says what each held before, which the departure of a block needs. `effects` is a list of
-names, or their bits added up:
+names, or their bits added up; without it the effects are `neighbors`, `shapes` and `clients`:
 
 | Effect | Does |
 |---|---|
@@ -95,10 +96,8 @@ The pieces of that aftermath can also be asked for on their own, for blocks alre
 ids, which is one call instead of one per section. `world:chunk_status(cx, cz)` says where a chunk stands: `unloaded`,
 `queued` (asked for and on its way), `loaded` or `ticking` (loaded near a player).
 
-`request_chunk(world, cx, cz, options?)` waits until a chunk is loaded. The chunk is generated in the background, so the
-tick is not held up; set `options.generate = false` to only wait for a chunk that is already on its way, and
-`options.urgent = true` to be served before the chunks nobody is waiting for. It can only be used where a plugin may
-wait, such as a `watch` handler, and it returns when the chunk is there or has given up, so look at `chunk_status` afterwards.
+`request_chunk(world, cx, cz, options?)` waits until a chunk is loaded, see
+[Scheduler and coroutines](/docs/server/scheduler#waiting-for-chunks). Look at `chunk_status` afterwards.
 
 ```lua
 request_chunk("world", 40, -12, { urgent = true })
