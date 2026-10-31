@@ -1,82 +1,205 @@
 ---
 title: Installation
-description: Getting the binary onto a machine and through its first start.
+description: Downloading, verifying and starting Basalt Server, its command line flags, first-start files, systemd and Docker.
 ---
 
-Basalt ships as a single native binary per platform. There is no runtime to
-install alongside it and no version of anything to keep matched.
+Basalt ships as a single native binary per platform. It needs no runtime beside it.
 
-## Supported platforms
+## Download
 
-| Platform | Architecture | Target |
-|---|---|---|
-| macOS | Apple silicon | `macosArm64` |
-| macOS | Intel | `macosX64` |
-| Linux | x86_64 | `linuxX64` |
-| Linux | aarch64 | `linuxArm64` |
-| Windows | x86_64 | `mingwX64` |
+Releases are published on GitHub at [BasaltProject/Server](https://github.com/BasaltProject/Server/releases). Each asset is the executable itself, named after the build:
 
-## Install
+```
+BasaltServer-<version>-<Platform>-<arch>
+```
 
-Download the binary for your platform, make it executable and put it where you
-want the server to live. The server writes everything it needs next to itself.
+| Platform | Architectures |
+|---|---|
+| `Linux` | `x64`, `arm64` |
+| `macOS` | `x64`, `arm64` (Apple silicon) |
+| `Windows` | `x64` |
+
+There are two channels:
+
+| Channel | When it is published |
+|---|---|
+| Release | Weekly, on Monday at 09:00 in Madrid, when something changed since the last one |
+| `nightly` prerelease | On every push to `main`. It is one moving release that the next push replaces |
+
+Every release carries a `SHA256SUMS` file next to the binaries. Download the binary for your platform and the checksum file, then verify before running:
 
 ```bash
-chmod +x basalt
-./basalt
+sha256sum --check --ignore-missing SHA256SUMS
 ```
+
+On macOS use `shasum -a 256 -c SHA256SUMS --ignore-missing`.
+
+## Start it
+
+Put the binary in an empty directory of its own: everything the server writes goes into the directory you start it from.
+
+```bash
+chmod +x BasaltServer-*
+./BasaltServer-26.3.0-Linux-x64
+```
+
+The first start does not launch a server, see [the EULA](#the-eula) below.
+
+## Command line flags
+
+There are exactly two flags. Everything else is configuration, in [`config/`](/docs/server/configuration).
+
+| Flag | Meaning |
+|---|---|
+| `--accept-eula` | Counts as accepting the Minecraft EULA for this run, skipping the `eula.toml` check |
+| `--safeMode` | Starts with vanilla's data packs only, ignoring the ones enabled for the world. Use it to recover from a data pack that stops the server loading |
+
+If a data pack fails validation at startup, the server logs the errors and falls back to vanilla alone by itself, as if `--safeMode` had been passed.
+
+### Exit codes
+
+Stable, so a supervisor can tell them apart from a crash.
+
+| Code | Meaning |
+|---|---|
+| `0` | Normal stop |
+| `2` | A configuration file is malformed or holds an invalid value. The log names the file |
+| `3` | The server could not start, for example a port that is already in use |
+| `4` | `players.db` could not be opened |
+| `78` | The EULA has not been accepted |
+
+## The EULA
+
+The server never prompts. It behaves the same on a terminal, under `systemd` and in a container.
+
+1. On start it looks for `eula.toml` in the working directory.
+2. If there is none but an accepted `eula.txt` exists (from vanilla, Paper or a hosting panel), it records the acceptance in `eula.toml` once and carries on. `eula.txt` is never read again.
+3. Otherwise it writes `eula.toml` with `eula = false`, logs a message and exits with code `78`.
+4. With `eula = true` in `eula.toml` it continues. `eula.toml` always wins over `eula.txt`.
+
+```toml
+# eula.toml
+eula = true
+```
+
+`--accept-eula` skips all of that. Typing it is a deliberate act and counts as accepting the [Minecraft EULA](https://www.minecraft.net/en-us/eula); it exists for immutable or non-interactive environments where editing a file is awkward.
 
 ## First start
 
-The first start does not launch a server. It writes `eula.toml` and stops.
+Once the EULA is accepted the server downloads the official server archive from Mojang, verifies its SHA-1 and unpacks the data it needs into `.basalt/assets/<version>/`. Later starts of the same version do not touch the network for this. Then it writes its configuration and creates the default world.
 
-<x-docs.callout type="warning" title="The server never prompts you">
-On first start Basalt writes `eula.toml` with `eula = false` and exits. Open it,
-set `eula = true` and start again. An accepted `eula.txt` from an existing server
-is read once and migrated.
-</x-docs.callout>
-
-For non-interactive environments there is a flag, and using it is a deliberate
-act that counts as accepting the [Minecraft EULA](https://www.minecraft.net/en-us/eula):
-
-```bash
-./basalt --accept-eula
+```
+eula.toml        the EULA acceptance
+config/          one TOML file per domain, generated with comments
+worlds/          one directory per world: worlds/<name>/region/, settings.toml, mobs.toml
+plugins/         .bspkg packages
+players.db       player data, permission group membership, whitelist, bans
+.basalt/         state the server owns:
+  assets/          the unpacked Mojang data
+  logs/            latest.log and archive/ (see logging in Server settings)
+  remote-token     the bearer token of the management API
 ```
 
-## Game data
+`config/` is what you edit. `players.db` and `.basalt/` are state: back them up, but do not hand-edit them. Player data deliberately lives outside the worlds, so a world can be deleted, copied or reset without touching anyone's inventory. See [Worlds](/docs/server/worlds).
 
-Once the EULA is accepted, the server downloads the official server download
-from Mojang, verifies its SHA-1 and unpacks only the data it needs into a local
-cache. That happens once per version; later starts touch neither the network nor
-the archive.
+<x-docs.callout type="tip" title="Coming from vanilla or Paper">
+If there is a `server.properties` and no `config/server.toml` on the first start, the values Basalt recognises are imported once, with a line in the log, and the file is not read again. The `motd` goes to the server list profile. The view distance is not imported: it is a per-world setting in `worlds.toml`. An Anvil world copied into `worlds/` is read as it is, see [Worlds](/docs/server/worlds#importing-a-world).
+</x-docs.callout>
 
-## Moving an existing server across
+## Ports
 
-Point Basalt at an existing server directory and it takes what it can:
+| Port | Protocol | Used for | Default |
+|---|---|---|---|
+| 25565 | TCP | Java Edition | on |
+| 19132 | UDP | Bedrock Edition | on |
+| 25565 | UDP | GameSpy 4 query | off |
+| 25575 | TCP | RCON, plaintext | off |
+| 25580 | TCP | Management API | on, bound to loopback only |
 
-- `server.properties` is imported once, on first start.
-- `eula.txt` is read once and migrated to `eula.toml`.
-- Anvil worlds are read and converted to Linear regions on load.
+Open only what you use. All of them are set in [`server.toml`](/docs/server/server-settings).
+
+## Running under systemd
+
+```ini
+# /etc/systemd/system/basalt.service
+[Unit]
+Description=Basalt Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=basalt
+WorkingDirectory=/srv/basalt
+ExecStart=/srv/basalt/BasaltServer-26.3.0-Linux-x64
+Restart=on-failure
+RestartPreventExitStatus=2 3 4 78
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`RestartPreventExitStatus` keeps systemd from restart-looping on a configuration mistake or a missing EULA. Accept the EULA once with `--accept-eula` in `ExecStart`, or by editing `eula.toml`. A stop signal saves and shuts the server down like `/stop`.
+
+With no terminal there is no console. Run commands through the management API or RCON ([Server control](/docs/server/server-control)).
+
+## Running in Docker
+
+The binary is a single file, so the image is a small base with CA certificates (the first start talks HTTPS to Mojang) and the binary. Use a glibc-based base image.
+
+```dockerfile
+FROM debian:stable-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --create-home --home-dir /data basalt
+COPY BasaltServer-26.3.0-Linux-x64 /usr/local/bin/basalt
+RUN chmod +x /usr/local/bin/basalt
+USER basalt
+WORKDIR /data
+VOLUME /data
+EXPOSE 25565/tcp 19132/udp
+ENTRYPOINT ["/usr/local/bin/basalt", "--accept-eula"]
+```
+
+```yaml
+# compose.yaml
+services:
+  basalt:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "25565:25565"
+      - "19132:19132/udp"
+    volumes:
+      - ./data:/data
+    stdin_open: true
+    tty: true
+```
+
+Everything the server writes goes to `/data`, so that one volume holds the configuration, worlds, plugins and state. `stdin_open` and `tty` let you reach the console with `docker attach`; leave them out if you drive the server through the API.
+
+<x-docs.callout type="warning" title="The management API in a container">
+The API listens on loopback inside the container, so publishing its port reaches nothing. To use it from outside, set `bind` in `[network.api]` and keep it on a private network or behind TLS. See [Server control](/docs/server/server-control).
+</x-docs.callout>
+
+## Updating
+
+1. Stop the server with `/stop`.
+2. Back up the directory (see [Worlds](/docs/server/worlds#backups)).
+3. Replace the binary with the new one and start it.
+
+Configuration carries over. Options an update introduces are appended to the end of the existing file as commented-out lines with their defaults, and the log lists them, so nothing changes until you uncomment one. See [Configuration](/docs/server/configuration#upgrades).
 
 ## Building from source
 
-The network layer lives in [Wire](https://github.com/BasaltProject/Wire), shared
-with the proxy and pulled in as a submodule, so clone with it:
+You need CMake 3.28 or newer, Ninja and Clang. Every dependency is vendored.
 
 ```bash
 git clone --recurse-submodules https://github.com/BasaltProject/Server.git
-```
-
-In an existing clone, `git submodule update --init` does the same thing. Without
-it the build fails immediately: half the modules are missing.
-
-You need CMake 3.28 or newer, Ninja and Clang. Nothing else: every dependency is
-vendored and built from source.
-
-```bash
+cd Server
 cmake --preset release
 cmake --build build/release
 ```
 
-The binary lands in `build/release/bin/`, named for the platform it was built
-for.
+The shared network layer lives in a submodule, so clone with `--recurse-submodules` (or run `git submodule update --init` in an existing clone). The binary lands in `build/release/bin/` with its download name.

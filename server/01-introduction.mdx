@@ -1,53 +1,32 @@
 ---
 title: Introduction
-description: What Basalt Server is, how it treats versions, and what it expects from you.
+description: What Basalt Server is, what it keeps identical to vanilla, and what it adds for operators.
 ---
 
-Basalt Server is a complete reimplementation of the Minecraft server, written
-entirely in C++23 and shipped as a native binary for each platform.
-There is no JVM anywhere in the runtime: no bundled JRE, no embedded VM, no
-hidden Java process.
+Basalt Server is a complete reimplementation of the Minecraft: Java Edition server, written in C++23 and shipped as one native binary per platform. There is no JVM anywhere: nothing to install next to it, no Java process behind it, and no version of anything to keep matched.
+
+It targets Minecraft 26.3 (protocol 777). The first line it prints on start says exactly which build you are running.
 
 ## Vanilla parity
 
-A Basalt Server with no plugins behaves exactly like the official one. Same seed,
-same world. Same drops, same damage, same redstone, same mobs, bugs included.
+A Basalt Server with no plugins plays like the official one: same seed, same world; same drops, damage, redstone and mob behaviour, quirks included. Where vanilla does something that looks wrong, Basalt does the same thing.
 
-Parity is the acceptance criterion for every system, not an aspiration. Where
-vanilla does something that looks wrong, Basalt does the same thing.
+Every option that makes it differ is off by default and marked `NO VANILLA` (or `NOT VANILLA`) in the comments of the generated file, so a fresh install changes nothing you did not ask for.
 
-<x-docs.callout type="note" title="Changing that on purpose">
-Anything that makes the server behave differently from vanilla is opt-in and
-labelled as such in the generated configuration comments. The default path is
-always the vanilla one.
+<x-docs.callout type="note" title="Where Basalt differs on purpose">
+A few defaults are not vanilla's because they are plain upgrades: `max-players` ships at 80 instead of 20, the world format is Linear instead of Anvil (see [Worlds](/docs/server/worlds)), and the configuration is TOML split into one file per domain instead of `server.properties`.
 </x-docs.callout>
 
-## Versions
+## What an operator gets
 
-Basalt tracks the newest Minecraft release. The core speaks one protocol, the
-current one, and every other client is normalised before it reaches the core.
+- **One binary, one directory.** Everything the server writes lives next to the binary. See [Installation](/docs/server/installation).
+- **Configuration that explains itself.** Every file in `config/` is generated with a comment per option and vanilla's values. Options added by an update are appended as comments, and most files can be reloaded without a restart. See [Configuration](/docs/server/configuration).
+- **Several clients, one server.** The same worlds and players are reachable from the current Java Edition client, from older Java clients (translated at the edge) and from Bedrock Edition.
+- **Several worlds and dimensions** declared in `worlds.toml`, each with its own settings, including more than one Overworld with its own Nether and End. See [Worlds](/docs/server/worlds).
+- **Permission groups, commands, MOTD, tab list, scoreboard and boss bar** configurable in files, with no plugin needed. See [Groups and permissions](/docs/server/groups-and-permissions).
+- **A remote management API and RCON**, off the public interface by default. See [Server control](/docs/server/server-control).
+- **Plugins in Lua**, in a sandbox with an instruction and memory budget per plugin, so a broken one cannot take the process down. See [Plugins](/docs/server/plugins).
 
-| Client | How it connects |
-|---|---|
-| Current Java Edition | Directly, no translation |
-| Older Java Edition | Translated at the edge |
-| Bedrock Edition | Translated at the edge |
+## Mojang content
 
-That translation layer is symmetric and external to the core, so gameplay code
-never learns that older clients exist. It is the ViaVersion model applied from
-the design rather than grafted on afterwards.
-
-## Plugins
-
-The plugin API is native and written in Lua, packaged as `.bspkg` files. Plugins
-run in a sandbox with a per-tick instruction budget, so a broken one cannot take
-the server down.
-
-Bukkit plugins run too, in a separate process. See
-[Bukkit plugins](bukkit-plugins.mdx) for what that costs and when to use it.
-
-## What it does not ship
-
-No proprietary Minecraft content: no structures, no loot tables, no datapacks,
-no textures, no jars. The data the server needs is fetched from Mojang once you
-accept the EULA, verified, and cached locally.
+Basalt ships none of Mojang's content: no structures, loot tables, data packs, textures or jars. After you accept the [Minecraft EULA](https://www.minecraft.net/en-us/eula), the server downloads the official server archive from Mojang, verifies its SHA-1 and unpacks only the data it needs into a local cache. That happens once per version.
