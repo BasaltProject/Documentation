@@ -209,14 +209,14 @@ kiln pack my_plugin --target proxy
 
 - `kiln check --target proxy` reads `plugin.toml`, every file under `src/`, each `require`, and every name the code takes
   from the proxy API (for example, a misspelled `log.infoo` or `players.onlne`). It also expects `name` in the manifest, which the
-  proxy itself treats as optional.
-- `kiln pack` writes `build/<id>-<version>.bspkg`. It is a zip with the layout above, so rename it to `.bppkg` before
-  putting it into the plugins directory.
+  proxy itself treats as optional, and `api`.
+- `kiln pack --target proxy` writes `build/<id>-<version>.bppkg`, a zip with the layout above, ready for the plugins
+  directory.
 - In DevTools, set `basalt.target` to `proxy` to get the proxy definitions and run the proxy checks on save.
 
 <x-docs.callout type="note" title="Source, not bytecode">
-`kiln compile`, `kiln build` and signing produce bytecode and signatures. The proxy loads plain Lua source from the
-package, so ship `src/*.lua` as they are.
+The proxy loads plain Lua source from the package, so ship `src/*.lua` as they are. For `--target proxy`, Kiln refuses
+`compile`, `build`, `--compiled`, `--strip` and `--sign`.
 </x-docs.callout>
 
 <x-docs.callout type="tip" title="Develop with a quick loop">

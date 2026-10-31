@@ -83,12 +83,10 @@ private = ["secrets/", "notes.txt"]
 | `authors` | no | List of strings |
 | `main` | no | The entry point, `src/main.lua` by default |
 
-<x-docs.callout type="warning" title="Hyphens in the id">
-`kiln check` accepts a hyphen in an `id`, but the server and `kiln pack` only accept lowercase letters,
-digits and underscores. Use underscores.
-</x-docs.callout>
+An `id` is lowercase letters, digits and underscores, starting with a letter. Hyphens are refused by the server and by
+`kiln check`.
 
-`kiln check` additionally requires `name` and `main`, and that the main file exists.
+`kiln check` additionally requires `name`, `api` and `main`, and that the main file exists.
 
 ### Dependencies
 

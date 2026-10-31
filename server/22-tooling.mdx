@@ -19,7 +19,7 @@ build/release`) and put the `kiln` executable on your `PATH`.
 | `kiln check <plugin>` | Verifies a plugin and writes nothing |
 | `kiln compile <plugin\|file.lua\|dir>` | Verifies, then writes Lua bytecode (`.luac`) |
 | `kiln build <plugin>` | Verifies, compiles and optionally signs, into `build/compiled` |
-| `kiln pack [plugin]` | Verifies, then writes `build/<id>-<version>.bspkg` |
+| `kiln pack [plugin]` | Verifies, then writes `build/<id>-<version>.bspkg` (`.bppkg` with `--target proxy`) |
 | `kiln test [plugin]` | Verifies, then runs `tests/*.lua` |
 | `kiln keygen <name>` | Makes `<name>.key` and `<name>.pub`, a signing key pair |
 
