@@ -1,0 +1,97 @@
+---
+title: World and server events
+description: Every block, world, server, raid, hanging entity and projectile event, with its fields and editable values.
+group: Plugin reference
+---
+
+Every field is read as `e.<field>`, see [Events](/docs/server/plugin-events) for the event object. In the Fields column,
+a field marked `*` is editable by an `on` handler. The `player_name` and `player_uuid` fields are what `e.player` is built
+from, `entity_id` and `world` build `e.entity`.
+
+The server events are about the process: starting, stopping, ticking, the server list and the console.
+
+## Block events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `block.bell_ring` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `direction` | A player rang a bell; redstone and projectiles do not fire it. |
+| `block.break` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `block` `drop_items`* | `drop_items` (default true) is editable; false breaks the block without its loot, experience still drops. |
+| `block.brew` | Yes | `world` `x` `y` `z` `fuel` `results` | A brew finished; cancelling keeps the bottles and the ingredient. |
+| `block.brew_start` | No | `world` `x` `y` `z` `source` `total_time` | A brewing stand started. |
+| `block.burn` | Yes | `world` `x` `y` `z` `block` `igniter_x` `igniter_y` `igniter_z` | Fire is about to burn the block. |
+| `block.can_build` | No | `player_name` `player_uuid` `world` `x` `y` `z` `block` `buildable`* | Runs for every player placement after the replaceable check; `buildable` is editable. |
+| `block.compost` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `item` `raises` | A player feeds a composter. `raises` is approximate (true for level 0 or a 100% item). |
+| `block.crafter_craft` | Yes | `world` `x` `y` `z` `result`* `count`* | A crafter is about to craft; `result` and `count` are editable. |
+| `block.damage` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `block` `face` `insta_break` `item` | Fires in creative too. `face`, `insta_break`; cancelling puts the block back. |
+| `block.dispense` | Yes | `world` `x` `y` `z` `item` `face` | Fires only for dispensers and droppers. `item` is the item being shot; cancelling stops the shot. |
+| `block.drops` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `block` `drops`* | A player-broken block is about to drop its loot. `drops` is `id\|count` lines and editable (a changed list loses the stacks' data). |
+| `block.explode` | Yes | `world` `x` `y` `z` `power` `cause` `entity_id` | `power` is the explosion power and `entity_id` the entity that caused it. |
+| `block.fade` | Yes | `world` `x` `y` `z` `block` `to_block` `cause` | Also reports decaying leaves (`block` is a leaves block, `to_block` is air). |
+| `block.fertilize` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `block` | Bone meal on a block; cancelling spends the meal and grows nothing. |
+| `block.from_to` | Yes | `world` `x` `y` `z` `block` `to_x` `to_y` `to_z` `face` | A fluid is about to spread. |
+| `block.grow` | Yes | `world` `x` `y` `z` `block` `to_block` `cause` | A block grows into `to_block`. |
+| `block.ignite` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `cause` | Fires for the block fire is about to be laid on; cancelling spares that block. |
+| `block.moisture_change` | Yes | `world` `x` `y` `z` `moisture` | Farmland got wetter or drier (turning to dirt is not reported). |
+| `block.note_play` | Yes | `world` `x` `y` `z` `instrument` `note` | A note block is about to sound, tuned, punched or by redstone; cancelling mutes it. |
+| `block.physics` | Yes | `world` `x` `y` `z` `block` `source_block` | A block is told a neighbour changed. Only built while listened to. |
+| `block.piston` | Yes | `world` `x` `y` `z` `extending` `direction` `moved` | A piston extends or retracts; `extending` says which. |
+| `block.place` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `block` | `block` is the id of the placed block item. |
+| `block.redstone` | No | `world` `x` `y` `z` `block` `old_current` `new_current`* | A redstone wire changed power; lamps, torches and repeaters do not fire it. `new_current` is editable. |
+| `block.sponge_absorb` | Yes | `world` `x` `y` `z` `blocks` | A sponge drained water; cancelling puts every drained block back. `blocks` is `x,y,z` lines. |
+| `block.tnt_prime` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `reason` | TNT is about to light. `reason` is `item`, `redstone`, `projectile` or `dispenser`. Cancelling keeps the TNT; explosion chains and breaking unstable TNT are not hooked. |
+
+## Hanging events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `hanging.break` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `cause` `remover_id` | A frame or painting is knocked off the wall. |
+| `hanging.place` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `entity_type` `face` | An item frame or painting is about to be hung. |
+
+## Projectile events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `projectile.hit` | Yes | `entity_id` `entity_type` `world` `hit_id` `x` `y` `z` | A projectile struck a block (`hit_id` is -1) or an entity, once per strike, for every projectile including wind charges, fireballs, potions and thrown items; cancelling lets it fly on with no damage, landing or removal. |
+
+## Raid events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `raid.finish` | No | `world` `x` `y` `z` `waves` `won` | `waves` is how many groups spawned and `won` is true when the village won. |
+| `raid.trigger` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` | Only new raids. |
+| `raid.wave` | No | `world` `x` `y` `z` `wave` `raiders` `leader_id` | A wave started. |
+
+## Server events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `server.broadcast` | Yes | `message`* | A broadcast message; `message` is editable. |
+| `server.command` | Yes | `source` `command`* | A command typed in the console; `source` is `console`. `command` is editable; cancelling with a message prints it. |
+| `server.data_reload` | No | `generation` | Data packs were reloaded; `generation` counts the reloads since the server started. |
+| `server.load` | No | `worlds` `plugins` | Fires once everything is up. `worlds` and `plugins` are counts. |
+| `server.ping` | No | `address` `motd`* `online` `max_players`* | A server list ping. `motd` and `max_players` are editable and change what that list shows. |
+| `server.remote_command` | Yes | `sender` `address` `command`* | A command from RCON or the API; `sender` is `rcon` or `api`. `command` is editable; a cancel message is returned to the sender. |
+| `server.stop` | No | `players` | The server is stopping. |
+| `server.tick` | No | `tick` | Fires every tick. |
+| `server.tick_end` | No | `tick` `duration_ms` `remaining_ms` | Fires at the end of every tick. |
+
+## World events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `world.border_bounds` | Yes | `world` `old_size` `new_size` `duration_ms` | Only `/worldborder`. |
+| `world.border_center` | Yes | `world` `old_x` `old_z` `new_x` `new_z` | Only `/worldborder`. |
+| `world.chunk_load` | No | `world` `chunk_x` `chunk_z` `generated` | `generated` is true only for chunks made during this run. Also fires for chunks generated on demand. |
+| `world.chunk_unload` | No | `world` `chunk_x` `chunk_z` | A chunk was unloaded. |
+| `world.difficulty_change` | Yes | `player_name` `player_uuid` `world` `difficulty` `from_difficulty` | The difficulty changed. |
+| `world.game_event` | Yes | `world` `x` `y` `z` `event` `entity_uuid` | Every vibration emitted; cancelling drops it. |
+| `world.game_rule_change` | Yes | `player_name` `player_uuid` `world` `rule` `value` `from_value` | A game rule changed. |
+| `world.lightning` | Yes | `world` `x` `y` `z` | Fires for every bolt (summoned, trident or plugin); cancelling removes it. |
+| `world.load` | No | `world` | A world was loaded. |
+| `world.portal_create` | Yes | `world` `reason` `blocks` | Only lighting a nether portal. |
+| `world.save` | No | `world` | Fires on every save (`/save-all` and autosave), not only at shutdown. |
+| `world.spawn_change` | No | `world` `x` `y` `z` `from_x` `from_y` `from_z` | The world spawn moved. |
+| `world.structure_grow` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `species` | A sapling tries to grow a tree on a random tick. |
+| `world.time_skip` | Yes | `world` `time` `from_time` `cause` | Names the world, not the clock. |
+| `world.unload` | Yes | `world` | A world is about to be unloaded. |
+| `world.weather_change` | Yes | `world` `raining` `thundering` `from_raining` `from_thundering` | Also fires from `/weather`. |

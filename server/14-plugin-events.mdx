@@ -1,0 +1,110 @@
+---
+title: Events
+description: Listen to server events with on and watch, choose priorities and filters, cancel or edit an event, and raise your own.
+group: Plugin development
+---
+
+An event is a name with dots (`block.break`), a set of fields and, for some, a way to say no. Plugins listen with `on` and
+`watch`. The events themselves are listed on three reference pages: [player events](/docs/server/events-player),
+[world and server events](/docs/server/events-world) and [entity, item and inventory events](/docs/server/events-entities).
+
+```lua
+on("block.break", function(e)
+    if e.block == "minecraft:bedrock" then
+        e:cancel("<red>Not that one.")
+    end
+end)
+```
+
+## Listening
+
+```lua
+on(event, [options,] handler)
+watch(event, [options,] handler)
+```
+
+| | `on` | `watch` |
+|---|---|---|
+| Runs | Inside the decision, while the server waits for the answer | After every `on` handler of that event |
+| May cancel the event | Yes, if the event is cancellable | No |
+| May edit editable fields | Yes | No |
+| May use `wait`, `at` and `request_chunk` | No | Yes |
+
+A `watch` handler runs once the event is over. It can wait and call anything else in the API, but the fields of the event
+are no longer readable by then: use `on` to look at an event, and `watch` for work that does not depend on its details.
+
+Registering an event that does not exist raises an error that lists the events of the server. `plugin.enable` and
+`plugin.disable` are lifecycle hooks, listened to with `on` only (`watch` raises an error), see
+[Manifest and layout](/docs/server/plugin-manifest#load-enable-and-disable).
+
+### Options
+
+The optional table between the name and the handler takes:
+
+| Key | Meaning |
+|---|---|
+| `priority` | `"first"`, `"early"`, `"normal"` (the default), `"late"` or `"last"`, in any letter case. Handlers run from first to last; handlers of the same priority run in the order they were registered |
+| `cancelled` | `true` also delivers the event after another handler cancelled it. Cancelled events are not delivered by default. `on` raises an error when the event cannot be cancelled |
+| any field of the event | The handler runs only when that field has exactly that value |
+
+```lua
+on("block.break", { priority = "late", cancelled = true, world = "arena" }, function(e)
+    -- runs for breaks in the world "arena", even those another plugin cancelled
+end)
+```
+
+Filters compare the value and its type: a string, a boolean, an integer (`64`) or a decimal (`64.0`) must match the
+field as the event reports it. The coordinates of block events are integers and those of `player.move` are decimals.
+
+## The event object
+
+The handler receives one table.
+
+| Member | Meaning |
+|---|---|
+| `e.name` | The event name |
+| `e.<field>` | A field of the event, as listed in the reference. Reading a field the event does not have raises an error that lists the ones it has |
+| `e.player` | The player object, when the event has `player_name` and `player_uuid` fields. `nil` when that player is not online |
+| `e.entity` | The entity object, when the event has `entity_id` and `world` fields. `nil` when it is gone |
+| `e.pos` | A position (`world`, `x`, `y`, `z`) built from decimal `x`, `y`, `z` fields, as entity events report them. It is `nil` for events that report whole block coordinates, such as `block.break`: read `e.x`, `e.y` and `e.z` there |
+| `e.cancelled` | Whether the event has been cancelled so far |
+| `e:cancel([message])` | Cancels a cancellable event. The optional text is shown to the person who caused it where the event supports it, and `@key` resolves a [lang](/docs/server/config-and-lang) entry. Calling it on an event that cannot be cancelled raises an error |
+| `e.<field> = value` | Edits a field. Only the fields marked editable in the reference accept it |
+
+```lua
+on("player.join", function(e)
+    e.message = "<yellow>" .. e.player.name .. " is here"
+end)
+```
+
+<x-docs.callout type="warning" title="The event ends with the handler">
+The event table is reused. Keeping it in a variable and reading it later, even one tick later, raises "this event is
+over". Copy the values you need into locals.
+</x-docs.callout>
+
+An event that is not cancellable (`player.join`, `entity.death`...) is the server telling you something that already
+happened. Cancellable events are questions the server asks before it acts, and cancelling answers no.
+
+An event nobody listens to costs nothing: the server does not build it.
+
+## Errors in handlers
+
+An error in a handler is logged with the plugin and the event, and the event goes on as if the handler had not run. A
+handler that fails three times in a row switches the plugin off, see [The sandbox](/docs/server/sandbox#when-a-plugin-fails).
+
+## Your own events
+
+An event name that contains a colon belongs to plugins. `emit` raises one and `on` listens to it:
+
+```lua
+on("arena:round_start", function(info)
+    log.info("round " .. info.round)
+end)
+
+local heard = emit("arena:round_start", { round = 3 })
+```
+
+`emit(name, payload)` calls every handler registered for the name, one after the other, and returns how many ran. The
+name must contain a colon, so it cannot collide with a server event, and `watch` cannot be used for it. These handlers
+cannot `wait`. They receive the payload as it was passed, and are meant for the parts of one plugin to talk to each
+other. To call into another plugin, use [`service`](/docs/server/shared-code#services).

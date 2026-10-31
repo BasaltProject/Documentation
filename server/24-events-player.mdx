@@ -1,0 +1,80 @@
+---
+title: Player events
+description: Every player event, with its fields, whether it can be cancelled and which fields a handler may edit.
+group: Plugin reference
+---
+
+Every field is read as `e.<field>`, see [Events](/docs/server/plugin-events) for the event object. In the Fields column,
+a field marked `*` is editable by an `on` handler. The `player_name` and `player_uuid` fields are what `e.player` is built
+from, `entity_id` and `world` build `e.entity`.
+
+Events of players cover joining and leaving, chat and commands, movement, interaction, items, game mode, experience and
+the client's own settings. Block breaking and placing are in the [world events](/docs/server/events-world), windows and
+containers in the [entity, item and inventory events](/docs/server/events-entities).
+
+## Command events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `command.unknown` | No | `player_name` `player_uuid` `world` `command` `message`* `silent`* | The player ran a command that does not exist. `message` (MiniMessage) and `silent` are editable. |
+
+## Player events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `player.advancement` | No | `player_name` `player_uuid` `world` `advancement` | An advancement was completed. |
+| `player.animation` | Yes | `player_name` `player_uuid` `world` `hand` | The client swung its arm. Cancelling drops the swing and what it would trigger. |
+| `player.armor_change` | No | `player_name` `player_uuid` `world` `slot` `old_item` `new_item` | `slot` is `head`, `chest`, `legs` or `feet`; `old_item` and `new_item` are empty for none. |
+| `player.bed` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `entering` | Also fires with `entering = false` when a player gets out of bed. |
+| `player.bucket` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `item` `filling` `face` | `x y z` is the block the bucket acts on and `face` the clicked face. |
+| `player.chat` | Yes | `player_name` `player_uuid` `world` `message`* | A chat message. Cancelling drops it; `message` is editable. |
+| `player.client_options` | No | `player_name` `player_uuid` `world` `locale` `view_distance` `chat_colors` `main_hand` `skin_parts` | The client changed its settings. |
+| `player.command` | Yes | `player_name` `player_uuid` `world` `command`* | A command a player typed, before it runs, without the leading slash. `command` is editable. |
+| `player.command_send` | No | `player_name` `player_uuid` `world` `commands`* | The command list sent to the client; `commands` is the root names joined by newlines and editable. |
+| `player.custom_click` | No | `player_name` `player_uuid` `world` `id` `payload` | A dialog button answered (see `p:show_dialog`). `id` is the button and `payload` its data. |
+| `player.death` | No | `player_name` `player_uuid` `world` `x` `y` `z` `cause` `message`* `silent`* `drops`* `exp`* `keep_inventory`* `keep_level`* `show_messages` | `cause` is the damage type. Editable: `message`, `silent`, `drops` (SNBT items, one per line), `exp`, `keep_inventory` and `keep_level`. Unless `keep_inventory` is on, the server drops the inventory (vanishing curse items are destroyed) and `min(level * 7, 100)` experience. |
+| `player.edit_book` | Yes | `player_name` `player_uuid` `world` `slot` `signing`* `title`* `pages`* | `slot signing title pages`; pages are joined with a form feed. `title`, `pages` and `signing` are editable. |
+| `player.effect` | Yes | `player_name` `player_uuid` `world` `effect` `amplifier` `duration` | Also fires for `/effect give` on players. |
+| `player.exp_change` | No | `player_name` `player_uuid` `world` `amount`* `source_id` | Points are about to be given for an orb, after mending. `amount` is editable. |
+| `player.fish` | Yes | `player_name` `player_uuid` `world` `state` `hook_id` `caught_id` `exp`* | `state` is `fishing`, `caught_fish`, `caught_entity`, `in_ground` or `reel_in`. Cancelling `fishing` stops the cast and `caught_fish` drops that catch; `exp` is editable. |
+| `player.food_change` | Yes | `player_name` `player_uuid` `world` `food`* `from_food` `item` | `food` is editable. `item` is empty for hunger and the food item when eating; cancelling keeps food and saturation. |
+| `player.gamemode_change` | Yes | `player_name` `player_uuid` `world` `gamemode` `from_gamemode` `cause` | `cause` is `command`, `plugin`, `hardcore_death` or `unknown`. |
+| `player.interact` | Yes | `player_name` `player_uuid` `world` `action` `x` `y` `z` `block` `item` `hand` `face` | A right click on a block. `action` is `right_click_block`, `block` the clicked block, `item` the held item, `hand` `main_hand` or `off_hand` and `face` the clicked face. |
+| `player.interact_air` | Yes | `player_name` `player_uuid` `world` `item` `hand` | A right click with no block. `item hand`. |
+| `player.interact_entity` | Yes | `player_name` `player_uuid` `world` `entity_id` `entity_type` `action` `hand` | `action` is `attack` or `interact` (every right click); `hand` is `main_hand` or `off_hand`. |
+| `player.interact_entity_at` | Yes | `player_name` `player_uuid` `world` `entity_id` `entity_type` `hand` `x` `y` `z` | A click on an entity with the point hit in `x y z`. |
+| `player.item_consume` | Yes | `player_name` `player_uuid` `world` `item` | The player finished eating or drinking `item`. |
+| `player.item_damage` | Yes | `player_name` `player_uuid` `world` `item` `damage` `broken` | An item took durability damage; `broken` is true when it breaks. |
+| `player.item_drop` | Yes | `player_name` `player_uuid` `world` `item` `count` | The player threw an item. |
+| `player.item_held` | No | `player_name` `player_uuid` `world` `slot` `from_slot` | The selected hotbar slot changed. |
+| `player.item_pickup` | Yes | `player_name` `player_uuid` `world` `item` `count` `entity_id` | The player is about to pick up an item entity (`entity_id`). |
+| `player.join` | No | `player_name` `player_uuid` `world` `message`* `silent`* | Fires before the join line is broadcast. `message` is MiniMessage (empty keeps the vanilla line) and `silent` true drops the line. |
+| `player.jump` | Yes | `player_name` `player_uuid` `world` `from_x` `from_y` `from_z` `x` `y` `z` | The player left the ground moving up. Cancelling puts them back. |
+| `player.kick` | Yes | `player_name` `player_uuid` `world` `reason`* `cause` | A session is about to be disconnected. `reason` is editable plain text; cancelling keeps the player connected. |
+| `player.leash` | Yes | `player_name` `player_uuid` `entity_id` `entity_type` `world` `x` `y` `z` `holder_id` | A player is about to leash a mob. |
+| `player.lectern_page` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `old_page` `new_page` | A lectern page was turned. |
+| `player.level_change` | No | `player_name` `player_uuid` `world` `level` `from_level` | The experience level changed. |
+| `player.login` | Yes | `player_name` `player_uuid` `address` `message`* | A client is logging in, before it joins the world. `address` is the remote address. `message` is the kick text used when a handler cancels without one. |
+| `player.move` | Yes | `player_name` `player_uuid` `world` `from_x` `from_y` `from_z` `x` `y` `z` | Fires as the player moves. Cancelling refuses the move. |
+| `player.pick_item` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `item` | The pick block key (middle click). |
+| `player.pickup_arrow` | Yes | `player_name` `player_uuid` `world` `entity_id` `entity_type` | Only fires for an arrow the player can take. |
+| `player.pickup_experience` | Yes | `player_name` `player_uuid` `world` `orb_id` `experience` | The player is about to take an experience orb. |
+| `player.portal` | Yes | `player_name` `player_uuid` `world` `to_world` `x` `y` `z` `kind` | The player is about to use a portal. `to_world` is the destination world, `x y z` the arrival point and `kind` the portal. |
+| `player.quit` | No | `player_name` `player_uuid` `world` `message`* `silent`* | `message` and `silent` work as in `player.join`. |
+| `player.recipe_book_click` | Yes | `player_name` `player_uuid` `world` `recipe` `make_all` | A click on a recipe in the recipe book. |
+| `player.recipe_discover` | Yes | `player_name` `player_uuid` `world` `recipe` | Also fires for `/recipe give`. |
+| `player.resource_pack` | No | `player_name` `player_uuid` `world` `pack_id` `status` | `status` is `accepted`, `declined`, `loaded`, `downloaded`, `failed_download`, `invalid_url`, `failed_reload` or `discarded`. |
+| `player.respawn` | No | `player_name` `player_uuid` `world` `x`* `y`* `z`* | `x y z` is where the player comes back and is editable. |
+| `player.riptide` | No | `player_name` `player_uuid` `world` `item` `strength` | A trident riptide started. |
+| `player.sign_change` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `line1`* `line2`* `line3`* `line4`* | The player finished editing a sign. The four lines are editable. |
+| `player.sneak` | No | `player_name` `player_uuid` `world` `sneaking` | `sneaking` is the new state. |
+| `player.sprint` | No | `player_name` `player_uuid` `world` `sprinting` | `sprinting` is the new state. |
+| `player.statistic` | Yes | `player_name` `player_uuid` `world` `statistic` `previous` `value` | Every counter except the clock ones. |
+| `player.swap_hands` | Yes | `player_name` `player_uuid` `world` `main_item` `off_item` | The hand swap key; the two hands are about to trade items. |
+| `player.tab_complete` | Yes | `player_name` `player_uuid` `world` `buffer` `completions`* | Suggestions are joined with newlines and editable. |
+| `player.take_lectern_book` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` | The player takes the book off a lectern. |
+| `player.teleport` | Yes | `player_name` `player_uuid` `world` `from_x` `from_y` `from_z` `x` `y` `z` `cause` | `cause` says why the player was teleported. |
+| `player.toggle_flight` | Yes | `player_name` `player_uuid` `world` `flying` | The client asked to start or stop flying. Cancelling resends the abilities. |
+| `player.unleash` | Yes | `player_name` `player_uuid` `entity_id` `entity_type` `world` `x` `y` `z` | A player is about to take a lead off. |
+| `player.velocity` | Yes | `player_name` `player_uuid` `world` `vx`* `vy`* `vz`* | Damage knockback and shield shoves; `vx vy vz` are editable. |
+| `player.world_change` | No | `player_name` `player_uuid` `world` `from_world` | The player arrived in another world; `from_world` is where they were. |

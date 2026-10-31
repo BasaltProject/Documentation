@@ -1,0 +1,93 @@
+---
+title: Entity, item and inventory events
+description: Every entity, item, vehicle, inventory and furnace event, with its fields and editable values.
+group: Plugin reference
+---
+
+Every field is read as `e.<field>`, see [Events](/docs/server/plugin-events) for the event object. In the Fields column,
+a field marked `*` is editable by an `on` handler. The `player_name` and `player_uuid` fields are what `e.player` is built
+from, `entity_id` and `world` build `e.entity`.
+
+Windows and containers are the `inventory` events, and the events of furnaces are `furnace` and `inventory.smelt`. Item
+tables and data components are described in [Items and recipes](/docs/server/items-and-recipes).
+
+## Entity events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `entity.add` | No | `entity_id` `entity_type` `world` `x` `y` `z` `reason` | A mob was created through the spawner path. Cancelling has no effect. |
+| `entity.air_change` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `amount`* | `amount` is editable and only players are changed by it. |
+| `entity.allied_check` | No | `entity_id` `entity_type` `world` `x` `y` `z` `other_id` `allied`* | A player's sweep attack or mace smash is deciding whom to spare, after the teams said no. Set `allied` to true to spare `other_id`. |
+| `entity.breed` | Yes | `entity_id` `entity_type` `world` `partner_id` `breeder` `experience`* | `breeder` and `experience` (editable); cancelling resets the love of both parents and spawns nothing. |
+| `entity.change_block` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `block` `to_block` `cause` | `cause` is `fall` (a falling block landed), `eat` (a sheep ate grass) or `trail` (a snow golem). |
+| `entity.combust` | Yes | `entity_id` `entity_type` `world` `ticks`* `cause` | `ticks` is editable. |
+| `entity.damage` | Yes | `entity_id` `entity_type` `world` `cause` `amount`* `attacker_name` `attacker_id` `direct_id` | `cause` is the damage type. `attacker_id` is the cause (-1 for none) and `direct_id` the projectile or mob that touched it, whose owner is `attacker_id`. `amount` is editable. |
+| `entity.death` | No | `entity_id` `entity_type` `world` `x` `y` `z` `killer_name` `killer_id` | `killer_id` is the entity that killed it. |
+| `entity.drops` | No | `entity_id` `entity_type` `world` `x` `y` `z` `drops`* `exp`* `killer_id` | A mob died and its loot is about to drop. `drops` is one `item\|count` per line and `exp` is the experience; both are editable. |
+| `entity.enter_block` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `block_x` `block_y` `block_z` | A bee is entering a hive. |
+| `entity.exp_bottle` | No | `entity_id` `entity_type` `world` `x` `y` `z` `experience`* `show_effect` | A bottle o' enchanting broke. `experience` is editable. |
+| `entity.firework_explode` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` | A firework is about to explode. |
+| `entity.goal` | No | `entity_id` `entity_type` `world` `key` `phase` `result`* | Fires for plugin goals only. `phase` is `can_use`, `can_continue`, `start`, `stop` or `tick`; for the first two, `result` (a boolean) is editable. |
+| `entity.heal` | Yes | `entity_id` `entity_type` `world` `amount`* `cause` `fast_regen` | `cause` is `regeneration`, `satiated`, `magic` or `magic_regen`; `fast_regen` says whether it was fast regeneration. |
+| `entity.launch` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `shooter_id` | A projectile appeared, seen the tick after it spawns; a refusal removes it. |
+| `entity.mount` | Yes | `player_name` `player_uuid` `entity_id` `entity_type` `world` `mounting` | Also fires with `mounting = false` when a rider gets off; cancelling keeps the rider on. |
+| `entity.move` | Yes | `entity_id` `entity_type` `world` `from_x` `from_y` `from_z` `x` `y` `z` `from_yaw` `from_pitch` `yaw` `pitch` | A mob moved during its own tick, never a player (see `player.move`). Cancelling puts the mob back at `from_*`; it costs nothing while nobody listens. |
+| `entity.orb_merge` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `source_id` | Two experience orbs are about to merge. |
+| `entity.piglin_barter` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `outcome`* | `outcome` is `id\|count` lines and editable. |
+| `entity.portal_enter` | No | `entity_id` `entity_type` `world` `x` `y` `z` `kind` | A player started standing in a nether portal; `kind` is `nether`. |
+| `entity.potion_effect` | Yes | `entity_id` `entity_type` `world` `effect` `amplifier` `duration` `action` `cause` | A mob is about to receive an effect. |
+| `entity.potion_splash` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `effect` `affected`* | A thrown splash potion landed. `affected` is `id\|intensity` lines and editable. |
+| `entity.resurrect` | Yes | `entity_id` `entity_type` `world` `hand` | A totem of undying is about to be used. |
+| `entity.shoot` | Yes | `entity_id` `entity_type` `world` `projectile` `power` | A mob shoots a projectile. |
+| `entity.spawn` | Yes | `entity_type` `world` `x` `y` `z` `reason` | `reason` says why it spawned; `plugin` for `world:spawn_nbt` and `spawner` for mob spawners. Cancelling is honoured. |
+| `entity.split` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `count`* | A slime died and splits; `count` is editable. |
+| `entity.tame` | Yes | `player_name` `player_uuid` `entity_id` `entity_type` `world` | A mob was tamed. |
+| `entity.target` | Yes | `entity_id` `entity_type` `world` `target_id`* `previous_id` `reason` | A mob picked a new target. `reason` is `closest` when a target was picked and `forget` when it was dropped; `target_id` is editable, -1 clears. |
+| `entity.teleport` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `to_x` `to_y` `to_z` `cause` | Only endermen fire it. |
+| `entity.toggle_glide` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `gliding` | A gliding state change. |
+| `entity.toggle_swim` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `swimming` | A swimming state change. |
+| `entity.transform` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `to_type` | Any mob conversion. |
+| `entity.unleash` | No | `entity_id` `entity_type` `world` `x` `y` `z` `reason` `drop` | A lead was cut. `reason` is `distance`, `holder_gone`, `unknown` or `player`. |
+
+## Furnace events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `furnace.burn` | Yes | `world` `x` `y` `z` `cooker` `fuel` `burn_time`* | `burn_time` is writable. |
+| `furnace.start` | No | `world` `x` `y` `z` `cooker` `source` `total` `recipe` | A furnace started smelting. |
+
+## Inventory events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `inventory.changed` | No | `player_name` `player_uuid` `world` | After every click on a window a plugin opened and may edit. |
+| `inventory.click` | Yes | `player_name` `player_uuid` `world` `slot` `button` `mode` `item` | A click inside a window. |
+| `inventory.close` | No | `player_name` `player_uuid` `world` `kind` `reason` | Fires for every window that closes. `reason` is `player`, `plugin`, `open_new`, `disconnect`, `death`, `teleport` or `unknown`. |
+| `inventory.creative` | Yes | `player_name` `player_uuid` `world` `slot` `item`* `count`* | A creative slot was set; `item` and `count` are editable. |
+| `inventory.drag` | Yes | `player_name` `player_uuid` `world` `type` `slots` | Fired once when the player lets go. `type` is `even`, `single` or `clone`; `slots` is `12,13,14`. |
+| `inventory.enchant` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `item` `button` `cost`* `enchants`* | `cost` and `enchants` (`id:level,id:level`) are writable. `x y z` is the table. |
+| `inventory.enchant_prepare` | Yes | `player_name` `player_uuid` `world` `x` `y` `z` `item` `bookshelves` `offers`* | `offers` is `id\|level\|cost` for each of the three rows joined by `;`, and writable. `x y z` is the table. |
+| `inventory.furnace_extract` | No | `player_name` `player_uuid` `world` `x` `y` `z` `item` `amount` `experience`* | A player took the output of a furnace; `experience` is editable. |
+| `inventory.move_item` | Yes | `world` `x` `y` `z` `kind` | An item moves between containers (hoppers and the like). |
+| `inventory.open` | Yes | `player_name` `player_uuid` `world` `kind` `x` `y` `z` | Fires for chests, barrels, shulker boxes, hoppers, dispensers, droppers, ender chests, enchanting tables, anvils, smithing tables, grindstones, looms, cartography tables, stonecutters, beacons, crafters, merchants and mounts. `kind` is the window name. |
+| `inventory.prepare` | No | `player_name` `player_uuid` `world` `kind` `recipe` `result`* `name` `cost`* | `kind` is `crafting`, `anvil` or `smithing`. `result` (an item as SNBT, empty for none) and `cost` (anvil levels) can be written. |
+| `inventory.smelt` | Yes | `world` `x` `y` `z` `cooker` `item` `result` `source` `output`* `recipe` | Fires once when a smelt finishes; `output` (SNBT) is writable. |
+| `inventory.take` | Yes | `player_name` `player_uuid` `world` `kind` `recipe` `result` `shift` | `kind` adds `grindstone` and `stonecutter`. A result slot is about to be taken. |
+| `inventory.trade` | Yes | `player_name` `player_uuid` `world` `entity_id` `container_id` `index` `result` | Fires for trade selection; `entity_id` is the villager and `container_id` the window. |
+
+## Item events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `item.despawn` | Yes | `world` `x` `y` `z` `entity_id` `item` `count` | A dropped item reached its age limit; cancelling restarts the age. |
+| `item.merge` | Yes | `world` `x` `y` `z` `entity_id` `item` `count` `source_id` `source_count` | Two dropped stacks are about to merge; `entity_id` is the stack that stays. |
+| `item.spawn` | Yes | `world` `x` `y` `z` `entity_id` `item` `count` `cause` | Fires for every dropped item entity. `cause` is `drop` when a player threw it and `spawn` otherwise; cancelling discards the item. |
+
+## Vehicle events
+
+| Event | Cancel | Fields | Notes |
+|---|---|---|---|
+| `vehicle.damage` | Yes | `entity_id` `entity_type` `world` `amount`* `attacker_id` | A boat or minecart was hit; `amount` is editable. |
+| `vehicle.destroy` | Yes | `entity_id` `entity_type` `world` `attacker_id` | A boat or minecart is about to break. |
+| `vehicle.entity_collision` | Yes | `entity_id` `entity_type` `world` `x` `y` `z` `other_id` | A minecart pushes or picks up an entity. |
+| `vehicle.move` | No | `entity_id` `entity_type` `world` `x` `y` `z` `from_x` `from_y` `from_z` | A vehicle moved. |
