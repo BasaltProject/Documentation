@@ -1,0 +1,173 @@
+---
+title: Commands
+description: The console, every command the server registers, and commands.toml for changing their permission, aliases, wording and availability.
+---
+
+Basalt registers the vanilla command set with vanilla syntax, plus a few commands of its own for groups, profiling, configuration and plugins. Who may run each one is a permission, see [Groups and permissions](/docs/server/groups-and-permissions).
+
+In game, `/help` lists what you are allowed to use, and `/help <command>` prints the usage of that command from the live command tree, so it is always the syntax of the build you are running. Players see only the commands they may run, in the list and in tab completion.
+
+## The console
+
+The terminal the server runs in is a console with all permissions. Type a command with or without the leading slash.
+
+- On a terminal it has line editing: the arrow keys move inside the line, and up and down walk the last 100 commands. Log lines are printed above the prompt without breaking what you are typing.
+- Without a terminal (under a service manager, or in a container without `tty`) lines are read from standard input as they come. To drive a server that has no console, use the management API or RCON, see [Operations](/docs/server/operations#remote-access).
+- A console command runs as the source `Server`, at the spawn of the default world, on the thread that owns that world. Its answers are written to the log.
+- A line longer than 65536 bytes is discarded with a message.
+- Other operators see what the console and RCON ran (`broadcast-console-to-ops` and `broadcast-rcon-to-ops` in `server.toml`, both on by default).
+- `startup-commands` in `server.toml` is a list of commands the console runs, in order, every time the server starts once the worlds are up.
+
+## Commands
+
+The commands below are the ones this build registers. A few are conditional on a feature being present and are not registered without it.
+
+### Server and operators
+
+| Command | Does |
+|---|---|
+| `/stop` | Saves and stops the server |
+| `/restart` | Stops the server like `/stop`, then starts it again in the same process, reading the configuration files as they are on disk |
+| `/reload` | Re-reads the configuration files and the data packs |
+| `/save-all [flush]`, `/save-off`, `/save-on` | Saves everything now; turns automatic saving off or on again |
+| `/op <player>`, `/deop <player>` | Moves a player into the operator group or back into the default one |
+| `/group <player> <group>` | Moves a player into any group declared in `groups.toml` |
+| `/whitelist (on\|off\|list\|add\|remove\|reload)` | Manages the whitelist. `add` and `remove` take a player name |
+| `/ban <player> [reason]`, `/ban-ip <address\|player> [reason]` | Bans a profile or an address |
+| `/pardon <player>`, `/pardon-ip <address>` | Lifts a ban |
+| `/banlist [players\|ips]` | Lists bans |
+| `/kick <player> [reason]` | Disconnects a player |
+| `/setidletimeout <minutes>` | Changes `player-idle-timeout` until the next restart |
+| `/transfer <host> [port] [players]` | Sends players to another server |
+| `/import-players <path>` | Imports the players of a vanilla server directory (the one that holds `usercache.json`): their data, statistics and advancements. Not groups or operators |
+| `/fetchprofile (name\|entity\|id) ...` | Looks up a profile |
+
+`/stop`, `/restart` and `/reload` act on the whole process, so grant them with care. See [Groups and permissions](/docs/server/groups-and-permissions) for the node of each.
+
+### Information and diagnostics
+
+| Command | Does |
+|---|---|
+| `/help [command]` | Lists commands, or shows the usage of one |
+| `/list [uuids]` | Players online, optionally with their UUIDs |
+| `/seed` | The seed of the world |
+| `/version` | The Basalt version, the Minecraft version and protocol, and which client versions are accepted |
+| `/plugins` | The loaded plugins and their state. Subcommands: `surfaces`, `orphans`, `purge`, `packets`, `load`, `reload`, `unload` |
+| `/placeholder` | Tests placeholders, see below |
+| `/tick` | Reads and changes the tick rate, see below |
+| `/timings`, `/perf`, `/debug` | Profiling, see [Operations](/docs/server/operations#profiling) |
+| `/jfr`, `/publish`, `/unpublish` | Exist so scripts that call them keep working, and answer that they do not apply to this server |
+
+### World and blocks
+
+`/setblock`, `/fill`, `/clone`, `/fillbiome`, `/forceload`, `/locate`, `/place`, `/setworldspawn`, `/worldborder`, `/gamerule`, `/time`, `/weather`, `/difficulty`, `/defaultgamemode`, `/waypoint`.
+
+`/world` is Basalt's command for the worlds declared in `worlds.toml`:
+
+| Form | Does |
+|---|---|
+| `/world` or `/world list` | The worlds that are loaded, their type and how many players are in each |
+| `/world info <world>` | Type, dimension, link, seed, spawn, chunks loaded and players |
+| `/world <world> [players]` | Moves you, or the players you name, to that world at the coordinates they already have |
+| `/world spawn <world> [players]` | The same, to the spawn point of that world |
+
+### Players and entities
+
+`/gamemode`, `/teleport` (`/tp`), `/experience` (`/xp`), `/advancement`, `/recipe`, `/clear`, `/spawnpoint`, `/spectate`, `/spreadplayers`, `/effect`, `/kill`, `/summon`, `/damage`, `/attribute`, `/ride`, `/rotate`, `/swing`, `/tag`.
+
+### Items and loot
+
+`/give`, `/item`, `/enchant`, `/loot`, `/compute`.
+
+### Data packs and scripting
+
+`/execute`, `/function`, `/schedule`, `/return`, `/random`, `/datapack`, `/test`, `/data`, `/scoreboard`, `/team`, `/trigger`, `/stopwatch`.
+
+### Presentation and chat
+
+`/say`, `/me`, `/msg` (`/tell`, `/w`), `/teammsg` (`/tm`), `/tellraw`, `/title`, `/bossbar`, `/dialog`, `/particle`, `/playsound`, `/stopsound`, `/posteffect`.
+
+The syntax of all of these follows vanilla.
+
+### /tick
+
+| Form | Does |
+|---|---|
+| `/tick query` | Tick rate, mean tick time and whether ticking is running, frozen or sprinting |
+| `/tick rate <rate>` | Sets the tick rate |
+| `/tick freeze`, `/tick unfreeze` | Stops and resumes ticking |
+| `/tick step [time]`, `/tick step stop` | Runs ticks while frozen |
+| `/tick sprint <time>`, `/tick sprint stop` | Runs ticks as fast as possible |
+
+### /placeholder
+
+Resolves the placeholders of [the interface files](/docs/server/interface#placeholders) against a player, which is the fastest way to find out why a line of your MOTD does not render. `<subject>` is an online player, `me`, or `--null` for no player.
+
+| Form | Does |
+|---|---|
+| `/placeholder parse <subject> <text>` | Shows you the text with its placeholders filled in |
+| `/placeholder bcparse <subject> <text>` | The same, sent to everyone |
+| `/placeholder cmdparse <subject> <text>` | Fills the text in and runs the result as a command |
+| `/placeholder parserel <first> <second> <text>` | Parses text relative to two players |
+| `/placeholder info <name>` | Describes one placeholder |
+| `/placeholder list [identifier]` | The placeholders registered, optionally of one identifier |
+
+A placeholder that cannot be filled in is reported to you with the reason.
+
+## commands.toml
+
+`config/commands.toml` decides four things about the commands that ship with the server: the permission each asks for, what it is called, whether it exists at all, and what it answers. Every command already asks for `basalt.command.<name>` without being listed, so this file is only for changing that.
+
+```toml
+[commands.teleport]
+permission = "basalt.command.moderator"
+aliases = ["tpa"]
+
+[commands.kill]
+enabled = false
+
+[messages]
+"commands.seed.success" = "<gray>Seed: %1%</gray>"
+
+[options]
+log-commands = true
+```
+
+| Key | Meaning |
+|---|---|
+| `[commands.<name>] permission` | The node the command asks for instead of `basalt.command.<name>` |
+| `[commands.<name>] aliases` | Extra names for the same command, on top of the ones it ships with |
+| `[commands.<name>] enabled` | `false` removes the command: it stops existing and is not sent to clients, and its aliases go with it. Default `true` |
+
+This file names a permission; it does not decide who has it. That is `groups.toml`, and the two read in one direction only. To open `/teleport` to your moderators, give them `basalt.command.teleport`, or point the command at a node they already have.
+
+Plugin commands are not listed here: a plugin names its own node and aliases when it registers them.
+
+### Options
+
+| Key | Default | Meaning |
+|---|---|---|
+| `log-commands` | `true` | Writes `<player> issued server command: /<line>` to the log for every command a player runs, as Spigot's commands.log does. Not vanilla |
+| `silent-commandblock-console` | `false` | Keeps what command blocks and command block minecarts do out of the console. Vanilla logs it |
+| `tab-complete-min-length` | `0` | Characters of a command a player must have typed before the server suggests anything for it. `0` suggests from the first character, `0` to `256`. Not vanilla above `0` |
+
+### Rewording answers
+
+`[messages]` replaces what a command answers, by the translation key it normally sends. The values are MiniMessage.
+
+```toml
+[messages]
+"commands.gamemode.success.self" = "<green>You are now in %1% mode.</green>"
+```
+
+`%1%`, `%2%` and so on are the values the message was going to be filled with, in order, as plain text. Placeholders work too. The rewording applies to the answers of every command, and to its failures.
+
+<x-docs.callout type="warning" title="Rewording is a trade">
+By default the server sends a translation key and every client renders it in its own language. Override one and it becomes literal text, the same for everyone, in whatever language you wrote it. That is why there are no per-language tables: a server is normally aimed at one community rather than being multilingual.
+</x-docs.callout>
+
+`[commands.*]` and `[messages]` are read when the server starts, and `/restart` applies them. The `[options]` follow `/reload`.
+
+<x-docs.callout type="note" title="A malformed value stops the start">
+A wrong type for an option names the file and the key, for example `config/commands.toml: tab-complete-min-length must be between 0 and 256`, and the server exits.
+</x-docs.callout>
