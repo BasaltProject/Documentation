@@ -1,0 +1,282 @@
+---
+title: Worlds
+description: Declaring worlds and dimensions, per-world settings, game rules, the Linear format, importing existing worlds, and non-vanilla toggles.
+---
+
+A Basalt world is one dimension. A server loads as many as `worlds.toml` declares, each with its own chunks, region files and settings, and players move between them with `/tp` or through portals.
+
+```
+worlds/<name>/
+  region/            r.<x>.<z>.linear
+  poi/               points of interest (villager workstations, beds, portals)
+  settings.toml      this world's settings, inheriting from worlds.toml
+  mobs.toml          this world's mob settings, inheriting from worlds/mobs.toml
+```
+
+Player data is not stored here. It lives in `players.db` next to `worlds/`, so a world can be deleted, copied or reset without touching anyone's inventory.
+
+## Declaring worlds
+
+`config/worlds.toml` declares what to load. It never deletes anything:
+
+- Add a table for a name with no directory and the world is created.
+- Copy a world directory into `worlds/` and add its table and the world is imported.
+- Remove a table and the world stops loading. Its files stay, and putting the table back loads it as it was.
+- Deleting a world means deleting `worlds/<name>/` yourself.
+
+```toml
+[worlds.world]
+default = true
+type = "normal"
+dimension = "overworld"
+
+[worlds.world_nether]
+type = "normal"
+dimension = "nether"
+linked_to = "world"
+
+[worlds.world_the_end]
+type = "normal"
+dimension = "end"
+linked_to = "world"
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `default` | boolean | `false` | The world players join into. Exactly one world should be marked. With none marked the first declared is used and a warning is logged; more than one stops the start |
+| `type` | string | `"normal"` | `normal`, `flat` (vanilla superflat: bedrock, two dirt, grass), `void` (air with a small stone platform under the spawn, for lobbies), `amplified`, `large_biomes` or `debug` (every block state in a grid) |
+| `dimension` | string | `"overworld"` | `overworld`, `nether` or `end`. It decides the sky, height limits, the 1:8 portal ratio and whether it can rain |
+| `seed` | integer | generated | Leave it out to get a random one on first creation. See [Seeds](#seeds) |
+| `linked_to` | string | the default world | For a Nether or End: the Overworld it belongs to. Portals lit in that Overworld come out here, and portals here lead back |
+
+### Several sets of dimensions
+
+`linked_to` is what lets one server run several Overworlds, each with its own Nether and End, without a plugin rewriting portal travel:
+
+```toml
+[worlds.skyblock]
+type = "normal"
+
+[worlds.skyblock_nether]
+dimension = "nether"
+linked_to = "skyblock"
+
+[worlds.skyblock_the_end]
+dimension = "end"
+linked_to = "skyblock"
+```
+
+The rules are checked at startup and a violation stops the server, naming the world, rather than sending portals somewhere nobody chose: only a Nether or End can have `linked_to`, it must name an Overworld that the file declares, and an Overworld has at most one Nether and one End. A Nether or End with no seed of its own shares the seed of its Overworld, as a vanilla save does. Removing a dimension's table makes portals to it stop working (the log says so); its files stay.
+
+### Seeds
+
+Once a world exists, the seed it was generated with wins over the one in `worlds.toml`. A mismatch is logged and nothing is regenerated, because changing a seed does not rewrite terrain already on disk. To use a new seed, delete `worlds/<name>/` and start again. When a vanilla world is imported, its own seed is kept and a differing configured one only logs a warning.
+
+## Inherited settings
+
+Settings follow one chain: the world's own `settings.toml`, then the `[defaults]` of `worlds.toml`, then vanilla's values. A world only needs to list the keys it changes. The generated `settings.toml` is full of commented-out lines to uncomment.
+
+In `worlds.toml` the keys sit under `[defaults]` (and rule tables under `[defaults.<table>]`). In `settings.toml` the same keys sit at the top (and rule tables as plain `[<table>]`). A world's settings are read when it loads, so changing them needs a restart. A `settings.toml` that does not parse or holds an invalid value leaves that world on the inherited defaults and logs a warning.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `difficulty` | string | `"easy"` | `peaceful`, `easy`, `normal` or `hard` |
+| `view-distance` | integer | `10` | Radius in chunks sent to a client around itself |
+| `simulation-distance` | integer, 2 to 32 | `10` | Radius in chunks around each player in which the world ticks. Never beyond `view-distance`. Lowering it is the strongest way to spare the tick on a busy server. |
+| `save-interval-seconds` | integer | `300` | How often changes are written to the region files, so a crash costs at most this much. `0` leaves chunks to save when they unload or on stop |
+| `generate-structures` | boolean | `true` | Off gives new chunks no villages, strongholds and the like. Chunks already generated keep theirs |
+| `max-world-size` | integer, 1 to 29999984 | `29999984` | Radius of the playable area in blocks; the world border can never go past it |
+| `hardcore` | boolean | `false` | The difficulty stays hard, hearts are drawn hardcore, and a player who dies comes back as a spectator |
+| `open-end-exit-portal` | boolean | `false` | **NOT VANILLA.** Opens the exit portal in the middle of the End from the moment the world is created |
+| `loot-refill` | boolean | `false` | **NOT VANILLA.** See [Loot refill](#loot-refill) |
+| `loot-refill-min-seconds` | integer | `43200` | See below |
+| `loot-refill-max-seconds` | integer | `172800` | See below |
+| `loot-max-refills` | integer | `-1` | See below |
+| `loot-reloot-seconds` | integer | `-1` | See below |
+
+### Loot refill
+
+**Not vanilla, off by default.** With `loot-refill = true`, a loot container keeps its table after the first opening and fills again once a random time between `loot-refill-min-seconds` and `loot-refill-max-seconds` (12 hours and 48 hours by default) has passed since it was filled, for the next player who opens it. `loot-max-refills` is how many times a container may fill in all, the first fill included (`-1` is unlimited). `loot-reloot-seconds` is how long a player must wait to loot a refilled container they already looted (`-1` is never). The maximum is raised to the minimum if it is smaller.
+
+## Rules and game rules
+
+The same files carry tables that change how a world plays. Every value shipped is vanilla's, and anything different is marked **NOT VANILLA** in the generated comments. Rules are read when the world loads.
+
+### `[gamerules]`
+
+Initial game rules for a world that is being created, using the vanilla 26.3 names (`keep_inventory`, `pvp`, `random_tick_speed`, `spawn_monsters`, `advance_time`...). Values are `true`, `false` or a whole number. A world that already has level data keeps its own rules, and `/gamerule` still changes them afterwards.
+
+```toml
+[gamerules]
+keep_inventory = true
+random_tick_speed = 6
+```
+
+### `[growth]`
+
+How often plants try to grow, as a percentage of vanilla's chance. `100` is vanilla, `0` stops the plant, `200` doubles the rate. Range 0 to 100000. Anything but `100` is **NOT VANILLA**.
+
+Keys, all default `100`: `crops` (wheat, carrots, potatoes, beetroots, torchflower, pitcher plant), `stems` (pumpkin and melon), `saplings`, `cactus`, `sugar-cane`, `bamboo`, `vines`, `kelp`, `cave-vines`, `twisting-vines`, `weeping-vines`, `nether-wart`, `sweet-berries`, `cocoa`, `mushrooms`, `chorus-flower`.
+
+### `[hopper]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `transfer-ticks` | integer, 1 or more | `8` | Ticks a hopper rests after moving an item |
+| `amount` | integer, 1 to 64 | `1` | Items moved each time a hopper acts, from the same stack |
+| `check-ticks` | integer, 1 or more | `1` | A hopper only looks for work on ticks that are a multiple of this |
+
+Anything but the defaults is **NOT VANILLA**.
+
+### `[environment]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `thunder-chance` | integer, 1 or more | `100000` | One in this many chances per chunk and tick, while it thunders, that lightning strikes there |
+| `portal-search-radius` | integer, 1 to 512 | `128` | How far a portal looks for an existing portal to come out of |
+| `portal-create-radius` | integer, 1 to 128 | `16` | How far from the wanted spot a new portal may be built when none is found |
+| `void-damage` | boolean | `true` | Whether falling out of the world hurts |
+| `disable-thunder` | boolean | `false` | **NOT VANILLA.** Rain still falls but it never thunders |
+| `disable-explosion-knockback` | boolean | `false` | **NOT VANILLA.** Explosions hurt but never push anything |
+| `disable-ice-and-snow` | boolean | `false` | **NOT VANILLA.** Weather no longer freezes still water or piles snow |
+| `nether-ceiling-void-damage-height` | integer, 0 to 4096 | `0` | **NOT VANILLA** when above 0. Players at or above this height in the Nether take void damage. `0` is off |
+| `fishing-min-wait-ticks` | integer, 1 to 72000 | `100` | A bobber waits for a fish a time drawn between the two values, before Lure shortens it |
+| `fishing-max-wait-ticks` | integer, 1 to 72000 | `600` | Raised to the minimum if smaller |
+
+### `[border]`
+
+The world border a world **starts** with. A world that already has a saved border keeps it, and `/worldborder` changes it afterwards.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `size` | number, 1 to 59999968 | `59999968.0` | Full width in blocks |
+| `center-x`, `center-z` | number | `0.0` | Centre of the border, within plus or minus 29999984 |
+| `damage-per-block` | number | `0.2` | Damage per second per block outside the buffer |
+| `damage-buffer` | number | `5.0` | Blocks beyond the border before damage starts |
+| `warning-distance` | integer | `5` | Blocks from the border at which the warning shows |
+| `warning-time` | integer, seconds | `15` | Seconds before a shrinking border arrives at which the warning shows |
+
+### `[anti-xray]`
+
+**Not vanilla, off by default.** Hides ores from clients that cheat by reading chunk data. Blocks that touch nothing see-through are replaced in the chunk packets, and whoever mines next to them is sent the real blocks. Bedrock players are not covered.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Turn it on |
+| `engine-mode` | integer, 1 to 3 | `1` | `1`: hidden blocks show as the plain rock of the dimension. `2`: hidden and replacement blocks all show as random hidden blocks, fake ores included. `3`: as 2 but a whole layer of a section gets the same fake block, which is much cheaper |
+| `hidden-blocks` | list of strings | common ores, `mossy_cobblestone`, `obsidian`, `clay` | Blocks that are hidden. In modes 2 and 3 they also make up the fake ores, so leave out blocks with an inventory |
+| `replacement-blocks` | list of strings | `["stone", "oak_planks", "deepslate"]` | Modes 2 and 3 only: ordinary blocks that are swapped for fake ores too |
+| `max-block-height` | integer, 0 to 4096 | `64` | Only blocks below this height are touched, rounded down to a multiple of 16 |
+| `update-radius` | integer, 0 to 2 | `2` | When a block is broken, hidden blocks within this many blocks are sent for real |
+| `lava-obscures` | boolean | `false` | Treat lava as solid, so ores behind a lava lake stay hidden |
+| `use-permission` | boolean | `false` | Players with `basalt.antixray.bypass` see everything |
+
+### Tuning tables
+
+| Table | Key | Type | Default | Meaning |
+|---|---|---|---|---|
+| `[fire]` | `tick-delay` | integer | `30` | Ticks a fire waits before spreading or burning out, plus a random 0 to 9 |
+| `[hunger]` | `sprint-exhaustion` | number | `0.1` | Exhaustion added by each action |
+| | `swim-exhaustion` | number | `0.01` | |
+| | `jump-exhaustion` | number | `0.05` | |
+| | `sprint-jump-exhaustion` | number | `0.2` | |
+| | `combat-exhaustion` | number | `0.1` | |
+| | `regen-exhaustion` | number | `6.0` | Spent each time natural regeneration heals with a food bar of 18 or more |
+| `[growth-height]` | `cactus` | integer, 1 to 64 | `3` | How tall a plant may grow |
+| | `sugar-cane` | integer, 1 to 64 | `3` | |
+| | `bamboo` | integer, 1 to 128 | `16` | |
+| `[sounds]` | `dragon-death-radius`, `wither-spawn-radius` | number | `0.0` | Blocks from the event within which players hear it. `0` is vanilla: the whole server hears it |
+| `[chunks]` | `keep-spawn-loaded-range` | integer, 0 to 32 | `1` | Chunks around the world spawn that stay loaded without a player |
+| | `autosave-batch-size` | integer, 1 to 1024 | `8` | Chunks snapshotted in one go while saving. Lower smooths the tick and makes a save take longer |
+| | `unload-margin` | integer, 0 to 64 | `4` | Chunks beyond a player's view distance that stay loaded before the unloading sweep |
+| `[combat]` | `keep-sprint-on-attack` | boolean | `false` | **NOT VANILLA.** Hitting with a knockback weapon does not stop the attacker sprinting |
+| `[block-updates]` | `disable-noteblock-updates`, `disable-tripwire-updates`, `disable-chorus-plant-updates`, `disable-mushroom-block-updates` | boolean | `false` | **NOT VANILLA.** Stop those blocks reshaping when a neighbour changes |
+| `[explosions]` | `max-tnt-per-tick` | integer, -1 or more | `-1` | **NOT VANILLA.** Most primed TNT that may go off in one tick; the rest wait. `-1` is no limit |
+| `[maps]` | `item-frame-cursor-limit` | integer | `256` | Markers a map may track before an item frame refuses to show it |
+| | `item-frame-cursor-update-interval` | integer, 1 or more | `10` | Ticks between checks that keep a map in an item frame current |
+| `[end]` | `disable-credits` | boolean | `false` | **NOT VANILLA.** Leaving the End for the first time takes the player straight home, without the credits |
+| `[leash]` | `max-distance` | number, 2 to 256 | `12.0` | Blocks a leashed mob may get from its holder before the lead snaps |
+| `[command-blocks]` | `permission-level` | integer, 0 to 4 | `2` | Level the commands of command blocks and command block minecarts run at |
+| `[collisions]` | `enable-player-collisions` | boolean | `true` | `false` is **NOT VANILLA**: players no longer push each other |
+
+### Gameplay rules
+
+`[gameplay.blocks]`, `[gameplay.mechanics]`, `[gameplay.player]` and `[gameplay.items]` hold over a hundred finer rules. In `worlds.toml` they are `[defaults.gameplay.<group>]`, in a world's `settings.toml` `[gameplay.<group>]`. Restart to apply. They are only listed in the generated file, where each key carries a comment stating its vanilla value:
+
+| Table | Covers |
+|---|---|
+| `blocks` | Fluids (infinite water and lava sources, lava speed), sponges, pistons, rails, beds, respawn anchors and end crystals explosions, beacons, farmland trampling, plant growth ages, dripleaves, bone meal on cactus and sugar cane, hoe replanting, coloured text on signs and anvils |
+| `mechanics` | Drowning, regeneration, poison and wither pulses, elytra wear, milk, raid and breeding cooldowns, day and night length, mob last-hurt time, entities using portals |
+| `player` | Critical hit multiplier, totems, experience pickup, skipping the night, creative one-punch |
+| `items` | Ender pearls, snowballs, projectile inaccuracy per weapon, minecart speed, trident loyalty, shulker box drops |
+
+Every key defaults to vanilla's value, and any other value is marked **NOT VANILLA** next to the key.
+
+## Mob settings
+
+Mob caps, spawning, despawning, dropped-item lifetimes and per-type tweaks live in `config/worlds/mobs.toml`, and a world overrides any key in `worlds/<name>/mobs.toml`. Every value shipped is vanilla's, and a change applies when the world loads. Both files are generated with a comment on every key.
+
+| Table | Covers |
+|---|---|
+| `[caps]` | Mob cap per category: `monster` 70, `creature` 10, `ambient` 15, `axolotls` 5, `underground-water-creature` 5, `water-creature` 5, `water-ambient` 20. `0` stops natural spawning of that category |
+| `[spawn-interval-ticks]` | Ticks between spawn attempts per category: `creature` 400, every other 1 |
+| `[spawning]` | `per-player-mob-spawns` (`false`, **NOT VANILLA**), `range-chunks` (8), `monster-max-light-level` (`-1` keeps vanilla's rules, **NOT VANILLA** when 0 or more) |
+| `[despawn]` | `shape` (`sphere` is vanilla, or `cylinder`), `idle-ticks-before-random` (600), `random-odds` (800), and `soft-range` and `hard-range` per category under `[despawn.<category>]` |
+| `[items]`, `[experience]`, `[projectiles]` | Despawn time of dropped items (6000 ticks), merge radius of items and experience orbs (0.5), arrow and trident despawn (1200 ticks) |
+| `[tracking-range]` | How far, in chunks, entities are shown to a player, per group: `animals`, `monsters`, `misc`, `display`, `other`. `0` keeps vanilla's own range |
+| `[phantoms]`, `[pillager-patrols]`, `[wandering-trader]` | Timing and odds of those events |
+| `[overrides.<entity_type>]` | Per-type changes: attributes (health, damage, speed...), experience and drops, behaviour switches (burn in daylight, no AI, persistent, ridable...), natural spawning limits, breeding, creeper blast radius, and AI goals to disable. Lists only the fields to change |
+
+## The Linear format
+
+Worlds are stored as **Linear** (`.linear`) region files, not Anvil (`.mca`). The format is invisible to players, so it is not a parity difference, and it is better in every way an operator notices:
+
+- About half the disk space for the Overworld and Nether, and far less for the End.
+- One compressed stream per region (zstd) instead of one per chunk, so a region is one read or write.
+- No per-chunk padding to 4096 bytes and no separate files for very large chunks.
+
+Files are `worlds/<name>/region/r.<x>.<z>.linear`.
+
+## Importing a world
+
+Moving an existing world to Basalt is "copy the folder and start", not "run a converter first".
+
+1. Copy the world into `worlds/<name>/`. For a vanilla, Paper or Spigot world, copy its `region/`, `entities/`, `poi/` and `level.dat`.
+2. Declare it in `worlds.toml` with the matching `dimension`.
+3. Start the server.
+
+When a region has only an Anvil file (`region/r.<x>.<z>.mca`), Basalt reads it and the entities that vanilla keeps in `entities/`, and writes it back as Linear. When the world has a vanilla `level.dat`, its seed, spawn point, time and difficulty are imported once and kept in the world.
+
+A vanilla save holds three dimensions in one folder, while Basalt has one dimension per world. Import each as its own world: the Overworld's `region/` is the root `region/`, the Nether's is `DIM-1/region/` and the End's is `DIM1/region/`. Declare the second and third with `dimension = "nether"` and `"end"` and `linked_to` pointing at the Overworld, as in [Declaring worlds](#declaring-worlds).
+
+A region that cannot be read is logged and left alone: it is never overwritten.
+
+<x-docs.callout type="note" title="Old worlds">
+For a world saved by a much older game version, run it through Metamorph first. It brings chunks and entities to the current world version with the same fixes the official game applies when it opens an old world.
+</x-docs.callout>
+
+## Metamorph
+
+[Metamorph](https://github.com/BasaltProject/Metamorph) is the command line tool behind this conversion. It never modifies its input: the result goes to `<world>.converted` unless `-o` says otherwise, and an output folder that already holds files is refused.
+
+```bash
+metamorph convert <world> --to linear [-o <out>]
+metamorph convert <world> --to anvil [-o <out>]
+metamorph upgrade <world> [-o <out>]
+```
+
+| Command | Result |
+|---|---|
+| `convert --to linear` | Every region file as `.linear` |
+| `convert --to anvil` | Every region file as `.mca`, for taking a Basalt world back to another server |
+| `upgrade` | Every chunk and entity file brought to the current world version, each keeping its format |
+
+`<world>` is a folder with region files anywhere under it; dimension folders, `entities/` and `poi/` are found automatically. A chunk that cannot be read is reported and the command exits with an error.
+
+## Backups
+
+Basalt does not run backups; use your own tooling. What matters is what to copy and when:
+
+- Copy the whole server directory, or at least `worlds/`, `config/`, `plugins/` and `players.db`. Player data is in `players.db`, not in the worlds.
+- Region files are rewritten whole, so copy them while the server is quiet. `/save-off` stops writing, `/save-all` flushes, then copy, then `/save-on`. Stopping the server first is always safe.
+- A world with its table removed from `worlds.toml` is simply not loaded; archiving it is a plain directory copy.
