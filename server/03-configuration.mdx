@@ -1,153 +1,73 @@
 ---
 title: Configuration
-description: The config directory, one TOML file per domain.
+description: How the config directory is laid out, how files are generated, upgraded and reloaded, and what happens when one is wrong.
 ---
 
-Configuration lives in `config/`, one file per domain, generated with comments
-and vanilla defaults on first start.
+All configuration lives in `config/`, next to the binary, as TOML files with one file per domain. A file is a domain of its own, not one more table in an existing file.
 
-```
-config/
-  server.toml        network, logging, performance
-  worlds.toml        which worlds load, and how
-  groups.toml        permission groups
-  commands.toml      permissions, aliases, wording, your own commands
-  server_list.toml   how the server looks in the multiplayer list
-  tab_list.toml      the panel behind Tab
-  scoreboard.toml    the panel down the side of the screen
-  boss_bar.toml      the bar across the top
-  animations.toml    text that moves, shared by all of them
-```
+Configuration is what you write. State is what the server writes (player data, group membership, the whitelist, the API token), and it never goes in `config/`. See [Installation](/docs/server/installation#first-start) for where state lives.
 
-A file earns its place by being a domain of its own, not by being one more table
-in an existing file. Each world also carries a `settings.toml` inside its own
-directory, inheriting whatever it does not override from `worlds.toml`.
+## Files
 
-## What belongs where
+| File | Domain | Reference |
+|---|---|---|
+| `server.toml` | Network, players, performance, plugins, data packs, logging | [Server settings](/docs/server/server-settings) |
+| `limits.toml` | Packet rate limits, spam kicks, item text caps | [Server settings](/docs/server/server-settings#limitstoml) |
+| `worlds.toml` | Which worlds load, and the defaults every world inherits | [Worlds](/docs/server/worlds) |
+| `worlds/mobs.toml` | Mob caps, spawning, despawning and per-type tweaks, inherited by every world | [Worlds](/docs/server/worlds#mob-settings) |
+| `groups.toml` | Permission groups and operators | [Groups and permissions](/docs/server/groups-and-permissions) |
+| `commands.toml` | Command permissions, aliases, wording and your own commands | |
+| `messages.toml` | What players are told when turned away or removed | |
+| `server_list.toml` | The multiplayer list entry: MOTD, icon, player count | |
+| `tab_list.toml` | The panel behind Tab | |
+| `scoreboard.toml` | The sidebar | |
+| `boss_bar.toml` | The bar across the top | |
+| `animations.toml` | Text that moves, shared by the files above | |
 
-Configuration is what the operator writes. State is what the process writes, and
-state does not go in `config/`. A world's seed lives with the world, not in a
-configuration file, and it wins over a configured one.
+Each world also carries its own `settings.toml` and `mobs.toml` inside `worlds/<name>/`, which inherit from the two world files above. See [Worlds](/docs/server/worlds).
 
-```toml
-[network]
-host = "0.0.0.0"
-port = 25565
+Some features are tables of `server.toml` rather than files of their own: the management API and RCON (`[network.rcon]`, `[network.api]`), proxy forwarding (`[network.forwarding]`) and the client version window (`backwards`, `future-protocols`, `snapshots` and `name-substitutes` under `[network.java]`, `protocols` and `future-protocols` under `[network.bedrock]`). They are documented with the feature they belong to, not in the key reference.
 
-[performance]
-view_distance = 10
-simulation_distance = 10
-```
+## Generation
 
-<x-docs.callout type="warning" title="A malformed file stops the start">
-Basalt names the file it could not read and exits. It never starts quietly on
-defaults, because a server running on defaults you did not choose is worse than
-one that did not start.
-</x-docs.callout>
+Every file is created on the first start with vanilla's values and a comment per option. A file that already exists is never overwritten. The comments mark each option that changes behaviour compared with vanilla as `NO VANILLA` or `NOT VANILLA`, and all of those ship disabled.
 
-## Worlds
+`server.toml` is created from your `server.properties` if there is one and no `config/server.toml` yet; see [Installation](/docs/server/installation#first-start).
 
-`worlds.toml` holds the defaults every world inherits. A single world overrides
-them in `worlds/<name>/settings.toml`, and only the keys it sets.
+## Upgrades
 
-Loot containers can refill like Paper's. This is not vanilla, so it is off by default:
+When an update adds options to `server.toml`, `limits.toml`, `messages.toml`, `worlds.toml` or `commands.toml`, the server appends them to the end of your file, commented out, with their defaults and explanations:
 
 ```toml
-loot-refill = false
-loot-refill-min-seconds = 43200
-loot-refill-max-seconds = 172800
-loot-max-refills = -1
-loot-reloot-seconds = -1
+# ---- Options added in Basalt 26.3, commented out with their defaults. Remove the leading # to change one. ----
+
+# [server]
+# Seconds with nobody online before the server stops ticking...
+# pause-when-empty-seconds = 60
 ```
 
-## Permissions
+The log names the keys it added. Your own values and comments are never touched, and nothing changes behaviour until you uncomment an option.
 
-Groups are native, with names like `basalt.command.gamemode`, wildcards,
-denials and inheritance. Group membership is state, so it lives in `players.db`
-rather than in configuration.
+## Reloading
 
-## Commands
+`/reload` re-reads the files that can change while the server runs and swaps them in as one unit:
 
-`commands.toml` decides four things about a command: the permission it asks for,
-what it is called, whether it exists at all, and what it answers.
+`groups.toml`, `server_list.toml`, `commands.toml`, `animations.toml`, `tab_list.toml`, `scoreboard.toml`, `boss_bar.toml`, `limits.toml` and `messages.toml`.
 
-```toml
-[commands.teleport]
-permission = "basalt.command.moderator"
-aliases = ["tpa"]
+`server.toml`, `worlds.toml`, every `settings.toml` and `mobs.toml` are read when the server starts or a world loads, so a change to them needs a restart. The log says so after a reload. `/reload` also rescans the data packs.
 
-[commands.kill]
-enabled = false
+If any reloadable file is invalid, nothing is swapped: the server keeps the configuration it had and reports `Configuration not reloaded` with the reason.
 
-[custom.discord]
-message = ["<blue>discord.gg/example</blue>"]
+## When a file is wrong
 
-[messages]
-"commands.seed.success" = "<gray>Seed: %1%</gray>"
-```
+A malformed file never starts the server quietly on defaults, because a server running on values you did not choose is worse than one that did not start.
 
-Every command already asks for `basalt.command.<name>` without being listed, so
-this file is only for changing that. Naming a permission here does not grant it:
-that is `groups.toml`, and the two read in one direction only.
+- **At startup**, an unreadable or invalid file stops the start with exit code `2`. The log names the file and the key, for example `config/server.toml: max-world-size must be between 1 and 29999984`. Fix it and start again.
+- **On `/reload`**, the previous configuration stays active (see above).
+- **A world's own `settings.toml` or `mobs.toml`** is the exception: the world keeps the inherited defaults and the log warns with the reason, so one world's typo does not stop the server.
 
-`enabled = false` removes a command rather than leaving it to refuse: it stops
-being sent to clients, and its aliases go with it.
+Both editions switched off in `server.toml`, no world declared, or more than one default world, stop the start too; see [Worlds](/docs/server/worlds).
 
-`[custom]` is for the `/discord` and `/rules` that would otherwise need a plugin,
-and no more than that. Anything with logic in it is a plugin.
+## Profiles and placeholders
 
-<x-docs.callout type="warning" title="Rewording is a trade">
-By default the server sends a translation key and every client renders it in its
-own language. Override one under `[messages]` and it becomes literal text, the
-same for everyone, in whatever language you wrote it. That is why there are no
-per-language tables here: a server is normally aimed at one community rather than
-being multilingual. `%1%`, `%2%` and so on are the values the message was going
-to be filled with, in order.
-</x-docs.callout>
-
-## Profiles
-
-Every file that draws something (`server_list`, `tab_list`, `scoreboard`,
-`boss_bar`) uses the same profile system. A profile is one complete look. The one
-that wins is the highest priority among those switched on with `active` or whose
-every `when` condition holds; if none does, the one marked `default` is used.
-Anything a profile leaves out it takes from the default, so a profile that only
-changes the text is three lines long.
-
-```toml
-[profiles.staff]
-priority = 10
-when = ["%basalt_player_is_op% = true"]
-header = ["<red>STAFF</red>"]
-```
-
-Conditions compare placeholders with `=`, `!=`, `<`, `<=`, `>`, `>=`, `matches`
-and `contains`. A condition the current situation cannot answer is reported once
-in the log and the profile is skipped, so it never counts as a silent no.
-
-## Placeholders
-
-The server exposes a placeholder registry used by every file above, by your own
-commands, and by plugins:
-
-```
-%basalt_server_*%    online, max_players, tps, ram_used, cpu, uptime, version
-%basalt_player_*%    name, world, dimension, x, y, z, is_op, known, ip, protocol
-%basalt_animation_*% a named animation from animations.toml
-```
-
-Any number takes a precision suffix: `%basalt_player_x%` is the true position and
-unreadable, `%basalt_player_x_1%` is one decimal.
-
-**Plugins register their own.** The registry is not a fixed list the server owns:
-a plugin adds its providers to it and its placeholders then work in every file
-above, in your own commands, and in any other plugin that reads them. Nothing has
-to be installed in between, and nothing has to add support for a placeholder
-before it works somewhere.
-
-<x-docs.callout type="tip" title="A wrong name shows up">
-A placeholder the server cannot fill in is left visible and explained once in the
-log, rather than silently emptying the line. `/placeholder` resolves one against
-the current context, which is the fastest way to find out why a line of your MOTD
-is not rendering.
-</x-docs.callout>
+The files that draw something for players (`server_list.toml`, `tab_list.toml`, `scoreboard.toml`, `boss_bar.toml`) share one profile system and one placeholder registry, which plugins can extend. Each of those files documents its own keys.

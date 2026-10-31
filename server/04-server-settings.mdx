@@ -1,0 +1,172 @@
+---
+title: Server settings
+description: Every key of server.toml and limits.toml, with its type, default and meaning.
+---
+
+`config/server.toml` holds everything about the process itself; `config/limits.toml` holds the limits on what one connection may do. Both are read at startup (`limits.toml` can also be reloaded with `/reload`). See [Configuration](/docs/server/configuration) for how files are generated, upgraded and reloaded.
+
+Defaults below are the ones the generated file ships with. Settings that differ from vanilla's behaviour are marked **NO VANILLA** and are off unless stated.
+
+Tables that belong to a dedicated feature are documented with it: `[network.rcon]` and `[network.api]` in [Server control](/docs/server/server-control), `[network.forwarding]` with proxy forwarding, and the client version window (`backwards`, `future-protocols`, `snapshots`, `name-substitutes` in `[network.java]`, `protocols`, `future-protocols` in `[network.bedrock]`) with multi-version support.
+
+## server.toml
+
+### `[server]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `max-players` | integer | `80` | Players that can be connected at once (vanilla ships 20). What the server list shows is separate, in `server_list.toml` |
+| `online-mode` | boolean | `true` | Verify players against Mojang's session server. `false` accepts any claimed name with no verification. Must be `false` behind a forwarding proxy |
+| `prevent-proxy-connections` | boolean | `false` | Send the player's address to Mojang at login and refuse a player whose address differs from the one they authenticated from. Online mode only |
+| `enforce-secure-profile` | boolean | `true` | Require signed chat. Takes effect in online mode, and only if Mojang's public keys could be fetched at startup |
+| `bug-report-link` | string | `""` | Shown as "Report Bug" in the client pause menu. Only `http` and `https`; empty sends none |
+| `resource-pack` | string | `""` | URL of a resource pack offered to every player on join. Empty sends none |
+| `resource-pack-sha1` | string | `""` | SHA-1 of the pack, 40 hex digits. Without it the client refetches only when the URL changes |
+| `resource-pack-id` | string | `""` | UUID identifying the pack to the client. Derived from the URL when empty |
+| `require-resource-pack` | boolean | `false` | Kick players who decline the pack |
+| `resource-pack-prompt` | string | `""` | Message shown with the offer, as a JSON text component. Empty shows none |
+| `gamemode` | string | `"survival"` | Mode new players join in: `survival`, `creative`, `adventure` or `spectator` |
+| `force-gamemode` | boolean | `false` | Put every player back in `gamemode` on each join instead of the one they left in |
+| `whitelist` | boolean | `false` | Only let whitelisted players in. The list itself is state in `players.db`, edited with `/whitelist add` and `/whitelist remove`. `/whitelist on` and `off` change this for the run only |
+| `enforce-whitelist` | boolean | `false` | Kick online players not on the whitelist whenever it is switched on or a name leaves it |
+| `op-permission-level` | integer, 1 to 4 | `4` | Permission level every operator gets. Below 2 an operator cannot use entity selectors or command blocks. Who is an operator is decided by the operator group in `groups.toml` |
+| `broadcast-console-to-ops` | boolean | `true` | Show operators what a command run from the console did |
+| `broadcast-rcon-to-ops` | boolean | `true` | The same for commands run over RCON |
+| `max-joins-per-tick` | integer, 0 to 65536 | `0` | Most players let through the last step of login per tick; the rest wait for the next. `0` is no limit. **NO VANILLA** |
+| `player-autosave-seconds` | integer | `0` | Seconds between saves of the players alone (inventory, position, stats), on top of the world save interval. `0` saves them only with the world, as vanilla does |
+| `pause-when-empty-seconds` | integer, 0 or more | `60` | Seconds with nobody online before the server stops ticking. `0` never pauses. Connections are still served while paused |
+| `spawn-protection` | integer, 0 or more | `16` | Blocks around the world spawn that only operators can change. `0` turns it off |
+| `brand` | string | `""` | Server brand shown on the F3 screen. Empty sends `Basalt <version>` |
+| `startup-commands` | list of strings | `[]` | Console commands run in order once the worlds are up, on every start. For example `["gamerule doDaylightCycle false", "difficulty hard"]` |
+| `username-pattern` | string | `""` | ECMAScript regular expression every name must match to log in, on top of vanilla's rule (at most 16 characters between `!` and `~`). Empty applies only vanilla's. An invalid expression is a startup error. **NO VANILLA** when set |
+| `accepts-transfers` | boolean | `false` | Let clients sent here by another server's transfer packet join. Off turns them away with the "transfers are disabled" screen |
+| `player-idle-timeout` | integer, minutes | `0` | Minutes without any action before a player is kicked. `0` never kicks. `/setidletimeout` changes it until restart |
+| `allow-flight` | boolean | `false` | Stop kicking players who hover for four seconds without being able to fly. Only turn it on if a mod or plugin lets players float, because it also lets flight hacks through |
+| `entity-broadcast-range-percentage` | integer, 10 to 1000 | `100` | How far other entities are drawn from a player, as a percentage of each kind's distance. `200` doubles it, `50` halves it. Never beyond the player's view distance |
+| `max-chained-neighbor-updates` | integer, -1 or more | `1000000` | Block updates one change may set off in a row before the server stops answering them. `-1` never stops. **NO VANILLA** below `1000000` |
+| `max-world-size` | integer, 1 to 29999984 | `29999984` | Farthest from the centre, in blocks, that the world border may reach. The playable area is never wider than twice this |
+
+### `[network.java]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Accept Java Edition clients. Off makes a Bedrock-only server. Both editions off is refused |
+| `bind` | string | `"0.0.0.0"` | Literal IPv4 or IPv6 listen address. Use `127.0.0.1` for a local proxy backend |
+| `dual-stack` | boolean | `false` | Accept IPv4 on an IPv6 listener. Requires an IPv6 `bind` |
+| `port` | integer, 1 to 65535 | `25565` | TCP port |
+| `compression-threshold` | integer, -1 to 16777216 | `256` | Packets of at least this many bytes are compressed. `-1` turns compression off, `0` compresses everything. Lower it on a slow link, raise it on a fast local network |
+| `compression-level` | integer, -1 to 9 | `-1` | zlib level of compressed packets: `0` no work, `9` smallest, `-1` zlib's default of 6 |
+| `status-replies` | boolean | `true` | Answer server list pings. Off makes the server look unreachable in the list while still allowing joins by address |
+| `tcp-no-delay` | boolean | `true` | Send each packet at once instead of letting the system merge small ones (`TCP_NODELAY`), as vanilla does |
+| `proxy-protocol` | boolean | `false` | Expect a HAProxy PROXY protocol header (v1 or v2) on every connection and take the player's address from it. A connection without the header is dropped, so enable it only behind a load balancer that sends one and only if the port cannot be reached any other way |
+| `connection-throttle-ms` | integer | `0` | Milliseconds an address must wait between two login attempts (CraftBukkit's connection-throttle). `0` is off. Loopback and server list pings are never throttled. **NO VANILLA** |
+| `max-connections-per-address` | integer | `0` | Most connections open at once from one address, pings included. `0` is no limit. **NO VANILLA** |
+
+### `[network.bedrock]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Accept Bedrock Edition clients |
+| `port` | integer, 1 to 65535 | `19132` | UDP port |
+| `prefix` | string | `"."` | Put in front of a Bedrock player's name, so a Steve from each edition are two players. Set it to `""` on a server where only Bedrock players join |
+
+### `[network.query]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Answer GameSpy 4 status queries over UDP (vanilla's `enable-query`). IPv4 only |
+| `port` | integer, 1 to 65535 | `25565` | UDP port. It may share the Java port number because one is TCP and the other UDP |
+
+### `[performance]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `watchdog-seconds` | integer | `60` | Seconds one tick may take before the watchdog logs it and exits (vanilla's `max-tick-time`). `0` turns it off |
+| `chunk-send-rate` | integer, 0 to 1280 | `0` | Most chunks sent to one player per second. `0` leaves it to the client, which in vanilla asks for up to 1280. **NO VANILLA** below 1280 |
+| `generation-metrics` | boolean | `false` | Count noise evaluations, biome lookups and per-phase timings while generating chunks and log a report once the startup chunks are ready. Forces startup generation onto one thread. Diagnostics only |
+
+### `[plugins]`
+
+Lua plugins and their sandbox. The API itself is in [Plugins](/docs/server/plugins).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Look at the plugins folder. Off loads and compiles nothing |
+| `instructions-per-turn` | integer | `250000` | Lua instructions one plugin may run in a single turn, refilled on every entry, so it caps one handler and not the whole tick. About 13 ms on the measured machine. Values below 1000 are raised to 1000 |
+| `memory-mb` | integer | `32` | Most memory one plugin's own objects may use, in megabytes. Minimum 1 |
+| `test-lanes` | integer | `1` | Copies of each plugin running at once. One is what a server wants; more is a development switch that exposes plugins assuming there is only one of them. Minimum 1 |
+| `orphan-data` | string | `"warn"` | What to do about data of a plugin that is no longer installed: `warn` names it at every start, `quiet` stops asking. Nothing is deleted on its own; `/plugins purge` does that |
+| `trusted-keys` | list of strings | `[]` | Hex public keys whose signature lets a plugin's compiled Lua (`.luac`) load. Bytecode without a signature from one of them is refused |
+
+`[plugins.allow]` grants plugins capabilities beyond their sandbox, one list per plugin id. A plugin that asks for a capability it is not granted loads without it and says so.
+
+| Capability | Lets the plugin |
+|---|---|
+| `packets` | See everyone's chat |
+| `network` | Talk past the client |
+| `commands` | Run commands as the console |
+
+```toml
+[plugins.allow]
+arena = ["packets"]
+lobby = ["network", "commands"]
+```
+
+### `[datapacks]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `initial-enabled` | list of strings | `["vanilla"]` | Data packs a brand new world starts with (vanilla's `initial-enabled-packs`). Read once, when the default world is created; afterwards the world keeps its own list, changed with `/datapack` |
+| `initial-disabled` | list of strings | `[]` | Packs a new world leaves off (`initial-disabled-packs`) |
+| `function-permission-level` | integer, 1 to 4 | `2` | Permission level the commands in a function run at |
+
+Packs go in the default world's `datapacks` folder, as a directory or a `.zip`, and are named `file/<name>`. They are validated at startup; if one fails, the server logs it and starts with vanilla alone. See also `--safeMode` in [Installation](/docs/server/installation#command-line-flags).
+
+### `[logging]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `level` | string | `"info"` | `trace`, `debug`, `info`, `warn` or `error` |
+| `log-ips` | boolean | `true` | Put each player's address in the log line of their login. Off logs `IP hidden` |
+| `file` | boolean | `true` | Mirror the console into `.basalt/logs/latest.log`, archiving the previous run as `.basalt/logs/archive/<date>-<n>.log.gz` on every start |
+| `keep-days` | integer | `14` | Days of archived logs to keep. `0` keeps them forever |
+| `color` | string | `"auto"` | `auto` colours only when writing to a terminal, `always` and `never` force it |
+
+## limits.toml
+
+Limits on how much one connection may do before the server steps in. Everything ships at vanilla's value, so a fresh file changes nothing. Tighten it on a server under attack or with players you do not trust. This file can be reloaded with `/reload`.
+
+### `[packets]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `rate-limit` | integer, 0 to 16777216 | `0` | Kick a player who sends more than this many packets per second on average (vanilla's `rate-limit`). `0` is off. A normal client sends well under 100 a second |
+
+`[packets.drop]` and `[packets.kick]` set a per-packet limit. Each key is a packet's name as plugins name it, and each value is the most packets of that kind per second (1 to 16777216). Past the cap, packets in `[packets.drop]` are ignored and those in `[packets.kick]` disconnect the player. A name that is not a packet a client sends is a startup error. **NO VANILLA**: vanilla has no such limits.
+
+```toml
+[packets.drop]
+"serverbound.command_suggestion_request" = 20
+
+[packets.kick]
+"serverbound.place_recipe" = 200
+```
+
+### `[spam]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `chat-threshold-seconds` | integer, 0 to 3600 | `10` | Seconds of chat a player may send at the pace of one message a second before being kicked for spamming (vanilla's `chat-spam-threshold-seconds`). Operators are never kicked. `0` turns the kick off |
+| `command-threshold-seconds` | integer, 0 to 3600 | `10` | The same for commands (`command-spam-threshold-seconds`) |
+| `excluded-commands` | list of strings | `[]` | Commands that do not count toward the command limit, by name without the slash (Spigot's `spam-exclusions`). **NO VANILLA**: vanilla counts every command |
+
+### `[items]`
+
+Caps on the text a client may put on an item it hands the server whole. `0` means no limit, and that is the default. This table is not in the generated file; add it yourself.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `custom-name-max-length` | integer, 0 to 1048576 | `0` | Longest custom name, in characters |
+| `lore-line-max-length` | integer, 0 to 1048576 | `0` | Longest line of lore |
+| `book-page-max-length` | integer, 0 to 1048576 | `0` | Longest page of a book |
+| `book-title-max-length` | integer, 0 to 1048576 | `0` | Longest title of a written book |
