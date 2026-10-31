@@ -1,0 +1,329 @@
+---
+title: Server list, tab list, scoreboard and boss bar
+description: The files that decide what players see before and during a game: server_list, tab_list, scoreboard, boss_bar, animations and messages, with MiniMessage, profiles and placeholders.
+---
+
+Six files under `config/` draw things for players without a plugin:
+
+| File | Draws |
+|---|---|
+| `server_list.toml` | The entry in the multiplayer list: MOTD, counts, hover text, icon |
+| `tab_list.toml` | The header and footer of the player list that Tab opens |
+| `scoreboard.toml` | The panel down the right-hand side of the screen |
+| `boss_bar.toml` | The bar across the top |
+| `animations.toml` | Text that changes on its own, shared by all of the above |
+| `messages.toml` | What the server says when it turns a player away |
+
+`/reload` re-reads all of them. A file that does not validate is reported and the running one stays. A file the server cannot read at start stops the start and the log names it.
+
+## Text
+
+All text is MiniMessage: `<red>`, `<bold>`, `<gradient:gray:white>...</gradient>`, `<click:...>` and so on. A list of strings is one entry per line, and a single string with `\n` does the same.
+
+Gradients and other RGB colours arrived in 1.16. A client older than that shows them as flat white, so give those clients a profile of their own (see the `legacy` profile in `server_list.toml`).
+
+## Profiles
+
+Every file that draws something except animations and messages uses profiles. A profile is one complete look.
+
+```toml
+[profiles.default]
+default = true
+header = ["<bold>MY SERVER</bold>"]
+
+[profiles.staff]
+priority = 10
+when = ["%basalt_player_is_op% = true"]
+header = ["<red>STAFF</red>"]
+```
+
+| Key | Meaning |
+|---|---|
+| `default = true` | The fallback profile. Exactly one must set it, or the file is refused with ``must mark exactly one profile as `default` `` |
+| `priority` | An integer, `0` by default. Higher wins between profiles that both apply |
+| `active = true` | Switches the profile on regardless of `when`. It is what a maintenance profile uses |
+| `when` | A list of conditions, all of which must hold |
+
+The profile used is the one with the highest priority among those that are `active` or whose `when` holds. If none is, the one marked `default`. Anything a profile leaves out is taken from the default profile, so a profile that only changes the text is three lines long. Give profiles that may apply together different priorities.
+
+A file with no `[profiles]` table, or with no profile at all, is refused.
+
+### Conditions
+
+A condition compares placeholders. Both sides are filled in first.
+
+| Operator | Meaning |
+|---|---|
+| `=`, `==` | Equal. Numbers compare as numbers, anything else as text without regard to case |
+| `!=` | Not equal |
+| `<`, `<=`, `>`, `>=` | Numeric comparison. A side that is not a number makes the condition unanswerable |
+| `matches` | The left side matches a pattern on the right where `*` stands for any text, as in `beta.*` |
+| `contains` | The left side contains the right side, without regard to case |
+
+A condition with no operator is true when it reads `true`, so `when = ["%basalt_player_known%"]` works.
+
+```toml
+when = ["%basalt_player_host% matches beta.*"]
+when = ["%basalt_server_online% >= 40", "%basalt_player_protocol% >= 735"]
+```
+
+A condition the current situation cannot answer, such as a player's coordinates in a server list ping, is reported once in the log (`Condition '...' of server list profile 'x' was skipped: ...`) and the profile is skipped. It never counts as a silent no.
+
+## Placeholders
+
+A placeholder is `%name%`, filled in before the text is parsed, in every file here and in your own plugins. The server's own are prefixed `basalt_`.
+
+### Server
+
+| Placeholder | Value |
+|---|---|
+| `%basalt_server_online%` | Players connected right now |
+| `%basalt_server_max_players%` | The slot count |
+| `%basalt_server_version%` | The Minecraft version the server implements |
+| `%basalt_server_protocol%` | Its protocol number |
+| `%basalt_server_unique_joins%` | Different players that have joined |
+| `%basalt_server_total_chunks%` | Chunks loaded across all worlds |
+| `%basalt_server_online_<world>%` | Players in one world, `0` for a world that does not exist |
+| `%basalt_server_uptime%` | Time since start, such as `2d 3h 14m 5s` |
+| `%basalt_server_uptime_seconds%` | The same in seconds |
+| `%basalt_server_ram_used%` | Memory the server has in use, in MB |
+| `%basalt_server_cpu%` | CPU use as a percentage of one core, as `top` shows it, so it passes 100 when more than one thread is busy |
+| `%basalt_server_tps%` (or `%basalt_server_tps_1%`), `%basalt_server_tps_5%`, `%basalt_server_tps_15%` | Ticks per second averaged over one, five and fifteen minutes |
+| `%basalt_server_tps_1_colored%`, `%basalt_server_tps_5_colored%`, `%basalt_server_tps_15_colored%` | The same wrapped in a colour: green from 18, yellow from 15, red below |
+| `%basalt_server_time_<format>%` | The local time, with `yyyy`, `MM`, `dd`, `HH`, `mm` and `ss` replaced, such as `time_HH:mm` |
+
+### Player
+
+Every name below is written `%basalt_player_<name>%`. These need a player. In a server list ping there is none yet, so only `protocol`, `host`, `ip`, `name`, `displayname`, `list_name` and `known` work there.
+
+| Name | Value |
+|---|---|
+| `protocol`, `host`, `ip` | The client's protocol, the address it typed, and where it connected from. In a Bedrock ping the host is `bedrock` |
+| `name`, `displayname`, `list_name` | The name. In a ping, only when `remember-ip` knows the address |
+| `known` | Whether the server has seen this player (or, in a ping, this address) |
+| `uuid`, `world`, `dimension` | Identity and place. `dimension` is `overworld`, `nether` or `end` |
+| `x`, `y`, `z`, `yaw`, `pitch` | Position and rotation |
+| `direction`, `direction_xz` | A compass point such as `NNE`; the second ignores up and down |
+| `gamemode`, `group`, `is_op` | Game mode, permission group, and whether that group is the operator group |
+| `health`, `health_rounded`, `max_health`, `max_health_rounded` | Health |
+| `food_level`, `saturation` | Hunger |
+| `level`, `exp`, `current_exp`, `exp_to_level`, `total_exp` | Experience |
+| `online`, `is_flying`, `allow_flight`, `is_sprinting`, `is_dead` | Booleans |
+| `has_permission_<node>` | Whether the player's group grants the node |
+| `stat_<name>` | A statistic: `stat_mined_stone`, or a full key such as `stat_minecraft:custom/minecraft:jump` |
+
+Any number takes a precision suffix from `_0` to `_9`: `%basalt_player_x%` is the true position and unreadable, `%basalt_player_x_1%` is one decimal.
+
+### Animations
+
+`%basalt_animation_<name>%` is a frame of an animation, see below.
+
+### From plugins
+
+Plugins register their own placeholders, and they then work in every file here, in your own commands and in any other plugin. See [Plugins](/docs/server/plugins).
+
+<x-docs.callout type="tip" title="A wrong name shows up">
+A placeholder the server cannot fill in is left visible and explained once in the log rather than silently emptying the line. `/placeholder parse me <text>` resolves text against yourself, which is the fastest way to find out why a line is not rendering. See [Commands](/docs/server/commands).
+</x-docs.callout>
+
+## server_list.toml
+
+All of this is decided before anyone logs in, so the only things known about whoever is looking are the three the ping carries: the protocol version of their client (`%basalt_player_protocol%`), the address they typed (`_host`) and where they connected from (`_ip`).
+
+```toml
+[profiles.default]
+default = true
+motd = [
+    "<bold>MY SERVER</bold> <gray>[1.8-26.3]</gray>",
+    "<white>Welcome</white>",
+]
+
+[profiles.legacy]
+motd = ["<gray>MY SERVER</gray>", "<white>Welcome</white>"]
+when = ["%basalt_player_protocol% < 735"]
+
+[profiles.maintenance]
+active = false
+priority = 100
+motd = ["<red>Under maintenance</red>"]
+hide-player-count = true
+version-name = "Maintenance"
+version-protocol = -1
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `motd` | | The two lines the client shows |
+| `hide-online-players` | `false` | Keep the count but leave the names out of the hover list. Lines in `hover` still show |
+| `sample-size` | `12` | How many player names the hover list shows at most. `0` shows none |
+| `hover` | | Lines shown instead of player names when hovering the count |
+| `hide-player-count` | `false` | Replaces the count with `???` |
+| `max-players` | the slot count | What the list shows, not how many can actually join |
+| `online-players` | the real count | The left-hand number |
+| `version-name` | the server version | The text beside the ping bars |
+| `version-protocol` | the server protocol | Purely how the list draws it. A client shows a version it does not recognise in red, and that stops nobody from joining; rejecting people is the whitelist's job |
+| `icon` | built in | A 64 by 64 PNG, as a file name relative to `config/` |
+
+If the icon is missing or is not a 64 by 64 PNG the log says so (`Server list icon ... is not a 64x64 PNG; using the built-in one.`) and the built-in one is used.
+
+A `motd` that comes from a `server.properties` imported at the first start is written into the default profile. Section-sign colour codes in it are not translated: the log tells you to rewrite it in MiniMessage.
+
+A profile that is switched on with `active = true` is named in the log at start, because a server showing its maintenance message by accident is hard to debug.
+
+Bedrock clients get the same profile through the Bedrock ping: the first line of the MOTD, the second line, and the counts.
+
+### Greeting players by name
+
+```toml
+[greeting]
+remember-ip = false
+```
+
+The ping happens before login, so the address is the only thing there is to recognise someone by. With `remember-ip = true` the server remembers the address a player last connected from (one column in `players.db`, overwritten on each login), and `%basalt_player_name%` and `%basalt_player_known%` work in pings. It is off by default because it is personal data that vanilla never stores, and a poor identifier anyway: everyone behind one router shares an address. Fine for saying hello, never for deciding what someone may do, which is why permissions cannot be driven by it. Turning it off stops it being written but does not erase what is already there.
+
+Put a greeting in a profile of its own, because the name is empty for anyone who has never connected:
+
+```toml
+[profiles.returning]
+priority = 5
+when = ["%basalt_player_known%"]
+motd = ["<white>Welcome back, %basalt_player_name%</white>"]
+```
+
+## tab_list.toml
+
+The header and footer of the player list. Java only: Bedrock has no player list to decorate, so none of this reaches a Bedrock player.
+
+```toml
+enabled = true
+update-interval-ticks = 1
+
+[profiles.default]
+default = true
+header = ["<bold>MY SERVER</bold>"]
+footer = ["<gray>TPS <white>%basalt_server_tps%</white></gray>"]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Switches the panel on. This is the one interface file on out of the box |
+| `update-interval-ticks` | `1` in the shipped file | How often each player's panel is redrawn, in ticks (20 is one second), and the ceiling on how smooth an animation in it can look. `0` sends it once on join |
+| `header`, `footer` (per profile) | | The lines above and below the player list |
+
+A redraw only becomes a packet when the text it produces changed, so a static panel costs nothing however often it is drawn. Animated text costs one packet per player per change: at `1` that is 20 a second per player.
+
+## scoreboard.toml
+
+The sidebar. It is off by default because it covers part of the view.
+
+```toml
+enabled = false
+update-interval-ticks = 1
+
+[profiles.default]
+default = true
+title = "<bold>MY SERVER</bold>"
+lines = [
+    "",
+    "<gray>World</gray> <white>%basalt_player_world%</white>",
+    "<gray>Online</gray> <white>%basalt_server_online%/%basalt_server_max_players%</white>",
+]
+
+[profiles.nether]
+priority = 10
+when = ["%basalt_player_dimension% = nether"]
+title = "<bold><red>NETHER</red></bold>"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Switches the sidebar on |
+| `update-interval-ticks` | `1` in the shipped file | Redraw interval, as in the tab list |
+| `title`, `lines` (per profile) | | The heading and one row per entry |
+
+The client draws 15 rows. A profile with more is accepted but the log warns (`Scoreboard profile 'x' in config/scoreboard.toml has N lines; the client draws 15, so the rest are dropped.`). Two identical lines are allowed.
+
+Plugins can draw their own scoreboards and boss bars, see [Scoreboards and boss bars](/docs/server/scoreboards-and-boss-bars).
+
+## boss_bar.toml
+
+The bar across the top. It is off by default because it sits over the game.
+
+```toml
+enabled = false
+update-interval-ticks = 1
+
+[profiles.default]
+default = true
+text = "<white>%basalt_animation_website%</white>"
+color = "white"
+overlay = "notched_20"
+progress = "1.0"
+
+[profiles.tps]
+priority = 20
+text = "<gray>TPS</gray> %basalt_server_tps_1_colored%"
+color = "green"
+overlay = "notched_20"
+progress = "1.0"
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Switches the bar on |
+| `update-interval-ticks` | `1` in the shipped file | Redraw interval, as in the tab list |
+| `text` | | MiniMessage, with placeholders |
+| `color` | `white` | `pink`, `blue`, `red`, `green`, `yellow`, `purple` or `white` |
+| `overlay` | `progress` | `progress` (a solid bar), `notched_6`, `notched_10`, `notched_12` or `notched_20` |
+| `progress` | | `0.0` to `1.0`; anything above or below is clamped |
+
+`progress` can be a placeholder, which turns the bar from a label into a gauge: anything that resolves to a number works. Write it as a string (`"0.5"` or `"%basalt_server_online%"`); a whole number such as `1` is also accepted.
+
+An unknown `color` or `overlay` is reported in the log and falls back to `white` or `progress`, rather than stopping the start.
+
+## animations.toml
+
+An animation is a list of frames and how long each lasts. It is used as the placeholder `%basalt_animation_<name>%`, so one definition works in the sidebar, the tab list, the boss bar and the MOTD.
+
+```toml
+[animations.dots]
+change-interval-ms = 500
+frames = ["", ".", "..", "..."]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `frames` | required | The list of frames, each MiniMessage. An animation with none is skipped with a warning |
+| `change-interval-ms` | `200` | How long each frame lasts, at least `1` |
+
+Which frame shows is worked out from the clock, not a counter kept per player: everyone online sees the same frame at the same moment, and a player who joins halfway does not start from the top. A frame can contain other placeholders, so an animation can wrap live data, but not another animation: that is blanked, because it is the one thing that would loop forever.
+
+Nothing animates faster than the thing drawing it refreshes, and nothing redraws faster than one tick (50 ms). Asking for less is not wrong, it just skips frames. Names are compared in lower case, and the server ships `website` and `dots`.
+
+## messages.toml
+
+What the server says when it turns a player away or removes them. Every message ships empty, which keeps the vanilla text: the server sends a translation key and each client shows it in its own language. Write a message and it becomes literal text, the same for everyone, in MiniMessage.
+
+```toml
+[kick]
+server-full = "<red>We are full, try again in a minute.</red>"
+banned = "<red>You are banned.</red>\n<gray>%reason%</gray>"
+```
+
+| Key | When |
+|---|---|
+| `server-full` | The server has reached `max-players` |
+| `not-whitelisted` | The whitelist is on and the player is not on it |
+| `banned`, `banned-ip` | The player, or their address, is banned. `%reason%` is the reason given with the ban |
+| `idle` | Kicked by `player-idle-timeout` |
+| `flying` | Kicked for floating too long while `allow-flight` is off |
+| `spam` | Kicked by the chat or command spam limit |
+| `packet-rate` | Kicked by the packet limits |
+| `transfers-disabled` | A transferred player on a server with `accepts-transfers` off |
+| `connection-throttled` | A login refused by `connection-throttle-ms` |
+| `server-closed` | What players are told when the server stops |
+| `outdated-client` | A client whose version this server does not speak. One message for every reason |
+
+A key that is not in this list stops the start: `config/messages.toml: kick.<key> is not a message this server sends`. A value that is not a string is refused the same way.
+
+To reword the answers of commands, see [Commands](/docs/server/commands#rewording-answers).
