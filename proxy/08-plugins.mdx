@@ -1,0 +1,224 @@
+---
+title: Plugins
+description: How to package, configure, load and ship a Lua plugin for Basalt Proxy.
+---
+
+Basalt Proxy runs plugins written in Lua 5.5. A plugin can react to players joining, chatting, moving between backends
+and leaving, add commands (for the console and for players), move or disconnect players, run timers and keep its own
+data in the proxy's database. The functions it can call are listed in [Plugin API](/docs/proxy/plugin-api), the events in
+[Plugin events](/docs/proxy/plugin-events), and a complete plugin is built in [Worked example](/docs/proxy/plugin-example).
+
+## Enabling plugins
+
+Plugins are off by default. Everything the operator controls lives in `config/plugins.toml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch. When `false` no plugin is read. |
+| `directory` | `"plugins"` | Where packages are looked for. The proxy creates it if it is missing. |
+| `database` | `".basalt/proxy.db"` | The proxy's own SQLite file for plugin data (1 to 4096 bytes). It is state, not configuration. |
+| `instructions-per-turn` | `250000` | Lua instruction budget for one run of a handler (1000 to 1000000000). |
+| `memory-mib` | `32` | Memory ceiling for one plugin's Lua state (1 to 1024). |
+| `queue-size` | `256` | Events waiting for the plugin thread (1 to 65536). A full queue drops the newest event. |
+| `operators` | none | Player names allowed to run a command a plugin guards with a permission. |
+| `[allow]` | none | Per plugin, the permissions the operator grants. |
+
+```toml
+enabled = true
+operators = ["Steve"]
+
+[allow]
+my_plugin = ["commands"]
+```
+
+The permissions are `commands`, `network` and `packets`; any other name in `[allow]` makes the file invalid and the
+proxy refuses it, naming the key. Only `commands` unlocks something a plugin can use today (the `run` function). A
+plugin whose `plugin.toml` asks for a permission that `[allow]` does not grant is not loaded, and the proxy logs which
+permission was missing.
+
+Plugins load once at startup and again on the `reload` console command, which also re-reads the rest of the
+configuration. A reload stops every plugin (running its `plugin.disable` handlers), reads the packages again and starts
+them; data in the database is kept.
+
+## The package
+
+A plugin is a `.bppkg` file in the plugins directory: a zip archive with this layout.
+
+```
+my_plugin.bppkg
+  plugin.toml           the manifest (required)
+  src/
+    main.lua            the entry point (the default for `main`)
+    util.lua            modules, loaded with require("util")
+    shop/prices.lua     require("shop.prices")
+  resources/
+    config.toml         copied next to the plugin on first load
+    lang/en_us.toml     lines of text
+```
+
+The archive file name does not matter; the `id` in `plugin.toml` does. Two packages with the same `id` are refused (the
+second one is skipped and logged). Zip the contents of the plugin folder so that `plugin.toml` sits at the root of the
+archive, not inside a subfolder.
+
+### plugin.toml
+
+```toml
+id = "my_plugin"
+name = "My plugin"
+version = "1.0.0"
+authors = ["Steve"]
+api = 1
+main = "src/main.lua"
+
+[capabilities]
+storage = true
+players_data = true
+commands = true
+
+[depends]
+other_plugin = ">=1.0"
+
+[soft-depends]
+optional_plugin = "*"
+
+[exports]
+modules = ["shared"]
+
+[resources]
+private = ["secrets.toml", "internal/"]
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `id` | yes | Lowercase letters, digits and `_`, starting with a letter. It names the plugin everywhere: log lines, data, its folder under the plugins directory. |
+| `version` | yes | Free-form string such as `1.2.0`. Dependencies compare it numerically by `.`/`-` separated parts. |
+| `api` | yes | The plugin API version. It must be `1`; any other value keeps the plugin from loading. |
+| `name` | no | Display name; defaults to `id`. |
+| `authors` | no | List of strings. |
+| `main` | no | Entry script inside the package, default `src/main.lua`. Larger than 1 MiB is refused, as is every module. |
+| `[capabilities]` | no | `storage`, `players_data` and `commands`, all booleans defaulting to `false`. See below. |
+| `[depends]` | no | `plugin_id = "requirement"`. A missing or too-old dependency keeps the plugin from loading. |
+| `[soft-depends]` | no | The same, but only affects load order when the other plugin is present. |
+| `[exports]` | no | `modules`: module names other plugins may `require` (`"*"` exports all of them). |
+| `[resources]` | no | `private`: paths (a trailing `/` means a folder) that are not copied out of the package. |
+
+A requirement is `*` (any version), a bare version for an exact match, or one of `>=`, `>`, `<=`, `<` followed by a
+version. Plugins load after the plugins they depend on, and otherwise in alphabetical order of `id`. A dependency cycle
+keeps every plugin in it from loading. A plugin sees its own modules first when it calls `require`, then modules that a
+dependency exports.
+
+The capabilities gate three features:
+
+| Capability | Unlocks | Needs an operator grant |
+|---|---|---|
+| `storage = true` | The `store` table | No |
+| `players_data = true` | `player.data` on player tables | No |
+| `commands = true` | The `run` function | Yes: `commands` under `[allow]` |
+
+The manifest also accepts `files`, `network` and `packets` under `[capabilities]`. Declaring `network` or `packets`
+makes the plugin need the matching grant and exposes nothing extra on the proxy, so leave them out.
+
+### Configuration and text resources
+
+Everything under `resources/` is copied to `<plugins directory>/<id>/` the first time the plugin loads, skipping files
+that already exist and the paths listed in `private`. After that the operator edits the copies, and a package update
+never overwrites them. Delete a file to get the packaged one back.
+
+The `.toml` files in that folder become the `config` global:
+
+- `config.toml` contributes its keys directly: `lobby = "lobby"` is read as `config.lobby`.
+- Any other `.toml` file becomes a table named after the file: `limits.toml` is read as `config.limits`.
+- A key with a dash is readable with an underscore as well: `max-players` is also `config.max_players`.
+- Two `.toml` files with the same name in different subfolders make the plugin fail to load.
+- A `.toml` file that is not valid TOML makes the plugin fail to load, and the log names the file.
+
+Files in `lang/` hold the plugin's text. Nested tables flatten with dots, and only `en_us` is the default locale:
+
+```toml
+welcome = "Welcome back, {name}. Visit number {visits}."
+
+[shop]
+bought = "You bought {item}."
+```
+
+A message that starts with `@` is a key (`"@welcome"`, `"@shop.bought"`), and `{name}` is replaced by the field of the
+table passed with it. How these are used is described in [Plugin API](/docs/proxy/plugin-api#text). A key that no file
+defines is shown as the key itself.
+
+## Lifecycle
+
+1. The proxy reads every `.bppkg`, resolves `api`, dependencies and operator grants, and orders the plugins.
+2. For each plugin in order, the resources are copied out, `config` is built, and `main` runs. Top-level code can
+   register handlers, commands and timers. If it raises an error the plugin is dropped and its commands and timers are
+   removed.
+3. When every plugin has loaded, a single thread starts and delivers `plugin.enable` to each plugin, then serves events,
+   commands and timers one task at a time.
+4. On `reload` or shutdown, `plugin.disable` runs for every plugin that is still healthy.
+
+All plugins share that one thread, so a handler never runs at the same time as another. Handlers must therefore be
+short. To pause without blocking the others, use `wait` (see [Plugin API](/docs/proxy/plugin-api#time)).
+
+## The sandbox
+
+Each plugin has its own Lua state with these limits:
+
+| Limit | Value |
+|---|---|
+| Instructions per run | `instructions-per-turn` (default 250000), refilled before every handler, command and timer call |
+| Memory | `memory-mib` (default 32) per plugin |
+| Script size | 1 MiB per module |
+| Log line | 4096 bytes, longer lines are cut |
+
+A handler that exceeds its instruction budget or the memory ceiling disables its plugin until the next `reload`. A
+handler or command that raises an error is logged and counted; five failures in a row disable the plugin, and a
+successful run resets the count. The proxy and the other plugins keep running.
+
+The standard library is there except for what reaches outside the plugin: `io`, `debug`, `dofile`, `loadfile` and
+`collectgarbage` do not exist, nor do `os.execute`, `os.exit`, `os.getenv`, `os.remove`, `os.rename`, `os.tmpname` and
+`os.setlocale`. `package` is removed and `require` only finds modules of the plugin (and what a dependency exports).
+`load` accepts source text only, not precompiled chunks, and `print` writes to the proxy log like `log.info`. The
+proxy reads Lua source from the package; it does not load precompiled bytecode.
+
+## Data
+
+Plugin data goes to the file named by `database`, in two tables: one set of keys for the plugin (`store`) and one per
+player (`player.data`). Both need the matching capability, both hold strings, numbers and booleans (not tables), and
+both are limited to 128-byte keys, 64 KiB values and 1000 keys per plugin (per player and plugin for `player.data`).
+The file is the proxy's own and is never shared with a Basalt Server. Player entries are keyed by the player's UUID.
+Reference: [Plugin API](/docs/proxy/plugin-api#storage).
+
+## Permissions for commands
+
+A command registered with `{ permission = "..." }` can only be run by the console and by the players named in
+`operators` (case-insensitive). The permission string itself is a label for the plugin author; the proxy has no groups.
+Any other player gets `You do not have permission to use this command.` Commands without a `permission` can be run by
+everyone who can reach the proxy.
+
+## Tooling
+
+[Kiln](https://github.com/BasaltProject/Kiln) checks a plugin before it ever reaches a proxy, and
+[DevTools](https://github.com/BasaltProject/DevTools) brings autocompletion for the proxy API into VS Code and
+JetBrains IDEs.
+
+```bash
+kiln new my_plugin "My plugin"
+kiln check my_plugin --target proxy
+kiln pack my_plugin --target proxy
+```
+
+- `kiln check --target proxy` reads `plugin.toml`, every file under `src/`, each `require`, and every name the code takes
+  from the proxy API (for example, a misspelled `log.infoo` or `players.onlne`). It also expects `name` in the manifest, which the
+  proxy itself treats as optional.
+- `kiln pack` writes `build/<id>-<version>.bspkg`. It is a zip with the layout above, so rename it to `.bppkg` before
+  putting it into the plugins directory.
+- In DevTools, set `basalt.target` to `proxy` to get the proxy definitions and run the proxy checks on save.
+
+<x-docs.callout type="note" title="Source, not bytecode">
+`kiln compile`, `kiln build` and signing produce bytecode and signatures. The proxy loads plain Lua source from the
+package, so ship `src/*.lua` as they are.
+</x-docs.callout>
+
+<x-docs.callout type="tip" title="Develop with a quick loop">
+Keep the plugin under `plugins/` as a `.bppkg`, change it, rebuild the archive and type `reload` in the proxy console.
+Handlers stop, the package is read again and `plugin.enable` runs once more.
+</x-docs.callout>

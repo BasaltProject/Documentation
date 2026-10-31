@@ -1,0 +1,183 @@
+---
+title: Worked example
+description: A complete proxy plugin with a visit counter, two commands and a lang file, built step by step.
+---
+
+This plugin greets every player with a visit counter kept in the proxy's database, answers `/where` with the player's
+current backend, and sends a player to a configured backend with `/lobby`. It uses the manifest, modules, `config`,
+lang files, events, commands and player data described in [Plugins](/docs/proxy/plugins) and
+[Plugin API](/docs/proxy/plugin-api).
+
+## Layout
+
+```
+example/
+  plugin.toml
+  src/
+    main.lua
+    visits.lua
+    events.lua
+    commands.lua
+  resources/
+    config.toml
+    lang/en_us.toml
+```
+
+## plugin.toml
+
+`players_data` unlocks `player.data`, which the visit counter uses. No operator grant is needed for it.
+
+```toml
+id = "example"
+name = "Example"
+version = "1.0.0"
+api = 1
+main = "src/main.lua"
+
+[capabilities]
+players_data = true
+```
+
+## Resources
+
+`resources/config.toml` is copied to `plugins/example/config.toml` on first load, where the operator can change the
+lobby name. Its keys are read as `config.lobby`.
+
+```toml
+lobby = "lobby"
+```
+
+`resources/lang/en_us.toml` holds the messages. `{name}`, `{visits}`, `{server}` and `{lobby}` are filled in from the
+table each call passes.
+
+```toml
+welcome = "Welcome back, {name}. Visit number {visits}."
+where = "You are on {server}."
+no_lobby = "There is no backend called {lobby}."
+```
+
+## src/main.lua
+
+The entry point only wires the modules together. `require("visits")` loads `src/visits.lua`.
+
+```lua
+local visits = require("visits")
+local events = require("events")
+local commands = require("commands")
+
+events.register(visits)
+commands.register()
+```
+
+## src/visits.lua
+
+`player.data.visits` reads the stored counter (`nil` the first time), and assigning to it saves the new value in the
+database, so the count survives restarts.
+
+```lua
+local visits = {}
+
+function visits.bump(player)
+    local count = (player.data.visits or 0) + 1
+    player.data.visits = count
+    return count
+end
+
+return visits
+```
+
+## src/events.lua
+
+On join the player gets the greeting, with `@welcome` resolved from the lang file. On a backend change the plugin logs
+where the player came from and went to.
+
+```lua
+local events = {}
+
+function events.register(visits)
+    on("player.join", function(e)
+        local count = visits.bump(e.player)
+        e.player:send("@welcome", { name = e.player_name, visits = count })
+    end)
+
+    on("player.server_change", function(e)
+        log.info(e.player_name .. " moved from " .. e.from_server .. " to " .. e.server)
+    end)
+end
+
+return events
+```
+
+## src/commands.lua
+
+Both commands run from the console and from players; `src.server` only exists for players. `/lobby` checks that the
+backend exists before moving the player.
+
+```lua
+local commands = {}
+
+function commands.register()
+    cmd("where", function(src)
+        src:send("@where", { server = src.server })
+    end)
+
+    cmd("lobby", function(src)
+        if not servers.exists(config.lobby) then
+            src:send("@no_lobby", { lobby = config.lobby })
+            return
+        end
+        src:connect(config.lobby)
+    end)
+end
+
+return commands
+```
+
+<x-docs.callout type="note" title="Console as the source">
+When the console runs `where`, `src.server` is `nil` and the message shows `{server}` unchanged. A command meant for
+players can start with `if src.is_console then return end`. The console source has no `connect`, so `lobby` is a
+player command in practice.
+</x-docs.callout>
+
+## Package and run it
+
+Check and zip the plugin (the archive must have `plugin.toml` at its root), then name it `.bppkg`:
+
+```bash
+kiln check example --target proxy
+cd example && zip -r ../example.bppkg plugin.toml src resources && cd ..
+mkdir -p plugins && mv example.bppkg plugins/
+```
+
+Set `enabled = true` in `config/plugins.toml` and start the proxy. The log shows `Loaded 1 plugin(s).`, and the first
+start writes `plugins/example/config.toml` and `plugins/example/lang/en_us.toml`. Join and you get the greeting; join
+again and the visit number grows.
+
+## Staying inside the sandbox
+
+Each handler gets `instructions-per-turn` Lua instructions (250000 by default) and the plugin as a whole
+`memory-mib` (32 by default); going over either disables the plugin until `reload`, so keep loops bounded:
+
+```lua
+-- Fine: bounded work per call.
+on("player.server_change", function(e)
+    for _, p in ipairs(players.online()) do
+        if p.uuid ~= e.player_uuid then
+            p:send("<gray>{name} is now on {server}", { name = e.player_name, server = e.server })
+        end
+    end
+end)
+
+-- Spread long work over time instead of one long loop.
+local queue = {}
+every(1, function()
+    for _ = 1, 100 do
+        local job = table.remove(queue)
+        if not job then break end
+        job()
+    end
+end)
+```
+
+Errors are not fatal: a handler that raises is logged with the plugin name, and only the fifth failure in a row
+disables the plugin. Use `pcall` around work that can fail on purpose.

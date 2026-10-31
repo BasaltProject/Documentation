@@ -1,0 +1,239 @@
+---
+title: Plugin API
+description: Reference for every global, function and object a Basalt Proxy plugin can use.
+---
+
+Everything below is a global in the plugin's Lua state, next to the standard library (`string`, `table`, `math`,
+`utf8`, `os` without its process functions, `coroutine`, `pcall` and the rest). Events are in
+[Plugin events](/docs/proxy/plugin-events); packaging and limits are in [Plugins](/docs/proxy/plugins).
+
+A call with the wrong argument types raises a Lua error. In a handler, that error is logged and counts as a failure
+(five in a row disable the plugin).
+
+## Identity and logging
+
+| Global | Description |
+|---|---|
+| `plugin.id` | The `id` from `plugin.toml`. |
+| `plugin.name` | The `name`, or the `id` when none is given. |
+| `plugin.version` | The `version` string. |
+| `log.info(text)` | Writes a line to the proxy log under the plugin's name. |
+| `log.warn(text)` | The same, prefixed with `warn: `. |
+| `log.error(text)` | The same, prefixed with `error: `. |
+| `print(...)` | Joins its arguments with tabs and logs them like `log.info`. |
+
+`log` functions accept any value (converted to text) and cut lines at 4096 bytes. They return nothing.
+
+## config
+
+`config` is a table built from the plugin's `.toml` files (see [Plugins](/docs/proxy/plugins#configuration-and-text-resources)).
+Values keep their TOML types: strings, integers, floats, booleans, arrays (1-based sequences) and tables. A key with a
+dash is also available with an underscore.
+
+```lua
+local lobby = config.lobby
+local limit = config.limits.max_players
+```
+
+The table is built once when the plugin loads, so editing the files takes a `reload` to apply.
+
+## Text
+
+`send`, `broadcast`, `kick` and the console's `send` take a message in [MiniMessage](https://docs.advntr.dev/minimessage/)
+format (`<red>`, `<gradient:aqua:green>Hi</gradient>`, `<click:...>`). Plain text works as is. Every one resolves the
+message the same way:
+
+1. A message that starts with `@` is a key into the plugin's `lang/*.toml` files; the rest of the message is the key
+   (`"@shop.bought"`). A key nobody defines is used as is, without the `@`.
+2. Each `{name}` is replaced by the field `name` of the table given as the last argument, as text. A name the table
+   does not have is left as `{name}`.
+3. The result is cut at 4096 bytes.
+
+| Function | Description |
+|---|---|
+| `t(key, [args])` | Returns the line for `key` (no `@` needed) with the `{name}` fields replaced. Returns the key itself when no file defines it. |
+| `broadcast(message, [args])` | Sends the message to every player in `players.online()`. |
+
+```lua
+broadcast("<yellow>{name} joined the proxy", { name = e.player_name })
+local line = t("shop.bought", { item = "apple" })
+```
+
+## Players
+
+A player is a table:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | The player's name. |
+| `uuid` | string | The player's UUID, as text. |
+| `server` | string | The backend the player is on. |
+| `is_console` | boolean | `false` for players. |
+| `data` | table | Persistent values for this plugin and player. See [Storage](#storage). |
+
+| Method | Description |
+|---|---|
+| `player:send(message, [args])` | Sends a chat line to the player. |
+| `player:connect(server)` | Moves the player to the backend named `server`. Returns `true` when the move was accepted, `false` otherwise (for example when the backend does not exist). |
+| `player:kick([reason], [args])` | Disconnects the player. The reason is MiniMessage and defaults to `Disconnected`. |
+
+These are methods: call them with a colon. A player table is a snapshot of what the proxy knew when it was created, so
+`player.server` does not follow later moves; look the player up again or use the `player.server_change` event.
+
+| Function | Returns |
+|---|---|
+| `players.online()` | A list with a player table for every player in play. |
+| `players.by_name(name)` | The player with that name (the exact spelling first, then ignoring case), or `nil`. |
+| `players.by_uuid(uuid)` | The player with that UUID, or `nil`. |
+| `players.count()` | The number of players in play. |
+
+A player appears in these functions from their `player.join` event and disappears after `player.quit`. Between login
+and join they are not listed.
+
+## Servers
+
+| Function | Returns |
+|---|---|
+| `servers.list()` | A list with the name of every backend in `backends.toml`. |
+| `servers.exists(name)` | `true` when a backend has exactly that name. |
+
+## Commands
+
+```lua
+cmd(spec, handler, [options])
+```
+
+Registers a command that the console and players can run. `handler` is called as `handler(source, ...)`. `options` may
+carry `permission` (a string; see [Plugins](/docs/proxy/plugins#permissions-for-commands)). A registration that fails
+(bad spec, reserved or invalid name, duplicate) raises an error, which stops the plugin from loading when it happens at
+top level.
+
+The spec is the command's words followed by its arguments:
+
+```lua
+cmd("coins top [limit: int 1..25]", function(src, limit)
+    src:send("Top {limit}", { limit = limit or 10 })
+end, { permission = "shop.top" })
+```
+
+| Part | Meaning |
+|---|---|
+| `word` | A literal word. One or more, before any argument. The first is the command name: 1 to 32 characters of `a-z`, `0-9`, `_` and `-`. |
+| `<name: type>` | A required argument. |
+| `[name: type]` | An optional argument. Required ones cannot follow an optional one. |
+
+| Argument type | Lua value | Notes |
+|---|---|---|
+| `word` | string | One word. The default when no type is written. |
+| `text` | string | The rest of the line, joined with single spaces. |
+| `int` | integer | Optional range `min..max`, either side may be left out (`int 1..25`, `int ..10`). A value outside the range counts as a mismatch. |
+| `float` | number | Any decimal number. |
+| `bool` | boolean | Only `true` or `false`. |
+
+The handler receives the source first and then one value per declared argument, with `nil` for an optional one that was
+not given. If the words do not fit (missing required argument, wrong type, out of range, extra words) the sender is told
+`Usage: /` followed by the spec, and the handler does not run. Several commands can share a name when their literal
+words differ (`coins` and `coins top`); the one with the most matching literals wins, and one that matches none is
+silent. Registering the same literals twice raises an error. Names of the proxy's own commands (`help`, `servers`,
+`status`, `reload`, `send`, `stop`, `plugins`) cannot be used.
+
+Players run a command with `/name ...`; clients 1.13 and later complete it using the declared argument types and ranges.
+The console runs it without the slash.
+
+`source` is a [player table](#players) when a player ran the command, or the console:
+
+| Field | Description |
+|---|---|
+| `source.is_console` | `true` for the console. |
+| `source.name` | `"CONSOLE"`. |
+| `source:send(message, [args])` | Writes the message to the proxy log, under the plugin's name. |
+
+A console source has no `server`, `uuid`, `data`, `connect` or `kick`; check `is_console` before using them. A command
+with a `permission` is refused for players who are not in `operators`; the console always passes.
+
+## Events
+
+```lua
+on(event, [options], handler)
+watch(event, [options], handler)
+```
+
+Registers `handler` for an event. `on` and `watch` register the same handler; the only difference is that `watch`
+refuses the `plugin.enable` and `plugin.disable` events, which belong to the plugin. An unknown event name raises an
+error listing the valid ones, and so does a handler that is not a function.
+
+`options` is an optional table:
+
+| Key | Description |
+|---|---|
+| `priority` | `FIRST`, `EARLY`, `NORMAL` (the default), `LATE` or `LAST`, in any case. Handlers of one event run in this order; equal priorities keep registration order. |
+| `player_name`, `player_uuid`, `server`, `from_server` | Only deliver events where that field equals this string (names compare ignoring case). They apply to the player events and are ignored for `player.login` and `server.ping`. |
+
+```lua
+on("player.server_change", { server = "survival" }, function(e)
+    log.info(e.player_name .. " arrived in survival")
+end)
+```
+
+The events, their fields and when they fire are in [Plugin events](/docs/proxy/plugin-events). None of them can be
+cancelled or changed by a handler.
+
+## Time
+
+Durations are in ticks of 50 ms (20 per second).
+
+| Function | Description |
+|---|---|
+| `later(ticks, fn)` | Runs `fn()` once after `ticks` (0 or more). Returns a handle. |
+| `every(period, fn)` | Runs `fn()` every `period` ticks (1 or more), the first time after one period. Returns a handle. |
+| `every(delay, period, fn)` | The same, with the first run after `delay` ticks. |
+| `wait([ticks])` | Pauses the running handler for `ticks` (at least 1, default 1). |
+
+A handle has a `cancel()` function that stops the timer; call it as `handle:cancel()` or `handle.cancel()`.
+
+`wait` only works where Lua can pause: inside event and command handlers, timer callbacks and `plugin.enable`. At the top
+level of a script, while the plugin is loading, it raises an error. While one handler waits, the plugin thread serves
+everyone else. Timers are removed when the plugin is reloaded.
+
+```lua
+on("player.join", function(e)
+    wait(40)
+    e.player:send("<gray>Two seconds after joining.")
+end)
+```
+
+## Storage
+
+Needs `storage = true` for `store` and `players_data = true` for `player.data`, under `[capabilities]`. Without it,
+using them raises an error that names the missing capability. Values are strings, numbers or booleans; anything else
+raises `only strings, numbers and booleans can be stored`. Numbers keep their integer or float form.
+
+| Function | Description |
+|---|---|
+| `store.get(key)` | The value, or `nil` when the key does not exist. |
+| `store.set(key, value)` | Writes the value. Returns `true` on success. |
+| `store.delete(key)` | Removes the key. Returns `true` on success. |
+| `store.keys()` | A list of the plugin's keys in alphabetical order (at most 1000). |
+
+`player.data` is a table on every player table. Read a value with `player.data.visits`, write with
+`player.data.visits = 5`, and delete with `player.data.visits = nil`. It is stored per plugin and per player (by UUID).
+There is no way to list the keys, and `player.data` is not available on the console source.
+
+| Limit | Value |
+|---|---|
+| Key | 1 to 128 bytes |
+| Value | 65536 bytes |
+| Keys | 1000 per plugin for `store`, 1000 per player and plugin for `player.data` |
+
+Exceeding a limit raises an error. Both are saved immediately, in the file set by `database` in `plugins.toml`.
+
+## Running commands
+
+```lua
+run(line)
+```
+
+Runs a command line (without the slash) as if the console had typed it, and returns whether it named a command. It
+needs `commands = true` and the operator's grant, and it only reaches commands that plugins registered; the proxy's own
+commands are not reachable. Every call is logged as `ran /<line>`. Lines longer than 4096 bytes are cut. The command
+runs after the current handler finishes, so its effects are not visible to the code that follows the call.

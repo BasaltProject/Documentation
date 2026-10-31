@@ -1,0 +1,115 @@
+---
+title: Plugin events
+description: Every event a Basalt Proxy plugin can listen to, with the fields each handler receives.
+---
+
+Register a handler with `on(event, [options], handler)` (see [Plugin API](/docs/proxy/plugin-api#events) for `options`
+such as `priority` and the field filters). The handler receives one table, `e`, whose fields depend on the event.
+
+Handlers run on the plugin thread, in the order the events happened. No event can be cancelled, and nothing a handler
+returns changes what the proxy does. When the queue of waiting events is full (`queue-size` in `plugins.toml`), new
+events are dropped. For each event, plugins are called in load order and each plugin's handlers by priority.
+
+| Event | When it fires |
+|---|---|
+| `plugin.enable` | Once the plugin and all others have loaded |
+| `plugin.disable` | When plugins are stopped by `reload` or shutdown |
+| `player.login` | A player authenticated, before any backend is chosen |
+| `player.join` | A player is in play on their first backend |
+| `player.server_change` | A player moved to another backend |
+| `player.chat` | A player sent a chat message |
+| `player.kick` | A backend disconnected a player who was in play |
+| `player.quit` | A player left the proxy |
+| `server.ping` | A client asked for the server list status |
+
+## Plugin lifecycle
+
+### plugin.enable
+
+Fires once per load, on the plugin thread, after every plugin has been loaded. `e` is an empty table. Unlike top-level
+code, the handler can call `wait`, and `players` is available. Register it with `on` only; `watch("plugin.enable", ...)`
+raises an error.
+
+### plugin.disable
+
+Fires once on `reload` and on shutdown, for plugins that are still healthy (not disabled by failures). `e` is an empty
+table. Use it to flush work in progress; timers are dropped right after.
+
+## Player events
+
+Every player event gives the handler these fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `e.player` | player table | The [player](/docs/proxy/plugin-api#players), so `e.player:send(...)` works. |
+| `e.player_name` | string | The player's name. |
+| `e.player_uuid` | string | The player's UUID. |
+| `e.server` | string | The backend the event is about (see each event). |
+
+### player.login
+
+Fires after the player authenticated and before any backend is chosen. The player is not in `players.online()` yet and
+has no `player` table: only `e.player_name` and `e.player_uuid` exist. The field filters do not apply.
+
+| Field | Description |
+|---|---|
+| `e.player_name` | The name. |
+| `e.player_uuid` | The UUID. |
+
+### player.join
+
+Fires when the player is in play on their first backend. `e.server` is that backend. From now on the player appears in
+`players.online()`.
+
+### player.server_change
+
+Fires when the player moves to another backend.
+
+| Field | Description |
+|---|---|
+| `e.server` | The backend the player is now on. |
+| `e.from_server` | The backend they came from. |
+
+### player.chat
+
+Fires when a player sent a chat message, signed or unsigned. It is an observation: the message cannot be edited or
+blocked.
+
+| Field | Description |
+|---|---|
+| `e.message` | The text of the message. |
+
+### player.kick
+
+Fires when a backend disconnected a player who was in play. It cannot be cancelled and the proxy still handles the
+disconnect.
+
+| Field | Description |
+|---|---|
+| `e.reason` | The reason, as plain text. |
+
+### player.quit
+
+Fires when the player left. `e.server` is the backend they were on. The player is removed from `players.online()` right
+after the handlers have run.
+
+## server.ping
+
+Fires when a client requested the server list status. There is no player.
+
+| Field | Description |
+|---|---|
+| `e.host` | The address the client typed to reach the proxy. |
+| `e.protocol` | The client's protocol version, as an integer. |
+
+## Filters and priorities
+
+```lua
+on("player.chat", { priority = "late", player_name = "Steve" }, function(e)
+    log.info(e.message)
+end)
+```
+
+The filters `player_name`, `player_uuid` and `server` are compared with the event's own field, and `from_server` with
+the origin of `player.server_change`. `from_server` is ignored on `player.chat` and `player.kick`, and on the other
+events without an origin (`player.join`, `player.quit`) it never matches. `priority` orders the handlers of one plugin for one event.
