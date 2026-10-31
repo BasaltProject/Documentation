@@ -1,0 +1,116 @@
+---
+title: The sandbox
+description: What a plugin can use, the instruction budget and memory ceiling, how require finds code, and what happens when a plugin fails.
+group: Plugin development
+---
+
+Every plugin runs in its own Lua 5.5 state, built into the server and the same on every platform. A plugin cannot reach
+the machine: no files outside its data folder, no processes, no environment, no debug library. It cannot starve the
+server either: each entry into a plugin has an instruction budget and the plugin has a memory ceiling.
+
+## Limits
+
+Both limits are set by the operator in the `[plugins]` table of `config/server.toml`, see
+[Server settings](/docs/server/server-settings#plugins).
+
+| Limit | Default | Meaning |
+|---|---|---|
+| `instructions-per-turn` | 250000 | Lua instructions a plugin may run each time the server enters it. About 13 ms on the machine it was measured on |
+| `memory-mb` | 32 | Megabytes the plugin's own objects may take |
+
+A turn is one entry into the plugin: an event handler, a command, a task of `later` or `every`, a placeholder, a menu
+click. The budget is filled again at every entry, and again each time a function continues after a `wait`, so it limits
+one handler and not the whole tick. A function that waits between short jobs can run for as long as it likes.
+
+Running out of either limit stops the call with an error, which is handled like any other error below. The Lua counters are
+checked every thousand instructions, so a plugin may overshoot slightly before it is stopped.
+
+A call that must answer immediately (a placeholder, a service function, a menu or form handler, a packet or channel
+handler, a custom event) is also watched by the clock: if the plugin is still inside the server after 250 ms, the call
+is interrupted.
+
+## What a plugin can use
+
+**Lua standard library**, with these parts only:
+
+| Table | Members |
+|---|---|
+| base | `assert`, `error`, `getmetatable`, `ipairs`, `next`, `pairs`, `pcall`, `rawequal`, `rawget`, `rawlen`, `rawset`, `select`, `setmetatable`, `tonumber`, `tostring`, `type`, `warn`, `xpcall`, `_VERSION` |
+| `coroutine` | `close`, `create`, `isyieldable`, `resume`, `running`, `status`, `wrap`, `yield` |
+| `math` | `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`, `frexp`, `huge`, `ldexp`, `log`, `max`, `maxinteger`, `min`, `mininteger`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult` |
+| `os` | `clock`, `date`, `difftime`, `time` |
+| `string` | `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper` |
+| `table` | `concat`, `create`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack` |
+| `utf8` | `char`, `charpattern`, `codepoint`, `codes`, `len`, `offset` |
+
+`print(...)` writes its arguments, separated by tabs, to the server log as an info line of the plugin. `load` only loads
+text, never bytecode. `require` is described below.
+
+There is no `io`, `debug`, `package`, `dofile`, `loadfile` or `collectgarbage`, and `os` has no `execute`, `exit`,
+`getenv`, `remove`, `rename`, `tmpname` or `setlocale`.
+
+`math.random` is seeded from the plugin id, so a plugin gets the same sequence on every start. Call
+`math.randomseed(os.time())` once if you need it to differ.
+
+**Basalt API**, available to every plugin:
+
+| Global | Does | See |
+|---|---|---|
+| `on`, `watch`, `emit` | Events | [Events](/docs/server/plugin-events) |
+| `cmd` | Commands | [Commands](/docs/server/plugin-commands) |
+| `wait`, `later`, `every`, `at`, `request_chunk` | Time and chunks | [Scheduler](/docs/server/scheduler) |
+| `config`, `t`, `fill`, `placeholder`, `broadcast` | Settings, text | [Config and lang files](/docs/server/config-and-lang) |
+| `data`, `store`, `files` | Persistence | [Storage](/docs/server/storage) |
+| `menu`, `form`, `sidebar`, `boss_bar` | Interface | [Menus and HUD](/docs/server/menus-and-hud) |
+| `service`, `require` | Code shared between plugins | [Shared code](/docs/server/shared-code) |
+| `plugin`, `log` | The plugin itself, see below | |
+| `players`, `worlds`, `pos`, `access` | Players and worlds | [Players](/docs/server/players), [Worlds](/docs/server/world-basics) |
+| `recipes`, `scoreboards`, `boss_bars` | Game data | [Items and recipes](/docs/server/items-and-recipes), [Scoreboards](/docs/server/scoreboards-and-boss-bars) |
+| `tick`, `settings`, `server_links`, `datapacks`, `advancements`, `loot`, `maps`, `structures` | The server | [Server control](/docs/server/server-api), [Structures](/docs/server/structures) |
+
+**Granted by the operator** (see [Manifest and layout](/docs/server/plugin-manifest#capabilities)): `packet`, `channel`
+and `run`.
+
+### plugin and log
+
+| Member | Meaning |
+|---|---|
+| `plugin.id`, `plugin.name`, `plugin.version` | From the manifest |
+| `plugin.lane`, `plugin.lanes` | Which copy of the plugin this is and how many copies run |
+| `log.info(text)`, `log.warn(text)`, `log.error(text)` | Write a line to the server log under the plugin's name |
+
+### Lanes
+
+With `test-lanes = 1`, the default and the setting a server should use, there is one copy of each plugin and every
+variable at the top of a file is global to the plugin. With more lanes the server runs several copies of the plugin, each
+with its own Lua state, so a variable at the top of a file exists once per lane. It is a development switch: a plugin
+that keeps its state in locals, instead of [`store`, `player.data` or `data`](/docs/server/storage), breaks as soon as
+it runs with two lanes, and you want to find that on your machine and not on a server.
+
+## require
+
+`require("util")` loads `src/util.lua` and returns what the file returns, or `true` when it returns nothing. A dot in the
+name is a folder: `require("game.round")` is `src/game/round.lua`. The result is cached per lane, so a module is run once.
+The module receives its own name as its first argument. Slashes in the name are refused.
+
+A name that starts with another plugin's id and a dot, `require("economy.api")`, loads a module that plugin exports, see
+[Shared code](/docs/server/shared-code). A module that cannot be found raises `module 'name' not found`, and `kiln check`
+finds missing literal names before the plugin runs.
+
+## When a plugin fails
+
+A failure is an error raised and not caught, an exhausted budget, or a memory ceiling hit. The server:
+
+1. Logs it with the plugin's name, what was running (`on block.break`, `/hello`, `every`...), the reason and the Lua
+   message with the file and line.
+2. Carries on: the event proceeds as if the handler had not run, other plugins are untouched.
+3. Counts it. A plugin that fails three times in a row is switched off: its handlers stop running and what it was drawing
+   on the sidebar and boss bar is released. A call that succeeds resets the count.
+
+A plugin that is off stays loaded and shows as off in `/plugins`. Fix it and run `/plugins reload <id>`.
+
+A plugin whose main chunk fails while loading is not left half loaded: the server logs that it failed and unloads it. An
+error in a `plugin.enable` handler counts like any other failure.
+
+An error raised by an API function on purpose says what was wrong and what is valid, for example that an event does not
+exist and which ones do. Use `pcall` when a call may fail and the plugin can go on.

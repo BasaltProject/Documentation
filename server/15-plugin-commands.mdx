@@ -1,0 +1,110 @@
+---
+title: Plugin commands
+description: Register commands from Lua with cmd, declare their arguments and types, and control who may run them.
+group: Plugin development
+---
+
+`cmd` registers a command with the server's command dispatcher, so it appears in the client's command tree, in tab
+completion and in `/help`, like any other command.
+
+```lua
+cmd("coins [target: word]", function(src, target)
+    if target then
+        src:send("{name} has {amount} coins", { name = target, amount = 12 })
+    else
+        src:send("You have 5 coins")
+    end
+end, { permission = "shop.use" })
+
+cmd("coins give <target: word> <amount: int 1..1000>", function(src, target, amount)
+    src:send("<green>Gave {amount} coins to {target}", { amount = amount, target = target })
+end, { permission = "shop.use" })
+```
+
+## The spec
+
+```
+cmd(spec, handler, [options])
+```
+
+A spec is words separated by spaces. The words before the first argument are literals: the first one is the command
+name and any others are subcommands. After the literals come arguments, each in `<>` when required or `[]` when optional,
+written `name: type`:
+
+| Type | Lua value | Accepts |
+|---|---|---|
+| `word` | string | One word. This is the type when none is written, so `[who]` is `[who: word]` |
+| `text` | string | The rest of the line, spaces included |
+| `int` | integer | A whole number |
+| `float` | number | A decimal number |
+| `bool` | boolean | `true` or `false` |
+
+`int` and `float` take a range after the type, written `min..max`, and either end may be left out: `int 1..25`, `int 0..`,
+`int ..100`. The bounds of both types are whole numbers. A value outside the range is refused by the client and the server
+with the usual command error, and the handler does not run.
+
+A spec is refused, and the plugin fails to load, when it has no name, starts with an argument, puts a literal after an
+argument, puts a required argument after an optional one, or names an unknown type.
+
+Several `cmd` calls may share a command name, which is how subcommands are made:
+
+```lua
+cmd("warp <name: word>", teleport)
+cmd("warp list", list_warps)
+cmd("warp set <name: word>", set_warp)
+```
+
+A spec is identified by its literal words. Registering `warp list` a second time, or `warp` with different arguments,
+replaces the handler of the first registration and keeps its arguments.
+
+## The handler
+
+`handler(src, a, b, ...)` receives the source and then one value per argument of the spec, in order. An optional argument
+that was not typed is `nil`.
+
+| Member of `src` | Meaning |
+|---|---|
+| `src.name` | The name of whoever ran the command |
+| `src.is_console` | `true` when the command did not come from a player, such as the console |
+| `src:send(text, [args])` | Replies, with the same text rules as `player:send` (MiniMessage, `@key` for [lang](/docs/server/config-and-lang) entries, `{name}` from the `args` table) |
+
+`src` is not a player object. To get the player, look them up:
+
+```lua
+cmd("heal", function(src)
+    if src.is_console then
+        src:send("<red>Players only")
+        return
+    end
+    local p = players.by_name(src.name)
+    p.health = 20
+end)
+```
+
+A command handler runs like any other entry point of the plugin: it may use [`wait`, `at` and `later`](/docs/server/scheduler),
+and it has its own instruction budget. An error in it is reported in the log with the command name.
+
+## Permissions
+
+The third argument is a table of options. Its only key is `permission`:
+
+| `permission` | Who may run the command |
+|---|---|
+| not given | Whoever holds `basalt.plugin.<id>.<name>`, where `<id>` is the plugin and `<name>` the command name. The default operator group holds `*`, the default group holds none of these, so by default only operators and the console |
+| `"some.node"` | Whoever holds that node |
+| `""` | Everyone |
+
+The console always may. Grant a node to a group in `groups.toml`, or to one player with `p:grant(node)`, see
+[Groups and permissions](/docs/server/groups-and-permissions).
+
+The permission belongs to the command name, the first word of the spec, and not to a subcommand. When several `cmd` calls
+share a name, give them all the same `permission`.
+
+A player who may not run a command does not see it in the tab completion.
+
+## Running commands from a plugin
+
+`run(command)` runs a command as the console and returns whether it was dispatched. It needs `commands = true` in the
+manifest and the operator's grant, see [Manifest and layout](/docs/server/plugin-manifest#capabilities). The leading
+slash is optional. To change what a player typed before it runs, listen to
+[`player.command`](/docs/server/events-player#player-events).

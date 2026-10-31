@@ -1,0 +1,113 @@
+---
+title: Config and lang files
+description: Settings the operator edits, translated messages, MiniMessage text with {name} arguments, and placeholders a plugin offers.
+group: Plugin development
+---
+
+A plugin keeps what an operator may want to change in files under `resources/`, and reads them through `config` and the
+text functions. The files end up in the plugin's data folder, which an operator edits, see
+[Manifest and layout](/docs/server/plugin-manifest#where-the-files-live-at-run-time). Changes are read when the plugin
+loads, so `/plugins reload <id>` applies them.
+
+## config
+
+`resources/config.toml` becomes the `config` table. Its top-level keys are fields of `config`:
+
+```toml
+# resources/config.toml
+welcome-bonus = 50
+payout-period = 1200
+
+[shop]
+sparkles-price = 100
+```
+
+```lua
+log.info(config.welcome_bonus)          -- 50
+log.info(config.shop.sparkles_price)    -- 100
+```
+
+- A key with hyphens is reachable under its own name and with underscores, so `config["welcome-bonus"]` and
+  `config.welcome_bonus` are the same value. Use the underscore form to avoid brackets.
+- Strings, integers, decimals, booleans, arrays and tables map to their Lua equivalents.
+- Every other `.toml` file under the data folder becomes `config.<file name without .toml>`. A file
+  `resources/shops/prices.toml` is `config.prices`, so file names must be unique across folders: two files with the same
+  name, `.toml` or `.json`, stop the plugin from loading.
+- A file that is not valid TOML stops the plugin from loading, and the log names the file.
+- `config` is a copy made when the plugin loads. Writing to it changes nothing on disk, see [Storage](/docs/server/storage)
+  for data a plugin saves.
+
+## Text
+
+Every function that sends text to a person takes the same kind of string:
+
+```lua
+player:send("<gold>Welcome, <yellow>{name}</yellow>! You have {amount} coins.", { name = p.name, amount = 50 })
+player:send("@welcome", { name = p.name })
+```
+
+1. **`@key`**: a text that starts with `@` is a key into the plugin's lang files, see below. The text is the key itself when
+   it is not found.
+2. **`{name}`**: each `{name}` is replaced by the field of that name in the table that follows the text. A name that is
+   not in the table stays as it is.
+3. **MiniMessage**: the result is parsed as MiniMessage, the same format the server's own configuration files use:
+   `<red>`, `<bold>`, `<gradient:aqua:green>`, `<hover:...>`, `<click:...>`. See
+   [Interface](/docs/server/interface) for the tags. Legacy `§` codes are not part of the model.
+
+All three steps apply to `player:send`, `player:action_bar`, `player:title` (the arguments apply to the title; the
+subtitle takes `@key` only), `player:kick`, `src:send` in a command, `broadcast` and `t`. Texts that take no argument
+table still resolve `@key` and parse MiniMessage: the message of `e:cancel`, the titles and texts of menus, forms, the
+sidebar and the boss bar, boss bars made with `boss_bars.create`, team texts, holograms and NPC names.
+
+| Function | Does |
+|---|---|
+| `t(key, [args])` | The translation of `key` with `{name}` replaced, as text, for places that take a plain string such as item names and lore. `t("shop-title")` is `"@shop-title"` resolved |
+| `broadcast(text, [args])` | Sends the text to every player online |
+
+```lua
+shop:set(11, { id = "minecraft:blaze_powder", name = t("shop-item-sparkles"),
+               lore = { t("shop-item-sparkles-lore", { price = config.shop.sparkles_price }) } })
+```
+
+## Lang files
+
+`resources/lang/<locale>.toml` holds the messages:
+
+```toml
+# resources/lang/en_us.toml
+welcome = "<gold>Welcome, <yellow>{name}</yellow>!"
+shop-title = "<dark_gray>Coin Shop"
+
+[errors]
+no-money = "<red>You need {price} coins."
+```
+
+Nested tables are flattened with dots: the last message is `@errors.no-money`. The file name is the locale, in lower case.
+
+The plugin uses `en_us` when it has that file, and when a key is missing from it, the first other locale file (in
+alphabetical order) that has the key. Texts are not chosen per player. A key found nowhere shows as the key. Ship an
+`en_us.toml` with every key, and let operators translate by editing the file or adding another one.
+
+## Placeholders
+
+Placeholders are `%name%` tokens that the server fills in wherever it prints text: its own configuration files and every
+plugin that asks. See [Interface](/docs/server/interface#placeholders) for the ones the server provides.
+
+A plugin offers its own:
+
+```lua
+placeholder("coins", function(p)
+    if p == nil then return "0" end
+    return tostring(coins.get(p))
+end)
+```
+
+This registers `%<plugin id>_coins%`, so a plugin with the id `example` offers `%example_coins%` everywhere. The function
+receives the player the text is for, or `nil` when there is none, and returns a string. It must answer at once, so it
+cannot `wait`, see [Scheduler](/docs/server/scheduler#where-code-may-wait).
+
+`fill(text, [player])` returns the text with every `%...%` it knows replaced, the placeholders of other plugins included:
+
+```lua
+local line = fill("Balance: %example_coins%", p)
+```

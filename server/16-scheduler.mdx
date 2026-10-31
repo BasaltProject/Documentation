@@ -1,0 +1,115 @@
+---
+title: Scheduler and coroutines
+description: Wait, schedule and repeat work in ticks, hand work to the region that owns a place, and wait for chunks, all from plain Lua code.
+group: Plugin development
+---
+
+Plugins do not have callbacks for slow things. Code that has to wait just waits: `wait()` pauses the function that calls
+it and the server carries on with the tick. When the time comes the function continues on the next line. There is no
+"async" version of anything in the API.
+
+Time is in ticks, 20 to a second at the default rate.
+
+```lua
+cmd("countdown", function(src)
+    for i = 3, 1, -1 do
+        broadcast("<yellow>" .. i)
+        for _ = 1, 20 do wait() end
+    end
+    broadcast("<green>Go!")
+end)
+```
+
+## Functions
+
+| Function | Does |
+|---|---|
+| `wait()` | Pauses the running function until the next tick. To wait `n` ticks, call it `n` times |
+| `later(ticks, fn)` | Runs `fn` once after `ticks` ticks. Returns a handle |
+| `every(period, fn)` | Runs `fn` every `period` ticks, the first time after one period. Returns a handle |
+| `every(delay, period, fn)` | The same, with the first run after `delay` ticks |
+| `at(pos)` or `at(world, x, z)` | Continues the function in the part of the server that owns that place, see below |
+| `request_chunk(world, cx, cz, [options])` | Waits until a chunk is loaded, see below |
+
+A handle is a table with one function, `cancel()`, that stops the task. Every task, repeating or not, is cancelled when
+the plugin unloads. A period below 1 is treated as 1.
+
+```lua
+local task = every(20, 100, function()
+    broadcast("<gray>Every five seconds, starting after one")
+end)
+
+later(1200, function()
+    task.cancel()
+end)
+```
+
+## Where code may wait
+
+A function can wait when it is the body of:
+
+- a command handler,
+- a `watch` handler,
+- a `later` or `every` callback,
+- a `plugin.enable` or `plugin.disable` handler.
+
+It cannot wait when the server needs the answer straight away. These are called decisions:
+
+- an `on` handler,
+- a `placeholder` function, a `sidebar` or `boss_bar` function,
+- a menu click handler and a form answer handler,
+- a function exposed with `service`, a custom event handler, a plugin channel handler and a packet handler (`packet.on` and `packet.watch`).
+
+In a decision, `wait()` stops the handler at that point, and `at` and `request_chunk` return at once without waiting. To
+do slow work after a decision, set a flag and finish in a `watch` handler or a `later` callback.
+
+The main chunk of a plugin, the code outside any function, cannot wait either: `wait` raises an error there. Start work
+that has to wait from `on("plugin.enable", ...)`.
+
+`wait` also only works in the function the server started. A coroutine made with `coroutine.create` or `coroutine.wrap`
+is an ordinary Lua coroutine and cannot call `wait` inside itself.
+
+Every time a waiting function continues, its instruction budget is filled again, so a long countdown is many short turns
+and not one long one, see [The sandbox](/docs/server/sandbox#limits).
+
+## Waiting for chunks
+
+```lua
+request_chunk("world", 40, -12, { urgent = true })
+```
+
+`request_chunk` returns when the chunk is loaded, or when the server gave up on it. The chunk is generated in the
+background, so the tick is not held up. After it returns, check the chunk with `world:chunk_status(cx, cz)`, see the
+[world API](/docs/server/world-api#chunks).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `generate` | `true` | `false` only waits for a chunk that is already on its way |
+| `urgent` | `false` | `true` serves this request before the chunks nobody is waiting for |
+
+An unknown world name returns at once.
+
+## Handing work to a region
+
+`at` states which place the next lines of a function work on. The server owns each place through one thread, and `at`
+continues the function on the thread that owns it. A world is a single region at the moment, so the function continues
+at once and the call costs nothing; the code is the same when the `regional` setting of `server.toml` splits worlds
+into regions, see [Server settings](/docs/server/server-settings).
+
+```lua
+cmd("glow", function(src)
+    local p = players.by_name(src.name)
+    at(p.pos)                                   -- continue where the player is
+    worlds.by_name(p.world):set_block(p.pos:offset(0, -1, 0), "minecraft:glowstone")
+end)
+```
+
+`at(pos)` takes any table with `x`, `y` and `z` (and a `world`): `p.pos`, `pos(world, x, y, z)`, an entity.
+`at(world, x, z)` takes a world name and two coordinates. Reads and writes to other places are still safe without it, the
+API takes them to the right owner on its own. `at` is for a function that makes many calls to one place.
+
+## Time without scheduling
+
+`os.time()` and `os.clock()` read the clock of the machine, and `os.date` formats a time. For game time, count ticks with
+`every`, or read `server.tick`, which carries the tick number, see the [events reference](/docs/server/events-world#server-events).
+`tick.pace()` and the other tick controls are in [Server control](/docs/server/server-api#tick).

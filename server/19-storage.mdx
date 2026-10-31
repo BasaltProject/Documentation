@@ -1,0 +1,101 @@
+---
+title: Storage
+description: Keep a plugin's data across restarts with store, player.data, data JSON files and files.
+group: Plugin development
+---
+
+A plugin that has to remember something has four places to put it. Variables at the top of a file are lost when the plugin
+reloads or the server stops, so anything that matters goes in one of these.
+
+| Place | Best for | Lives in |
+|---|---|---|
+| `player.data` | A value per player: a balance, a rank, a setting | The server's player database |
+| `store` | A value for the whole server: a counter, a flag | The server's player database |
+| `data.json(name)` | Larger structured data: arenas, warps, shop tables | A JSON file in the plugin's data folder |
+| `files` | Text files of any format, your own or the operator's | The plugin's data folder |
+
+For data about worlds, chunks, block entities and entities, see [Plugin data on worlds and entities](/docs/server/plugin-data).
+
+## Player data and store
+
+Both are tables that read and write straight through to the database. A value is a boolean, a number or a string, and
+`nil` deletes it. They are kept per plugin: another plugin cannot see your keys, and yours cannot see theirs.
+
+```lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.joins = (d.joins or 0) + 1
+    if not d.welcomed then
+        d.welcomed = true
+        e.player:send("First time here")
+    end
+end)
+
+store.restarts = (store.restarts or 0) + 1
+```
+
+`p.data` belongs to one player and is saved with them. `store.<key>` belongs to the server.
+
+Tables are not values: store a table by choosing a key per field (`d.home_x`, `d.home_y`), or by writing it to a `data`
+JSON file.
+
+### Leaderboards
+
+`store.top(key, [limit])` returns the highest numeric values of `player.data.<key>` over every player who has one, best
+first, `limit` of them (10 by default):
+
+```lua
+for rank, row in ipairs(store.top("coins", 5)) do
+    log.info(rank .. ". " .. row.name .. " " .. row.value)
+end
+```
+
+Each row is `{ uuid, name, value }`, where `name` is the player's name while they are online and their uuid otherwise.
+Only numbers take part.
+
+### When the plugin goes away
+
+The rows stay in the database after a plugin is removed, so taking a plugin out for an afternoon loses nothing. The server
+warns about them at start. `/plugins orphans` lists them and `/plugins purge <id> confirm` deletes them, see
+[Manifest and layout](/docs/server/plugin-manifest#the-plugins-command).
+
+## data
+
+`data.json(name)` returns a table loaded from `data/<name>.json` in the plugin's data folder. The file does not need to
+exist: a missing file gives an empty table. The same table comes back on every call, so edits are visible everywhere in
+the plugin.
+
+```lua
+local warps = data.json("warps")
+warps["spawn"] = { world = "world", x = 0, y = 64, z = 0 }
+data.save("warps")
+```
+
+`data.save(name)` writes the table back and returns whether it did. It returns `false` for a name that was never loaded.
+A name that contains a `/` or ends in `.json` is used as a path inside the data folder (`data.json("arenas/pvp.json")`),
+other names go under `data/`. Names that start with `/` or contain `..` raise an error.
+
+A table with consecutive integer keys from 1 is written as a JSON array, anything else as an object, and object keys are
+text. Functions are not saved. Nothing is saved on its own: call `data.save`, for example from `plugin.disable` and from a
+timer.
+
+## files
+
+`files` reads and writes any file in the data folder, for formats other than JSON.
+
+| Call | Does |
+|---|---|
+| `files.read(path)` | The text of the file, or `nil`. A file of the package's `resources/` that was not copied to the data folder is read from the package |
+| `files.exists(path)` | Whether the file exists in the data folder or the package |
+| `files.list([prefix])` | The relative paths of the files that were in the data folder when the plugin loaded and start with `prefix` |
+| `files.write(path, text)` | Writes the file, creating folders, and returns whether it did |
+
+A path is relative to the data folder. A path with `..`, a drive or a colon, a backslash, or one that leaves the folder
+through a link raises an error: a plugin never reaches outside its own folder.
+
+```lua
+files.write("exports/players.csv", "name,coins\n")
+for _, path in ipairs(files.list("lang/")) do
+    log.info(path)
+end
+```

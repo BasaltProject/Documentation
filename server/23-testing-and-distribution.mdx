@@ -1,0 +1,98 @@
+---
+title: Testing and distribution
+description: Test a plugin with kiln test against a mock server, build a .bspkg, and ship signed bytecode that operators can trust.
+group: Plugin development
+---
+
+## Testing
+
+`kiln test` runs every `tests/*.lua` file of a plugin in the plugin sandbox, against a small mock server. Tests are not
+packed into the package.
+
+```lua
+-- tests/welcome.lua
+config = { welcome_bonus = 50 }          -- stand-ins for what main.lua reads at load
+require("main")                          -- runs src/main.lua, which registers its handlers
+
+test("a player is welcomed", function()
+    local alice = mock.player("Alice")
+    mock.emit("player.join", { player = alice })
+    assert(alice.sent[1].args.name == "Alice")
+end)
+```
+
+```
+$ kiln test greeter
+welcome.lua
+  ok   a player is welcomed
+  # 1 test(s), 0 failed
+```
+
+A failed `assert`, or any error, fails that test, and `kiln test` exits with 1 if any test failed. The plugin is checked
+first, like `kiln check`.
+
+What a test file sees, besides the Lua standard library:
+
+| Name | Does |
+|---|---|
+| `test(name, fn)` | Defines a test |
+| `require("name")` | Finds `src/name.lua`, as inside the server |
+| `on`, `watch`, `cmd` | Record what the plugin registers, so the test can call it. `watch` is the same as `on` here |
+| `later(ticks, fn)`, `every(period, fn)` | Schedule on a mock clock. They return a handle with `cancel()` |
+| `worlds.by_name(name)`, `worlds.default()`, `worlds.all()` | A small world with `block`, `set_block` and `spawn`, which returns an entity with `remove()` |
+| `mock.player(name, [fields])` | A player stand-in with `name`, `health`, `max_health` and `send(text, args)`, which collects what was sent in `sent` as `{ text, args }`. Extra `fields` are copied on |
+| `mock.emit(event, data)` | Calls the handlers registered for the event with `data` |
+| `mock.command(name, source, ...)` | Calls the command registered with that first word, as `handler(source, ...)` |
+| `mock.tick(n)` | Advances the mock clock by `n` ticks, running due tasks |
+| `mock.world(name)` | The mock world of that name |
+| `mock.reset()` | Forgets every handler, command and task |
+
+Everything else of the server API is absent in a test: `config`, `log`, `store`, `plugin` and the like. Define them in the
+test file before `require("main")`, as the example does with `config`, or keep the code under test free of them.
+
+## Packing
+
+```bash
+kiln pack greeter
+```
+
+writes `greeter/build/greeter-0.1.0.bspkg` after the same checks as `kiln check`. A package holds the manifest, `src/` and
+`resources/`, and nothing else; building it twice from the same files gives the same bytes. Two resources with the same
+file name in different folders are refused, because the server addresses `.toml` and `.json` files by name.
+
+To install it, copy the file into the `plugins/` folder of the server and run `/plugins load`, or start the server.
+Operators edit the plugin's settings in `plugins/<id>/` afterwards, see
+[Manifest and layout](/docs/server/plugin-manifest#where-the-files-live-at-run-time).
+
+## Shipping bytecode
+
+A package can carry compiled Lua instead of source. The server loads bytecode only when it is signed by a key the operator
+trusts, because bytecode, unlike source, is not checked when it loads.
+
+1. Make a key pair once and keep the `.key` file secret:
+
+```bash
+kiln keygen release          # writes release.key and release.pub
+```
+
+2. Build and sign:
+
+```bash
+kiln build greeter --sign release.key       # greeter/build/compiled
+kiln pack greeter --compiled --sign release.key
+```
+
+`kiln build` leaves a folder with the manifest, the resources and the bytecode (`.luac`), plus `plugin.sig`, an Ed25519
+signature over the manifest and every `.luac`. `-o <dir>` picks another output folder and `--strip` drops debug
+information, so errors no longer name file and line. `kiln pack --compiled` builds and packs that output in one step.
+
+3. Give operators `release.pub`. The operator lists the key, 64 hex digits, in `config/server.toml`:
+
+```toml
+[plugins]
+trusted-keys = ["<contents of release.pub>"]
+```
+
+The server refuses a package that carries bytecode and has no signature, a signature that does not match its files, or a
+key that is not in `trusted-keys`; the log says which. Source-only packages need none of this. When both exist for a
+module, the signed bytecode is the one that runs.

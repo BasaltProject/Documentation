@@ -1,0 +1,97 @@
+---
+title: Shared code
+description: Share Lua modules between plugins with require, and call another plugin's functions with service.
+group: Plugin development
+---
+
+Plugins are separate: each has its own Lua state, and one cannot reach the variables of another. Two things cross the
+line on purpose, both declared in the manifest.
+
+| | A shared module | A service |
+|---|---|---|
+| What the consumer gets | A copy of the source, run in the consumer's own state | A set of functions that run in the provider's state |
+| State | None shared: every consumer has its own | The provider's, in one place |
+| Declared by the provider with | `[exports] modules` | `[exports] services` |
+| Declared by the consumer with | `[depends]` and `require("id.name")` | `[depends]` or `[soft-depends]` and `service("name")` |
+
+## Shared modules
+
+A plugin lists the modules of its `src/` that others may load:
+
+```toml
+# economy/plugin.toml
+[exports]
+modules = ["api", "money"]       # "*" exports every module
+```
+
+A plugin that depends on it loads them by prefixing the module with the id of the plugin:
+
+```toml
+# shop/plugin.toml
+[depends]
+economy = ">=1.0"
+```
+
+```lua
+local money = require("economy.money")
+print(money.format(250))
+```
+
+The source of `economy/src/money.lua` is read from the economy package and run in the shop's Lua state, with the shop's
+`config`, `log` and every other global. It is a library: pure helpers, constants, formatting. Anything the module keeps in
+a variable exists once per consumer.
+
+A module that is not exported, or from a plugin that is not loaded, is `module 'economy.money' not found`. Declare the
+dependency so the plugin loads first.
+
+A plugin can be nothing but exported modules: leave out `main`'s file and list `modules`, and it loads as a library with
+no code of its own, see [Manifest and layout](/docs/server/plugin-manifest#exports).
+
+## Services
+
+A service is a table of functions one plugin offers to the others. The provider lists the name in its manifest and
+registers the table:
+
+```toml
+# economy/plugin.toml
+[exports]
+services = ["economy"]
+```
+
+```lua
+-- economy/src/main.lua
+service("economy", {
+    balance = function(player) return player.data.coins or 0 end,
+    give = function(player, amount)
+        player.data.coins = (player.data.coins or 0) + amount
+        return true
+    end,
+})
+```
+
+Anyone can then ask for it by name:
+
+```lua
+local economy = service("economy")        -- nil when no plugin provides it
+if economy then
+    economy.give(e.player, 50)
+    e.player:send("Balance: {amount}", { amount = economy.balance(e.player) })
+end
+```
+
+Registering a name that is not in `[exports] services` raises an error that says which line to add. Only the functions of
+the table are offered; the table needs at least one. Registering a name again replaces the earlier registration, and the
+service goes away when its provider unloads. Ask for the service when you use it, not once at load, so you pick up a
+provider that arrives later and see one that left.
+
+A call runs inside the provider, on its own state, so:
+
+- The arguments and the single return value are copied. Booleans, numbers, strings and tables of them cross; functions do
+  not. Tables are copied up to 8 levels deep and their keys arrive as strings, so a list comes out with keys `"1"`,
+  `"2"`... Prefer named fields.
+- A player object crosses as a player: pass `e.player` and the provider receives its own player object for the same
+  player.
+- The function answers at once, like every decision, and cannot `wait`, see
+  [Scheduler](/docs/server/scheduler#where-code-may-wait).
+- If the function raises an error, the caller gets an error too ("the service failed inside economy"), and the failure
+  counts against the provider. A provider that was switched off answers with an error.

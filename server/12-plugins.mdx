@@ -1,66 +1,127 @@
 ---
 title: Plugins
-description: The native Lua API, its packages and its sandbox.
+description: Write a Lua plugin for Basalt Server, run it and package it, from an empty folder to a .bspkg.
+group: Plugin development
 ---
 
-Plugins are written in Lua and packaged as `.bspkg` files, each with a manifest,
-code, resources and metadata. This is the API of the project: everything the
-server can do, it can do through here.
+Plugins are written in Lua 5.5 and run inside the server, with no process boundary and no second runtime to install.
+A plugin is a folder with a manifest (`plugin.toml`), its code under `src/` and its data files under `resources/`. The
+same folder, zipped, is a `.bspkg` package. Everything the server can do, a plugin can do through this API.
 
-## A first plugin
+This page takes a plugin from nothing to a package. The rest of the section is the reference:
 
-```lua
--- src/main.lua
-on("player.join", function(e)
-    e.player:send("<gradient:aqua:green>Welcome!</gradient>")
-end)
+| Page | Covers |
+|---|---|
+| [Manifest and layout](/docs/server/plugin-manifest) | `plugin.toml`, the folder layout, dependencies, capabilities, the `/plugins` command |
+| [Events](/docs/server/plugin-events) | `on`, `watch`, priorities, filters, cancelling and editing events, custom events |
+| [Commands](/docs/server/plugin-commands) | `cmd`, argument types, permissions |
+| [Scheduler and coroutines](/docs/server/scheduler) | `wait`, `later`, `every`, `at`, `request_chunk` |
+| [The sandbox](/docs/server/sandbox) | Instruction budget, memory ceiling, which globals exist, what happens on an error |
+| [Config and lang files](/docs/server/config-and-lang) | `config`, translations, MiniMessage text, placeholders |
+| [Storage](/docs/server/storage) | `data`, `store`, `player.data`, `files` |
+| [Menus and HUD](/docs/server/menus-and-hud) | `menu`, `form`, `sidebar`, `boss_bar` |
+| [Shared code](/docs/server/shared-code) | `require` across plugins, `service` |
+| [Tooling](/docs/server/tooling) | Kiln, the VS Code extension, editor definitions |
+| [Testing and distribution](/docs/server/testing-and-distribution) | `kiln test`, packing, signing compiled plugins |
+
+Then one page per area of the API: the [events reference](/docs/server/events-player), [players](/docs/server/players),
+[entities](/docs/server/entities), [worlds](/docs/server/world-basics),
+[items and recipes](/docs/server/items-and-recipes),
+[scoreboards and boss bars](/docs/server/scoreboards-and-boss-bars), [server control](/docs/server/server-api) and
+[packets](/docs/server/packets). Existing Bukkit and Paper jars run from the same folder, see
+[Bukkit plugins](/docs/server/bukkit-plugins).
+
+## Create a plugin
+
+Kiln is the plugin command line, see [Tooling](/docs/server/tooling). `kiln new` makes the skeleton:
+
+```bash
+kiln new greeter "Greeter"
 ```
 
-Text is authored in MiniMessage and rendered through the component model, never
-through legacy colour codes. Colours, hovers, clicks and translations are all
-part of the component, not part of a formatted string.
+```
+greeter/
+  plugin.toml
+  src/main.lua
+  resources/config.toml
+```
 
-## The sandbox
-
-Every plugin runs inside a sandbox with a per-tick instruction budget. A plugin
-that loops forever is stopped and reported; it does not take the server with it.
-
-<x-docs.callout type="tip" title="Why Lua">
-The runtime is the official Lua 5.5.1, built from source into the binary, so it
-is the same runtime everywhere Basalt runs. There is no Lua to install alongside
-it and no per-platform build of your plugin.
-</x-docs.callout>
-
-## Packaging
-
-A `.bspkg` is a directory tree with a manifest at its root:
+`plugin.toml` is the manifest:
 
 ```toml
-id = "hello"
-name = "Hello"
-version = "1.0.0"
+id = "greeter"
+name = "Greeter"
+version = "0.1.0"
+authors = []
+api = 1
 main = "src/main.lua"
 ```
 
-Drop the package in `plugins/` and start the server.
+Replace `src/main.lua` with a join message and a command:
 
-Kiln, the plugin compiler, checks a plugin before it reaches a server: `kiln check hello` reports a misspelt name
-such as `players.onlin`, a missing `require` or a broken `plugin.toml`.
+```lua
+on("player.join", function(e)
+    e.player:send("<green>Welcome, {name}!", { name = e.player.name })
+end)
 
-## More of the API
+cmd("hello [who: word]", function(src, who)
+    src:send("<yellow>Hello, {who}!", { who = who or src.name })
+end, { permission = "" })
+```
 
-- [The world](/docs/server/world-api): blocks, sections, block entities, entity NBT, biomes and light.
-- [Packets](/docs/server/packets): listen to, change, cancel and send packets in every connection state.
-- [Entities](/docs/server/entities): properties, effects, attributes, equipment, movement and their events.
-- [Items, recipes and windows](/docs/server/items-and-recipes): data components, recipes and container events.
-- [Scoreboards and boss bars](/docs/server/scoreboards-and-boss-bars)
-- [Access and permissions](/docs/server/access-and-permissions)
-- [Server control](/docs/server/server-control): tick, server links, datapacks, advancements, loot and maps.
-- [Structures and templates](/docs/server/structures): templates as SNBT, capture, place and explorer maps.
-- [Plugin data](/docs/server/plugin-data): data stored on worlds, chunks, block entities and entities.
-- [Bukkit plugins](/docs/server/bukkit-plugins): run existing jars from the same folder.
+- `on(event, handler)` listens to an event. Every event, with its fields, is in the events reference.
+- `cmd(spec, handler, options)` registers a command. The spec declares its arguments and their types, and the handler
+  receives the source of the command followed by one value per argument. `permission = ""` opens it to everyone,
+  otherwise only operators may run it, see [Commands](/docs/server/plugin-commands).
+- Text is [MiniMessage](/docs/server/config-and-lang#text), never `§` colour codes. `{name}` is replaced from the table
+  given after the text.
 
-## Errors
+## Run it
 
-A defective plugin is a plugin problem, never a server problem. Failures are
-reported with the plugin that caused them and the server keeps running.
+A plugin folder works as it is. Put it, or a symlink to it, in the `plugins/` folder of the server and start the server,
+or run `/plugins load` on a server that is already up:
+
+```
+plugins/
+  greeter/              a folder with plugin.toml
+  arena.bspkg           a package
+```
+
+`/plugins` lists what is loaded, with the registrations and errors of each plugin. While you edit, `/plugins reload
+greeter` unloads the plugin, releasing every handler, command and task it registered, and loads it again from disk.
+
+<x-docs.callout type="note" title="The data folder">
+A loose folder uses its own `resources/` folder as its data folder, so `config.toml` and `lang/` are the files you edit.
+A `.bspkg` copies its `resources/` to `plugins/<id>/` the first time it loads, and never overwrites a file that is already
+there, so the operator can edit them. See [Manifest and layout](/docs/server/plugin-manifest#layout).
+</x-docs.callout>
+
+## Check it
+
+```bash
+kiln check greeter
+```
+
+Kiln reads the manifest, every Lua file, every `require` and every name the code takes from the API, and reports what is
+wrong before the plugin reaches a server: a misspelt `players.onlin`, a `require` of a module that does not exist, a
+manifest without a `version`.
+
+## Package it
+
+```bash
+kiln pack greeter
+```
+
+This checks the plugin again and writes `greeter/build/greeter-0.1.0.bspkg`, the same bytes every time for the same
+files. Drop the file in `plugins/` and start the server. To ship bytecode instead of source, and to sign it, see
+[Testing and distribution](/docs/server/testing-and-distribution).
+
+## What the server gives a plugin
+
+A plugin sees a small set of globals: `on`, `watch`, `cmd` and `emit` for events and commands, `wait`, `later`, `every`
+and `at` for time, `players`, `worlds` and the other tables of the API, `config`, `store`, `data` and `files` for its
+data, `log` and `plugin` for itself. The complete list is in [The sandbox](/docs/server/sandbox#what-a-plugin-can-use).
+
+A defective plugin is a plugin problem and never a server problem. Every failure is reported with the plugin that caused
+it, a plugin that keeps failing is switched off, and the server keeps running. See
+[The sandbox](/docs/server/sandbox#when-a-plugin-fails).

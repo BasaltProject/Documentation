@@ -1,0 +1,132 @@
+---
+title: Menus and HUD
+description: Chest menus, dialog forms, and claiming the sidebar and the boss bar for a plugin.
+group: Plugin development
+---
+
+## Menus
+
+`menu{...}` makes a chest-style window a plugin owns. Make it once, when the plugin loads, and open it for whoever needs
+it.
+
+```lua
+local shop = menu{ title = "<dark_gray>Shop", rows = 3 }
+
+shop:set(11, { id = "minecraft:diamond", name = "<aqua>Gem", lore = { "<gray>100 coins" } }, function(e)
+    e.player:send("You clicked slot {slot}", { slot = e.slot })
+end)
+
+cmd("shop", function(src)
+    shop:open(players.by_name(src.name))
+end, { permission = "" })
+```
+
+| Argument | Meaning |
+|---|---|
+| `title` | The window title, MiniMessage or `@key` |
+| `rows` | 1 to 6, 3 by default. A row is 9 slots |
+
+| Member | Does |
+|---|---|
+| `shop.title`, `shop.rows`, `shop.size` | The title, the rows and the number of slots (`rows * 9`) |
+| `shop:set(slot, item, [handler])` | Puts an item in a slot, 0 to `size - 1`. The optional handler runs when a player clicks it; setting a slot again replaces its item and handler. Players that have the menu open see the change |
+| `shop:clear()` | Empties every slot and drops the handlers |
+| `shop:open(player)` | Opens it for a player, replacing any menu that player had open from this one |
+| `shop:close(player)` | Closes whatever window the player has open |
+
+The handler receives a table with the clicking `player` and the `slot`. It is a decision that has to answer at once, so it
+cannot `wait`: to do slow work, hand it to `later(0, fn)`. Items are tables as in `inventory:set`: `id`, `count`, `name`,
+`lore`, `damage`, `enchantments` and `components`, see [Items and recipes](/docs/server/items-and-recipes#data-components).
+A bare id string is an item of count 1. Every menu a plugin made is closed when the plugin unloads.
+
+## Forms
+
+`form{...}` shows the player a dialog with text, inputs and buttons, and calls back with the answers.
+
+```lua
+local registration = form{
+    title = "<gold>Register",
+    body = "Pick a name for your team.",
+    fields = {
+        { key = "team", type = "text", label = "Team name", initial = "Reds" },
+        { key = "friendly", type = "toggle", label = "Friendly fire", initial = false },
+        { key = "size", type = "slider", label = "Team size", min = 2, max = 10, step = 1, initial = 4 },
+        { key = "color", type = "choice", label = "Colour", options = { "red", "blue", "green" } },
+    },
+    buttons = { "Create", "Cancel" },
+}
+
+registration:open(player, function(answer)
+    if answer.button == 1 then
+        player:send("Team {team}, size {size}", answer.values)
+    end
+end)
+```
+
+| Argument | Meaning |
+|---|---|
+| `title` | The dialog title |
+| `body` | A string or a list of strings shown above the inputs |
+| `buttons` | A string or a list of strings. Defaults to one button, `OK` |
+| `fields` | A list of inputs, each with a unique `key` and a `type` |
+
+| Field `type` | Extra keys | Answer value |
+|---|---|---|
+| `text` (the default) | `initial` | string |
+| `toggle` | `initial` (boolean) | boolean |
+| `slider` | `min` (0), `max` (1), `step`, `initial` (halfway) | number |
+| `choice` | `options` (required), `initial` (the first option) | string, the chosen option |
+
+Every field also takes `label`, which defaults to its `key`. A `choice` with no options, a `slider` that ends before it
+starts, a field with no `key` and an unknown `type` raise an error.
+
+`form:open(player, handler)` shows the dialog; the handler receives `{ player, button, values }`, where `button` is the
+number of the button pressed counting from 1 and `values` maps each field `key` to its answer. `form:close(player)`
+closes it. A player's second `open` replaces their first. Forms are closed when the plugin unloads.
+
+## Sidebar and boss bar
+
+A plugin can take over the sidebar (the panel down the right of the screen) and the boss bar from the operator's
+`scoreboard.toml` and `boss_bar.toml`, see [Interface](/docs/server/interface). The functions are `sidebar{...}` and
+`boss_bar{...}`, and take the same table:
+
+```lua
+sidebar{
+    priority = 10,
+    when = function(p) return p.world == "arena" end,
+    title = "<gold><bold>Arena",
+    lines = {
+        "<white>Round: <yellow>%example_round%",
+        "<white>Players: <yellow>%basalt_server_online%",
+    },
+}
+
+boss_bar{
+    priority = 10,
+    title = function(p) return "<red>Wave " .. (store.wave or 1) end,
+    lines = function(p) return tostring(store.progress or 1) end,
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `priority` | Required, a number. The highest priority that applies to a player draws it. There is no default, so two plugins never tie by accident |
+| `when` | Optional `function(player)` returning whether this claim applies to that player. Without it, it applies to everyone |
+| `title` | A string, or a `function(player)` returning one |
+| `lines` | For the sidebar, a list of strings (at most 15 are shown) or a `function(player)` returning one line. For the boss bar, the first line is the progress, a number from 0 to 1 written as text; without lines the bar is full |
+
+Titles and lines are MiniMessage, accept `@key`, and `%placeholders%` are filled in for each player, the placeholders of
+other plugins included. The text is drawn again every 20 ticks, or at the update interval of the operator's file when that file is enabled. The boss bar is shown in white, in the progress style.
+
+A claim that renders no title and no lines gives way to the next one down, and then to the operator's file, so
+`when` and an empty result are both ways to let go. The `when`, `title` and `lines` functions answer at once and cannot
+`wait`.
+
+### Who draws it
+
+When two plugins claim the same thing at the same priority, the one that registered first keeps it and the log says so.
+When a higher priority arrives, the log names who took over from whom. A plugin that is switched off for failing, or
+unloaded, lets go and the next claim takes over.
+
+`/plugins surfaces` lists, for the sidebar and the boss bar, every claim with its plugin and priority, and whether it
+draws, is waiting or let go.

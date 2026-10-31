@@ -1,0 +1,190 @@
+---
+title: Manifest and layout
+description: plugin.toml, the folder layout of a plugin, load order and dependencies, capabilities the operator grants, and the /plugins command.
+group: Plugin development
+---
+
+## Layout
+
+A plugin is a folder, or the same tree inside a `.bspkg` zip:
+
+```
+arena/
+  plugin.toml           the manifest, required
+  src/
+    main.lua            the entry point (the default for main)
+    util.lua            require("util")
+    game/round.lua      require("game.round")
+  resources/
+    config.toml         read into the config global
+    lang/en_us.toml     translations
+    assets/             anything else the plugin reads with files.read
+  tests/
+    round.lua           run by kiln test, never packed
+```
+
+| Path | Purpose |
+|---|---|
+| `plugin.toml` | The manifest, below |
+| `src/` | Lua code. `require("a.b")` loads `src/a/b.lua` |
+| `resources/config.toml` | The plugin's settings, see [Config and lang files](/docs/server/config-and-lang) |
+| `resources/lang/<locale>.toml` | Translations |
+| `resources/` (the rest) | Files the plugin reads with `files`, see [Storage](/docs/server/storage) |
+| `tests/` | Test files for `kiln test`, see [Testing and distribution](/docs/server/testing-and-distribution) |
+
+The server looks in its `plugins/` folder (created if missing). A subfolder that contains a `plugin.toml` is a plugin,
+and so is every file ending in `.bspkg`. Two plugins with the same `id` are refused, the second one is named in the log.
+
+### Where the files live at run time
+
+| Form | Data folder | What happens to `resources/` |
+|---|---|---|
+| A folder in `plugins/` | Its own `resources/` | Nothing is copied. You edit the files in place |
+| A `.bspkg` | `plugins/<id>/` | Copied there the first time the plugin loads. A file already there is never overwritten, so the operator's edits survive an update of the package |
+
+`config`, `files` and the `data` JSON files all work in the data folder. To keep a file of `resources/` out of the data
+folder, list it under `[resources]` (below).
+
+## plugin.toml
+
+```toml
+id = "arena"
+name = "Arena"
+version = "1.2.0"
+authors = ["Alex"]
+api = 1
+main = "src/main.lua"
+
+[depends]
+economy = ">=2.0"
+
+[soft-depends]
+placeholders = "*"
+
+[capabilities]
+packets = true
+network = ["arena:lobby"]
+commands = true
+
+[exports]
+modules = ["util"]
+services = ["arena"]
+
+[resources]
+private = ["secrets/", "notes.txt"]
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `id` | yes | Lowercase letters, digits and underscores, starting with a letter. It names the plugin everywhere: logs, `/plugins`, the data folder, storage, permissions and placeholders |
+| `version` | yes | Compared numerically part by part, splitting on `.` and `-`, for `[depends]` |
+| `api` | yes | The plugin API the plugin was written for. This server speaks `1`; any other value refuses the plugin |
+| `name` | no | Display name, defaults to the `id` |
+| `authors` | no | List of strings |
+| `main` | no | The entry point, `src/main.lua` by default |
+
+<x-docs.callout type="warning" title="Hyphens in the id">
+`kiln check` accepts a hyphen in an `id`, but the server and `kiln pack` only accept lowercase letters,
+digits and underscores. Use underscores.
+</x-docs.callout>
+
+`kiln check` additionally requires `name` and `main`, and that the main file exists.
+
+### Dependencies
+
+`[depends]` and `[soft-depends]` map a plugin id to a version requirement: `"*"` for any, an exact version such as
+`"1.4.0"`, or a comparison with `>=`, `>`, `<=` or `<`.
+
+- A plugin whose `[depends]` entry is not installed, or is installed in a version that does not match, is not loaded, and
+  the log says which dependency failed. So is a plugin that depends on one that did not load, and every plugin of a
+  dependency cycle.
+- A `[soft-depends]` entry never stops a plugin. It only makes the other plugin load first, when it is installed.
+- Plugins load dependencies first and otherwise in alphabetical order of `id`.
+- Unloading a plugin also unloads the plugins that list it under `[depends]`.
+
+### Exports
+
+`[exports]` is how a plugin offers code to other plugins, see [Shared code](/docs/server/shared-code):
+
+| Key | Meaning |
+|---|---|
+| `modules` | Module names other plugins may `require` as `<id>.<module>`. `"*"` exports all of `src/` |
+| `services` | Service names this plugin may register with `service(name, table)` |
+
+A plugin whose `main` file does not exist but which exports modules loads as a library, with no code of its own.
+
+### Resources
+
+`[resources] private = [...]` lists paths of `resources/` that are not copied to the data folder of a `.bspkg`. An entry
+ending in `/` is a folder prefix, any other entry is one file. The plugin can still read them from the package with
+`files.read`.
+
+## Capabilities
+
+Three things reach beyond a plugin's sandbox. The plugin asks for them in the manifest and the operator grants them in
+`config/server.toml`, see [Server settings](/docs/server/server-settings):
+
+```toml
+[capabilities]
+packets = true                 # the packet global
+network = ["arena:lobby"]      # the channel global, for these plugin message channels
+commands = true                # the run global
+```
+
+```toml
+# config/server.toml
+[plugins.allow]
+arena = ["packets", "network", "commands"]
+```
+
+| Manifest | Grant name | Adds |
+|---|---|---|
+| `packets = true` | `"packets"` | `packet.on`, `packet.watch`, `packet.send`, `packet.receive`, see [Packets](/docs/server/packets) |
+| `network = ["a:b"]` | `"network"` | `channel.on` and `channel.send` for the channels listed |
+| `commands = true` | `"commands"` | `run(command)`, which runs a command as the console |
+
+A plugin that asks for a capability that is not granted still loads, without the global, and the log says which line to
+add under `[plugins.allow]`.
+
+## Load, enable and disable
+
+1. The manifest is read and the plugin is ordered after its dependencies.
+2. `src/main.lua` runs once from top to bottom. This is where handlers, commands and tasks are registered. A load error
+   leaves the plugin off.
+3. The handlers registered for `plugin.enable` run:
+
+```lua
+on("plugin.enable", function()
+    log.info("ready")
+end)
+
+on("plugin.disable", function()
+    data.save("state")
+end)
+```
+
+`plugin.enable` and `plugin.disable` are listened to with `on`, never `watch`, and take no event table. `plugin.disable`
+runs when the plugin is unloaded, by `/plugins unload`, `/plugins reload` or the server stopping. After it, everything the
+plugin registered is released: event handlers, commands, scheduled tasks, menus, placeholders, services and the
+sidebar and boss bar it claimed.
+
+The main chunk cannot call `wait`. Use `plugin.enable` for startup work that needs to wait, see
+[Scheduler and coroutines](/docs/server/scheduler).
+
+## The /plugins command
+
+Operators (the admin permission level) manage plugins with `/plugins`:
+
+| Command | Does |
+|---|---|
+| `/plugins` | Lists every Lua plugin and Bukkit jar, with its registrations, error count and whether it is off |
+| `/plugins load` | Scans `plugins/` and loads whatever is new |
+| `/plugins reload <plugin>` | Unloads the plugin (and its dependents) and scans again. This also switches a plugin back on after it was turned off for failing |
+| `/plugins unload <plugin>` | Unloads it and the plugins that depend on it |
+| `/plugins surfaces` | Who draws the sidebar and boss bar, see [Menus and HUD](/docs/server/menus-and-hud#who-draws-it) |
+| `/plugins packets` | The packet names `packet.on` accepts |
+| `/plugins orphans` | Plugins whose data is still stored but which are not installed, with their row counts |
+| `/plugins purge <plugin>` | Counts the stored rows of an uninstalled plugin; add `confirm` to delete them. A copy of the player database is written next to it first |
+
+A plugin that is loaded cannot be purged. Nothing is ever deleted on its own, see `orphan-data` in
+[Server settings](/docs/server/server-settings).

@@ -1,0 +1,94 @@
+---
+title: Tooling
+description: Kiln, the plugin command line, and the VS Code extension and editor definitions that give completion and live checks.
+group: Plugin development
+---
+
+Two tools make writing a plugin faster than restarting a server: **Kiln** checks and builds a plugin from the command line,
+and **DevTools** brings the same checks, plus completion and documentation for the whole API, into your editor.
+
+## Kiln
+
+Kiln is a native command line with no dependencies. It runs the same Lua 5.5 as the server, so what it compiles loads
+there as it is. Build it from its repository with CMake, Ninja and Clang (`cmake --preset release && cmake --build
+build/release`) and put the `kiln` executable on your `PATH`.
+
+| Command | Does |
+|---|---|
+| `kiln new <id> [name]` | Creates `<id>/` with `plugin.toml`, `src/main.lua` and `resources/config.toml` |
+| `kiln check <plugin>` | Verifies a plugin and writes nothing |
+| `kiln compile <plugin\|file.lua\|dir>` | Verifies, then writes Lua bytecode (`.luac`) |
+| `kiln build <plugin>` | Verifies, compiles and optionally signs, into `build/compiled` |
+| `kiln pack [plugin]` | Verifies, then writes `build/<id>-<version>.bspkg` |
+| `kiln test [plugin]` | Verifies, then runs `tests/*.lua` |
+| `kiln keygen <name>` | Makes `<name>.key` and `<name>.pub`, a signing key pair |
+
+`pack`, `build`, `test` and `keygen` are covered in [Testing and distribution](/docs/server/testing-and-distribution).
+
+| Option | Meaning |
+|---|---|
+| `-o <path>` | Where the bytecode goes. For a plugin folder the default is `build/luac`, keeping the layout of `src/` |
+| `--strip` | Drops debug information. Without it, an error still points at `file.lua:line` |
+| `--target server\|proxy` | The product the plugin is for. Defaults to `server`; the proxy has its own API |
+| `--no-verify` | Compiles a plugin folder without the checks below |
+
+Given a folder with a `plugin.toml`, Kiln treats it as a plugin. Given a file or any other folder, it only checks syntax
+and compiles.
+
+### What kiln check reports
+
+```
+$ kiln check arena
+src/main.lua:1: no module `missing` in src/
+src/main.lua:2: unknown global `onn`
+src/main.lua:3: `log.infoo` is not part of the API
+src/main.lua:5: `os.execute` is not part of the API
+4 problem(s)
+```
+
+- **Syntax** of every Lua file under `src/`.
+- **`plugin.toml`**: `id`, `name`, `version` and `main` are present, the `id` is well formed, and the main file exists.
+- **`require`**: a literal module name resolves to a file under `src/`.
+- **The API**: a global, or a field of one, that the target does not offer, such as a typo or a function the
+  [sandbox](/docs/server/sandbox) removed. A name the plugin defines itself is accepted.
+
+The API check follows names through the bytecode and does not guess what a variable holds: only paths such as `log.info`
+or `players.online` are verified, and tables with open contents (`config`, `store`, `data`) accept any key.
+
+The names a target offers come from the running server's sandbox. When the API grows, Kiln's list is updated with it.
+
+## VS Code
+
+The Basalt DevTools extension turns VS Code into a place to write plugins. It uses two other pieces:
+
+- the **Lua language server** (the `sumneko.lua` extension, installed with it) for completion, hover documentation, go to
+  definition and type checking,
+- **Kiln** for the findings above.
+
+DevTools gives the language server the API of the product you target, and shows Kiln's findings in the Problems panel.
+
+Requirements: VS Code 1.90 or newer, and `kiln` on the `PATH` or its location in `basalt.kilnPath`. The extension turns on
+when the open folder contains a `plugin.toml`.
+
+| Feature | Detail |
+|---|---|
+| Completion and documentation | For `log`, `players`, `worlds`, `on`, `cmd` and the rest, including one class per event with its fields |
+| Problems panel | Kiln runs when the extension starts and on every save of a Lua file or `plugin.toml` |
+| Commands | `Basalt: Check Plugin` and `Basalt: Compile Plugin` |
+| Snippets | `on` for an event handler, `cmd` for a command |
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `basalt.target` | `server` | The product the plugin is for: `server` or `proxy`. It switches both the completion and the checks |
+| `basalt.kilnPath` | `kiln` | The Kiln executable |
+| `basalt.checkOnSave` | `true` | Run Kiln when a Lua file or `plugin.toml` is saved |
+
+The extension is a `.vsix` file, installed with `Extensions: Install from VSIX`.
+
+## Other editors
+
+The completion data is a set of `---@meta` definition files for the Lua language server, one per target, in
+`definitions/<target>/basalt.lua` of the DevTools repository. Any editor that runs the Lua language server can use them
+by adding that folder to `Lua.workspace.library`. The JetBrains plugin (IntelliJ IDEA 2025.3 and newer) runs Kiln from the
+`Tools | Basalt` menu, lists its findings in a Basalt tool window, and has `Sync API Definitions`, which copies the
+definitions into the project's `.basalt/api/` folder.
