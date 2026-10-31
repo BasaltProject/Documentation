@@ -1,0 +1,158 @@
+---
+title: Configuration
+description: Complete reference for proxy.toml and plugins.toml, with validation and reload behaviour.
+---
+
+The proxy reads three files from its configuration directory (`./config` unless `--config` says otherwise): `proxy.toml` and `plugins.toml`, described here, and `backends.toml`, described in [Backends and routing](/docs/proxy/backends-and-routing). Missing files are created with commented defaults on startup. A key you leave out takes the default listed below.
+
+## Validation
+
+Every file is validated before the proxy opens a port. The first problem found stops startup with an error of the form `<file>: <key> <problem>`, and the exit code is `1`. For example:
+
+```
+config/proxy.toml: network.port is outside its integer range
+config/proxy.toml: runtime requires low-water-bytes < high-water-bytes < session-buffer-bytes
+config/proxy.toml: network.dual-stack requires an IPv6 bind address
+config/proxy.toml: unknown is unknown
+```
+
+A key with the wrong type reports `has the wrong type`, a table where a value belongs `must be a table`, and a misspelled key `is unknown`. Nothing is ignored silently.
+
+## Hot reload
+
+The console command `reload`, the `SIGHUP` signal (Linux and macOS) and, if enabled, [file watching](#reload) re-read the configuration directory. Only the contents of `backends.toml` (backends, default route, forced hosts) and the plugins are applied. If anything in `proxy.toml` or `plugins.toml` differs from what is running, the reload is refused as a whole and nothing changes:
+
+```
+Reload rejected, nothing changed: changing [network], [logging] requires a restart
+```
+
+A file that fails validation is also refused and the running configuration stays. Sessions already in progress keep the routing they started with; new connections use the new one.
+
+## proxy.toml
+
+### `[network]`
+
+Public listener and authentication.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `bind` | string | `"0.0.0.0"` | Literal IPv4 or IPv6 address to listen on. Hostnames are rejected. |
+| `port` | integer | `25565` | TCP port, 1 to 65535. |
+| `dual-stack` | boolean | `false` | Accept IPv4 clients on an IPv6 listener. Requires an IPv6 `bind` such as `"::"`. |
+| `online-mode` | boolean | `true` | Authenticate Java players with Mojang. When `false` the proxy believes the name a player gives and assigns an offline UUID. |
+| `accept-transfers` | boolean | `false` | Accept clients that arrive through a server-initiated transfer. They still authenticate normally. |
+| `prevent-client-proxy-connections` | boolean | `false` | Include the player's address in the Mojang session check, so a player connecting through a VPN or proxy different from the one Mojang sees is refused. |
+| `compression-threshold` | integer | `256` | Packets at least this large are compressed toward clients. `-1` disables compression, `0` compresses everything. Range -1 to 8388608. |
+
+<x-docs.callout type="warning" title="Offline mode">
+With `online-mode = false` anyone can join under any name, including an operator's. Only do it on a closed network where something else vouches for identity.
+</x-docs.callout>
+
+### `[runtime]`
+
+Resource limits. The defaults suit most networks; raise `max-sessions` and the buffer budgets first if you need more players.
+
+| Key | Type | Default | Range | Meaning |
+|---|---|---|---|---|
+| `io-loops` | integer | `2` | 1 to 64 | Threads that own sessions and move their bytes. |
+| `workers` | integer | `4` | 1 to 64 | Separate pool for slow work: DNS lookups and Mojang authentication. |
+| `max-sessions` | integer | `4096` | 1 to 65536 | Simultaneous connections. Also shown as the player maximum in the server list. |
+| `max-pending-work` | integer | `256` | 1 to 65536 | Queue length of the worker pool. |
+| `max-buffered-bytes` | integer | `268435456` | 4096 to 16 GiB | Global budget for retained network buffers. |
+| `session-buffer-bytes` | integer | `16777216` | 4096 to 16 GiB | Buffer ceiling for one session. Must not exceed `max-buffered-bytes`. |
+| `high-water-bytes` | integer | `4194304` | 1 to 16 GiB | A session's reads pause above this many queued bytes. |
+| `low-water-bytes` | integer | `2097152` | 0 to 16 GiB | Reads resume below this. |
+| `handshake-timeout-ms` | integer | `10000` | 1 to 300000 | Deadline values are in milliseconds. |
+| `login-timeout-ms` | integer | `30000` | 1 to 300000 | Whole login, including authentication and connecting to a backend. |
+| `connect-timeout-ms` | integer | `10000` | 1 to 300000 | One attempt to reach a backend. |
+| `read-timeout-ms` | integer | `30000` | 1 to 300000 | Silence from a peer before the session is closed. |
+| `write-timeout-ms` | integer | `10000` | 1 to 300000 | A peer that does not accept queued data. |
+
+The three water marks must satisfy `low-water-bytes < high-water-bytes < session-buffer-bytes`.
+
+### `[admission]`
+
+Token buckets that limit new connections, both for the whole proxy and for each source address. See [Operations](/docs/proxy/operations#rate-limits).
+
+| Key | Type | Default | Range | Meaning |
+|---|---|---|---|---|
+| `global-rate` | integer | `200` | 1 to 1000000 | Sustained connection attempts per second, all origins together. |
+| `global-burst` | integer | `400` | 1 to 1000000 | Bucket capacity for the global limit. |
+| `origin-rate` | integer | `10` | 1 to 1000000 | Sustained attempts per second from one IP address. |
+| `origin-burst` | integer | `20` | 1 to 1000000 | Bucket capacity for one address. |
+| `max-origins` | integer | `65536` | 1 to 1000000 | Addresses tracked at once. When the table is full, new addresses are rejected until idle entries expire. |
+| `origin-expiry-ms` | integer | `60000` | 1000 to 3600000 | How long an idle address is remembered. |
+
+### `[forwarding]`
+
+Identity of this proxy toward backends that use `forwarding = "basalt"`. See [Forwarding](/docs/proxy/forwarding).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `proxy-id` | string | `"proxy"` | Name this proxy signs into its forwarding responses, 1 to 64 bytes. |
+| `key-file` | string | `".basalt/forwarding.key"` | Path of the private Ed25519 key, up to 4096 bytes. Created on first use. |
+
+### `[logging]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `level` | string | `"info"` | `trace`, `debug`, `info`, `warn` or `error`. |
+| `file` | boolean | `true` | Mirror the console into `.basalt/logs/latest.log`. |
+| `keep-days` | integer | `14` | Days of archived logs to keep, 0 to 3650. `0` keeps them forever. |
+| `color` | string | `"auto"` | `auto` (only on a terminal), `always` or `never`. |
+
+### `[bedrock]`
+
+See [Bedrock and versions](/docs/proxy/bedrock-and-versions).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Open the Bedrock Edition UDP listener. |
+| `port` | integer | `19132` | UDP port, 1 to 65535. |
+| `motd` | string | `"Basalt Proxy"` | Text in the Bedrock server list, 1 to 64 bytes, without `;`. |
+| `language` | string | `""` | Path to a Minecraft server jar or to an `en_us.json` file, used to turn translatable messages from the backend (join and leave lines, death messages) into text for Bedrock players. Empty keeps the raw keys. Nothing is downloaded. |
+| `delegate` | boolean | `false` | Let a backend with `forwarding = "basalt"` serve Bedrock players itself over the session envelope, with the proxy relaying. |
+
+### `[reload]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `watch-files` | boolean | `false` | Reload by itself when a file in the configuration directory (or, with plugins on, the plugins directory) changes and has stopped changing. |
+| `interval-ms` | integer | `2000` | How often to look, 250 to 600000. |
+
+A watched change that does not validate is reported in the log and the running configuration stays. It behaves like the `reload` command, so a change to anything but `backends.toml` is refused.
+
+### `[translation]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `mode` | string | `"auto"` | `auto`: a capable Basalt Server translates for older clients itself, otherwise the proxy translates where it has a verified route. `proxy`: the proxy always translates. `off`: client and backend must speak the same protocol. |
+
+## plugins.toml
+
+Controls the Lua plugin host. [Plugins](/docs/proxy/plugins) covers writing them; this file only decides whether they run and what they may do.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Load plugins at all. |
+| `directory` | string | `"plugins"` | Folder with plugin packages (`.bppkg`) or unpacked plugins, each with a `plugin.toml`. |
+| `database` | string | `".basalt/proxy.db"` | The proxy's own SQLite file for plugin data. It is state, not configuration. |
+| `instructions-per-turn` | integer | `250000` | Lua instruction budget for one run of a handler, 1000 to 1000000000. |
+| `memory-mib` | integer | `32` | Ceiling for one plugin's Lua memory, 1 to 1024. |
+| `queue-size` | integer | `256` | Events waiting for the plugin thread, 1 to 65536. When full, the newest event is dropped and counted. |
+| `operators` | array of strings | none | Player names allowed to run plugin commands that declare a permission. Matching ignores case. |
+| `[allow]` | table | empty | Per plugin id, the powers granted beyond logging, listening, registering commands and reading the server list. |
+
+`[allow]` maps a plugin id to a list drawn from `commands` (run console commands), `network` and `packets`. Any other name is a validation error. A plugin whose `plugin.toml` asks for more than is granted here does not load. Plugin data needs `storage = true` or `players_data = true` in the plugin's own manifest and no grant.
+
+```toml
+enabled = true
+operators = ["Steve"]
+
+[allow]
+my_plugin = ["commands"]
+```
+
+<x-docs.callout type="note" title="Plugin failures stay contained">
+A handler that exhausts its instruction budget or memory ceiling disables its plugin until the next reload. The proxy and other plugins keep running.
+</x-docs.callout>

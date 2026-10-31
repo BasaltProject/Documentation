@@ -1,0 +1,127 @@
+---
+title: Backends and routing
+description: Define backend servers, route players by hostname, fall back when a server is down, and move players between servers.
+---
+
+`backends.toml` has three parts: the backends themselves, the default route, and optional routes by hostname. Backends and routes are the only part of the configuration that [reloads while the proxy runs](/docs/proxy/configuration#hot-reload).
+
+## Defining backends
+
+Each backend is a table named `[backends.<name>]`. The name is what routes, console commands and plugins refer to: 1 to 64 characters from letters, digits, `_` and `-`. A file may define 1 to 256 backends.
+
+```toml
+[backends.lobby]
+host = "127.0.0.1"
+port = 25566
+forwarding = "basalt"
+protocol = "auto"
+
+[backends.survival]
+host = "survival.internal"
+port = 25567
+forwarding = "velocity"
+secret = "change-me"
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `host` | string | none, **required** | Hostname, IPv4 or IPv6 address, without a port. Names are resolved when a player connects. |
+| `port` | integer | `25566` | 1 to 65535. |
+| `forwarding` | string | none, **required** | How the player's identity reaches this backend: `none`, `basalt`, `velocity`, `bungeecord`, `bungeeguard` or `safenet`. Aliases: `modern` for `velocity`, `legacy` and `bungee` for `bungeecord`, `false` and `disabled` for `none`. Explained in [Forwarding](/docs/proxy/forwarding). |
+| `protocol` | integer or string | `777` | The Java protocol number of the backend, `"client"`, or `"auto"`. See below. |
+| `secret` | string | `""` | Shared secret for `velocity`, token for `bungeeguard`, passphrase for `safenet`, 1 to 4096 bytes. Required by those three schemes and an error for the others. |
+| `property-name` | string | `"safe_net_passphrase"` | Property that carries the SafeNET passphrase. Only valid with `safenet`. |
+| `bungee-messages` | boolean | `false` | Let this backend use the BungeeCord plugin channel (see [below](#bungeecord-messages)). |
+
+A backend without an explicit `forwarding` is refused at startup: `backends.<name>.forwarding must be chosen explicitly for this backend`. There is no default so that a weak scheme is never chosen by omission.
+
+### The `protocol` key
+
+- A number is the protocol of the backend: `777` is Minecraft 26.3, `776` is 26.2, `775` is 26.1, `774` is 1.21.11, `773` is 1.21.9 and 1.21.10, `772` is 1.21.7 and 1.21.8, `771` is 1.21.6 and `770` is 1.21.5. Other versions are accepted when the client has the same version (`protocol` equal to the player's). See [Bedrock and versions](/docs/proxy/bedrock-and-versions) for what each combination does.
+- `"client"` means the backend speaks whatever version each player connects with. This is how a Basalt Server behaves, because it translates older clients itself.
+- `"auto"` resolves to `"client"` for a backend with `forwarding = "basalt"`, and to `777` for every other scheme. With `"auto"` the proxy still translates clients older than 1.13 itself for a Basalt backend, because those clients cannot carry the login query that `basalt` forwarding uses.
+
+## Routing
+
+```toml
+[routing]
+default = ["lobby", "backup-lobby"]
+
+[forced-hosts]
+"play.example.org" = ["survival"]
+"minigames.example.org" = ["minigames", "lobby"]
+```
+
+A route is an ordered, non-empty list of backend names, with no duplicates. Every name has to exist in `[backends]`; an unknown name fails startup with `references an unknown backend`.
+
+### Choosing a route
+
+When a player connects, the proxy looks at the hostname written in the Minecraft handshake, which is the address the player typed in the client.
+
+1. Lowercase it and strip one trailing dot.
+2. If it matches a key in `[forced-hosts]`, use that route.
+3. Otherwise use `[routing] default`.
+
+Forced-host keys are bare hostnames: no port, and up to 256 entries. Two keys that become equal after lowercasing are a duplicate and refused. Remember to point each DNS name at the proxy.
+
+### Fallback
+
+A route is also the fallback order. The proxy tries the backends of the list in order and sends the player to the first that accepts them. A backend that is down, refuses the connection, cannot be resolved or times out (`connect-timeout-ms`) is skipped for that player, and the next entry is tried. If none works, the player is disconnected with:
+
+```
+No server is available right now. Please try again shortly.
+```
+
+The same list protects a player already in game. If the backend they are on drops, the proxy tries the other backends of the player's route that it has not yet tried for them, and moves the player there. When none is left they are disconnected with `No backend is available. Please reconnect later.`
+
+Entries are not balanced: the first available backend always wins, so with `["lobby-1", "lobby-2"]`, `lobby-2` only takes players while `lobby-1` is unavailable. There are no weights and no player counting.
+
+Bedrock players always go to the first backend of the default route.
+
+## Moving players between backends
+
+A player changes backend while staying connected. From Minecraft 1.20.2 the client is reconfigured in place and receives the registries of the new backend. Before 1.20.2 it receives the new backend's join packet.
+
+A move is requested by:
+
+- the `send` console command;
+- a plugin, with `player:connect(server)`;
+- a backend that has `bungee-messages = true` and sends the BungeeCord `Connect` message, which is how a lobby's server-selector plugin works.
+
+A request is refused when the target backend is unknown, when the player is not yet in game, when the target is the backend they are already on, or when another change is in progress. If the client and the target backend have no usable version route, the change is refused and the player stays where they are. The proxy never changes the contents of a backend's registries to fit another version.
+
+### BungeeCord messages
+
+With `bungee-messages = true`, the proxy answers the channel `bungeecord:main` (and the legacy name `BungeeCord`) for that backend and nothing else. Supported subcommands:
+
+| Subcommand | Effect |
+|---|---|
+| `Connect` | Moves the player who sent it to the named backend. |
+| `GetServer` | Replies with the name of the player's current backend. |
+| `GetServers` | Replies with all backend names, comma separated. |
+| `UUID` | Replies with the player's UUID. |
+
+Other subcommands are ignored. Messages coming from a client are always discarded, and with `bungee-messages = false` (the default) everything on the channel is dropped.
+
+## Console commands
+
+Commands typed in the proxy's terminal. A leading `/` is optional.
+
+| Command | Effect |
+|---|---|
+| `help` | List the commands. |
+| `servers` | List the backend names. |
+| `status` | Print counters: sessions, retained buffer bytes, accepted and rejected connections, bytes relayed, logins, backend changes, where connections ended, CPU seconds and peak memory (Linux, macOS), and the number of Bedrock players. |
+| `reload` | Re-read the configuration directory, see [Hot reload](/docs/proxy/configuration#hot-reload). |
+| `send <player> <backend>` | Move a connected player. Player names are case-sensitive. |
+| `stop` | Stop the proxy. |
+
+These names cannot be replaced by a plugin. Any other line is offered to plugin commands first.
+
+`send` answers with one of: `Backend change preparation accepted for <player>.`, `Player not found (names are case-sensitive).`, `Unknown backend.`, `Invalid player name.`, `Control queue or buffer budget is full.`, or `Backend change unavailable: session is not in play, destination is current, or change is busy.`
+
+## Commands and permissions for players
+
+The proxy itself offers no commands to players. Every in-game command comes from a Lua plugin, which can restrict it with a `permission`. Permissions on the proxy are deliberately simple: the names listed in `operators` in `plugins.toml` (case-insensitive) may run a command that declares a permission, and the console always may. Commands without a permission are open to everyone. The permission model of each backend is separate: see [Access and permissions](/docs/server/groups-and-permissions) for Basalt Server.
+
+Clients from 1.13 offer plugin commands in tab completion; Bedrock clients see them in their command list.
