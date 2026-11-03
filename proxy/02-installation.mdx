@@ -12,13 +12,18 @@ Binaries are published on the [Proxy releases page](https://github.com/BasaltPro
 BasaltProxy-<version>-<Platform>-<arch>
 ```
 
-| Platform | Architecture | Platform in the name |
+| Platform | Architectures | Platform in the name |
 |---|---|---|
-| Linux | x86-64 | `Linux-x64` |
-| Linux | ARM64 | `Linux-arm64` |
-| macOS | Intel | `macOS-x64` |
-| macOS | Apple Silicon | `macOS-arm64` |
-| Windows | x86-64 | `Windows-x64` |
+| Linux (glibc) | x86-64, ARM64 | `Linux-x64`, `Linux-arm64` |
+| Linux musl (Alpine) | x86-64, ARM64 | `Linux-musl-x64`, `Linux-musl-arm64` |
+| Windows | x86-64, ARM64 | `Windows-x64`, `Windows-arm64` |
+| macOS 13+ | Intel, Apple Silicon | `macOS-x64`, `macOS-arm64` |
+| Android 10+ (API 29) | x86-64, ARM64 | `Android-x64`, `Android-arm64` |
+| FreeBSD 14.5+ | x86-64, ARM64 | `FreeBSD-x64`, `FreeBSD-arm64` |
+
+The musl downloads are fully static and require neither glibc nor additional C++
+runtime packages. Android and FreeBSD downloads include the C++ runtime
+statically. Download the executable itself, not an archive or an installer.
 
 Two kinds of build are published:
 
@@ -31,7 +36,7 @@ Every release carries a `SHA256SUMS` file. Verify the download before running it
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-On Linux and macOS, make the file executable:
+On Linux, macOS, FreeBSD and Android, make the file executable:
 
 ```bash
 chmod +x BasaltProxy-26.3.4-Linux-x64
@@ -49,6 +54,28 @@ mkdir basalt-proxy && cd basalt-proxy
 On the first start the proxy writes commented `proxy.toml`, `backends.toml` and `plugins.toml` into `./config/`, then starts with them. Existing files are never overwritten. The default `backends.toml` defines a single backend, `lobby`, at `127.0.0.1:25566`, so edit it before players join (see [Backends and routing](/docs/proxy/backends-and-routing)).
 
 You can type [console commands](/docs/proxy/backends-and-routing#console-commands) in the terminal while it runs. Stop it with `stop`, Ctrl+C or SIGTERM.
+
+### Android
+
+The Android download is a native NDK executable, not an APK or a Linux/glibc
+binary. It needs no Java runtime or `libc++_shared.so` alongside it.
+
+Use a directory that allows execution, such as a compatible terminal's private
+home directory or `/data/local/tmp` through `adb shell`. Shared storage such as
+`/sdcard` does not allow execution.
+
+For an ARM64 device, rename the downloaded Android-arm64 executable to
+`basalt-proxy` on your computer, then:
+
+```bash
+adb push basalt-proxy /data/local/tmp/basalt-proxy
+adb shell 'cd /data/local/tmp && chmod +x basalt-proxy && ./basalt-proxy'
+```
+
+No root access or APK is needed for this `adb shell` deployment. Keep the working
+directory consistent so the proxy finds its configuration and state. Android's
+battery and background-process restrictions still apply: the executable is not
+an Android foreground service and does not keep the device awake automatically.
 
 ## Command line
 
@@ -139,6 +166,25 @@ cmake --build build/release
 ```
 
 The executable lands in `build/release/bin/` with the same naming as the downloads.
+
+### Additional platform builds
+
+For Android, install NDK `29.0.14206865`, set `ANDROID_NDK_HOME` to its directory
+and select an ABI:
+
+```bash
+cmake --preset android-arm64
+cmake --build --preset android-arm64
+# Use android-x64 for x86-64 devices.
+```
+
+The Android presets target API 29 and statically link libc++.
+
+On FreeBSD, use the `freebsd` configure and build presets with CMake, Ninja and
+Clang. On Alpine, use `linux-musl` with Clang and static libc++, libc++abi and
+libunwind libraries. The GitHub Actions workflow contains the complete toolchain
+and linker settings for both platforms. Each build writes only its executable
+to `build/<preset>/bin/` for distribution.
 
 ## Updating
 
