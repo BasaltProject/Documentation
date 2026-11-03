@@ -18,7 +18,14 @@ BasaltServer-<version>-<Platform>-<arch>
 |---|---|
 | `Linux` | `x64`, `arm64` |
 | `macOS` | `x64`, `arm64` (Apple silicon) |
-| `Windows` | `x64` |
+| `Windows` | `x64`, `arm64` |
+| `Linux-musl` (Alpine) | `x64`, `arm64` |
+| `Android` (Android 10+, API 29) | `x64`, `arm64` |
+| `FreeBSD` (14.5+) | `x64`, `arm64` |
+
+The musl builds are fully static and need neither glibc nor C++ runtime packages.
+Android and FreeBSD builds include the C++ runtime statically. Android, FreeBSD
+and musl builds include the native core and Lua plugins, but not Bukkit/Shim.
 
 There are two channels:
 
@@ -45,6 +52,31 @@ chmod +x BasaltServer-*
 ```
 
 The first start does not launch a server, see [the EULA](#the-eula) below.
+
+### Android
+
+The Android download is a native NDK executable, not an APK and not a Linux/glibc
+binary. It needs no Java runtime or `libc++_shared.so` alongside it.
+
+Use an executable directory, such as a compatible terminal's private home
+directory or `/data/local/tmp` through `adb shell`. Shared storage such as
+`/sdcard` is mounted without execution permission.
+
+For an arm64 device, rename the downloaded Android-arm64 executable to `basalt`
+on your computer, then:
+
+```bash
+adb push basalt /data/local/tmp/basalt
+adb shell 'cd /data/local/tmp && chmod +x basalt && ./basalt'
+```
+
+Edit the generated `eula.toml` to accept the EULA before starting again. For this
+`adb shell` deployment, neither root access nor an APK is required. Keep the
+working directory consistent: configuration and worlds are written there.
+
+Android's battery and background-process restrictions still apply. A command-line
+executable does not become an Android foreground service or keep the device
+awake automatically.
 
 ## Command line flags
 
@@ -146,7 +178,7 @@ With no terminal there is no console. Run commands through the management API or
 
 ## Running in Docker
 
-The binary is a single file, so the image is a small base with CA certificates (the first start talks HTTPS to Mojang) and the binary. Use a glibc-based base image.
+The binary is a single file, so the image is a small base with CA certificates (the first start talks HTTPS to Mojang) and the binary. Use a glibc-based base image for `Linux` assets, or an Alpine base image for the fully static `Linux-musl` assets.
 
 ```dockerfile
 FROM debian:stable-slim
@@ -204,3 +236,50 @@ cmake --build build/release
 ```
 
 The shared network layer lives in a submodule, so clone with `--recurse-submodules` (or run `git submodule update --init` in an existing clone). The binary lands in `build/release/bin/` with its download name.
+
+### Cross-compile for Android
+
+Install Android NDK **r29 (29.0.14206865)** or newer and set `ANDROID_NDK_HOME`
+to its directory. NDK r28's libc++ lacks floating-point `std::from_chars`, which
+the server requires.
+
+```bash
+cmake --preset android-arm64
+cmake --build --preset android-arm64 --target basalt-server
+```
+
+Use `android-x64` instead for an x86_64 device or emulator. The presets select
+the official NDK toolchain, API 29 and static libc++; they do not inherit the
+host compiler. The executable lands in `build/android-arm64/bin/` or
+`build/android-x64/bin/`. The native asynchronous system resolver requires API
+29 and works without a Java ConnectivityManager.
+
+### Build on Alpine
+
+On Alpine 3.22, install the compiler, headers and static C++ runtime:
+
+```bash
+apk add cmake ninja clang20 lld20 libc++-dev libc++-static \
+  llvm-libunwind-dev llvm-libunwind-static gcc g++ musl-dev linux-headers
+cmake --preset linux-musl -DCMAKE_C_COMPILER=clang-20 \
+  -DCMAKE_CXX_COMPILER=clang++-20 -DCMAKE_CXX_FLAGS=-stdlib=libc++
+cmake --build --preset linux-musl
+ctest --preset linux-musl
+```
+
+The result is in `build/linux-musl/bin/`. `BASALT_LINUX_MUSL` selects fully static
+linkage and a distinct filename; it does not turn a glibc compiler into a musl
+cross-compiler.
+
+### Build on FreeBSD
+
+Use the `freebsd` preset with Clang and libc++ 20 or newer, then build and test
+with `cmake --build --preset freebsd` and `ctest --preset freebsd`.
+
+FreeBSD 14's base libc++ predates floating-point `std::from_chars`. To reproduce
+the release toolchain, install `cmake ninja llvm19 git` through `pkg`, run
+[`build-freebsd-libcxx.sh`](https://github.com/BasaltProject/Server/blob/main/.github/scripts/build-freebsd-libcxx.sh),
+and configure with the static libc++/libc++abi flags from the FreeBSD job in the
+[build workflow](https://github.com/BasaltProject/Server/blob/main/.github/workflows/build.yml).
+The result is in `build/freebsd/bin/` and does not require the LLVM package at
+runtime.
