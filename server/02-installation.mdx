@@ -276,13 +276,19 @@ cross-compiler.
 
 ### Build on FreeBSD
 
-Use the `freebsd` preset with Clang and libc++ 20 or newer, then build and test
-with `cmake --build --preset freebsd` and `ctest --preset freebsd`.
+FreeBSD 14.5 includes Clang and libc++ 21, which support the C++23 features Basalt
+requires. Install `cmake` and `ninja` through `pkg`, then build natively. These
+flags link the base system's libc++ and libcxxrt statically, matching the release:
 
-FreeBSD 14's base libc++ predates floating-point `std::from_chars`. To reproduce
-the release toolchain, install `cmake ninja llvm19 git` through `pkg`, run
-[`build-freebsd-libcxx.sh`](https://github.com/BasaltProject/Server/blob/main/.github/scripts/build-freebsd-libcxx.sh),
-and configure with the static libc++/libc++abi flags from the FreeBSD job in the
+```bash
+cmake --preset freebsd -DCMAKE_EXE_LINKER_FLAGS=-nostdlib++ \
+  "-DCMAKE_CXX_STANDARD_LIBRARIES=/usr/lib/libc++.a /usr/lib/libcxxrt.a -lpthread" \
+  -DCMAKE_TRY_COMPILE_PLATFORM_VARIABLES=CMAKE_CXX_STANDARD_LIBRARIES
+cmake --build --preset freebsd
+ctest --preset freebsd
+```
+
+The result is in `build/freebsd/bin/`. For arm64, CI cross-compiles against an
+official FreeBSD sysroot and then runs the full test suite and executable in a
+FreeBSD arm64 VM. The exact flags are in the
 [build workflow](https://github.com/BasaltProject/Server/blob/main/.github/workflows/build.yml).
-The result is in `build/freebsd/bin/` and does not require the LLVM package at
-runtime.
