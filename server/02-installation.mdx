@@ -262,7 +262,10 @@ On Alpine 3.22, install the compiler, headers and static C++ runtime:
 apk add cmake ninja clang20 lld20 libc++-dev libc++-static \
   llvm-libunwind-dev llvm-libunwind-static gcc g++ musl-dev linux-headers
 cmake --preset linux-musl -DCMAKE_C_COMPILER=clang-20 \
-  -DCMAKE_CXX_COMPILER=clang++-20 -DCMAKE_CXX_FLAGS=-stdlib=libc++
+  -DCMAKE_CXX_COMPILER=clang++-20 -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
+  "-DCMAKE_EXE_LINKER_FLAGS=-nostdlib++ -fuse-ld=lld" \
+  "-DCMAKE_CXX_STANDARD_LIBRARIES=-lc++ -lc++abi -lunwind" \
+  -DCMAKE_TRY_COMPILE_PLATFORM_VARIABLES=CMAKE_CXX_STANDARD_LIBRARIES
 cmake --build --preset linux-musl
 ctest --preset linux-musl
 ```
