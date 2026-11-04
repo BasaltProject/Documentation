@@ -1,0 +1,410 @@
+---
+title: Coming from Java? (BungeeCord)
+description: How what you do in a BungeeCord plugin maps to a Lua plugin on Basalt Proxy, side by side.
+group: Learn Lua
+---
+
+This page is for people who have written Java plugins for BungeeCord. If you have not written plugins before, start with
+[Introduction to Lua](/docs/proxy/lua-introduction) and [Plugins](/docs/proxy/plugins) instead.
+
+If you have, you already know what a proxy plugin does: watch players come and go, move
+them between servers, add commands and keep a little data. This page shows how each of those is written in Lua on Basalt
+Proxy. Lua itself is covered in [Introduction to Lua](/docs/proxy/lua-introduction). Coming from Velocity instead? See
+[Coming from Java? (Velocity)](/docs/proxy/coming-from-velocity).
+
+## What changes
+
+| In a BungeeCord plugin | On Basalt Proxy |
+|---|---|
+| Java compiled to a jar with Maven or Gradle | Lua source in a folder, zipped into a `.bppkg` with `kiln pack --target proxy` |
+| `bungee.yml` (or `plugin.yml`) | `plugin.toml` |
+| A main class that extends `Plugin` | A `src/main.lua` that runs when the plugin loads |
+| `ProxyServer.getInstance()` | Globals: `players`, `servers`, `log` and the rest |
+| A `Listener` class with `@EventHandler` methods | `on("event.name", handler)` |
+| `ProxiedPlayer` | A player table with `name`, `uuid`, `server`, and methods called with a colon |
+| `ChatColor`, `TextComponent`, `ComponentBuilder` | [MiniMessage](/docs/proxy/plugin-api#text) strings. No `§` codes |
+| YAML configuration through `ConfigurationProvider` | TOML files in `resources/`, read as the `config` table |
+| Restart the proxy to test | `reload` in the console |
+
+## The project
+
+```yaml
+# bungee.yml
+name: LobbyTools
+main: org.example.lobbytools.LobbyTools
+version: 1.0.0
+author: Alex
+depends: [Economy]
+```
+
+```java
+public final class LobbyTools extends Plugin {
+    @Override
+    public void onEnable() {
+        getLogger().info("Ready");
+    }
+
+    @Override
+    public void onDisable() {
+        getLogger().info("Bye");
+    }
+}
+```
+
+```toml
+# plugin.toml
+id = "lobbytools"
+name = "Lobby Tools"
+version = "1.0.0"
+authors = ["Alex"]
+api = 1
+main = "src/main.lua"
+
+[depends]
+economy = ">=1.0"
+```
+
+```lua
+-- src/main.lua
+on("plugin.enable", function()
+    log.info("Ready")
+end)
+
+on("plugin.disable", function()
+    log.info("Bye")
+end)
+```
+
+There is no plugin instance to pass around: nothing to hand to `registerListener` or `registerCommand`, and no
+`getDataFolder()`. The data folder is created for you and `resources/` is copied into it on first load, see
+[Plugins](/docs/proxy/plugins#configuration-and-text-resources). Plugins are off by default: the operator turns them on in
+`config/plugins.toml`.
+
+## Events
+
+| BungeeCord event | Lua event |
+|---|---|
+| `onEnable()` | `plugin.enable` |
+| `onDisable()` | `plugin.disable` |
+| `LoginEvent` | `player.login` |
+| `PostLoginEvent` | `player.join` |
+| `ServerSwitchEvent` | `player.server_change` |
+| `ChatEvent` | `player.chat` |
+| `ServerKickEvent` | `player.kick` |
+| `PlayerDisconnectEvent` | `player.quit` |
+| `ProxyPingEvent` | `server.ping` |
+
+```java
+public final class SwitchListener implements Listener {
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onSwitch(ServerSwitchEvent event) {
+        ServerInfo from = event.getFrom();
+        if (from != null) {
+            getLogger().info(event.getPlayer().getName() + " moved from " + from.getName()
+                + " to " + event.getPlayer().getServer().getInfo().getName());
+        }
+    }
+}
+
+// in onEnable
+getProxy().getPluginManager().registerListener(this, new SwitchListener());
+```
+
+```lua
+on("player.server_change", { priority = "late" }, function(e)
+    log.info(e.player_name .. " moved from " .. e.from_server .. " to " .. e.server)
+end)
+```
+
+- There is no listener class to register: `on` registers a function, and everything a plugin registers is released when it
+  unloads.
+- The handler receives one table, `e`. The player is `e.player`, with the flat fields `e.player_name`, `e.player_uuid` and
+  `e.server` next to it. Every event is in [Plugin events](/docs/proxy/plugin-events).
+- **Priorities** are `FIRST`, `EARLY`, `NORMAL`, `LATE` and `LAST`. They map from `EventPriority`: `LOWEST` is `FIRST`,
+  `LOW` is `EARLY`, `NORMAL` is `NORMAL`, `HIGH` is `LATE` and `HIGHEST` is `LAST`.
+- `player.server_change` fires when a player moves to another backend, so it plays the part of `ServerSwitchEvent` with a
+  `getFrom()`. The first backend is reported by `player.join`.
+- **A filter is an option**: `on("player.join", { server = "lobby" }, fn)` replaces the `if` that checks the backend.
+- **Events are observations.** In BungeeCord, `setCancelled(true)` on a `ChatEvent`, `setTarget` on a `ServerConnectEvent` or
+  a changed `ServerPing` alters what the proxy does. In Basalt Proxy a handler cannot cancel or change any event.
+- `player.login` carries only `player_name` and `player_uuid`: the player has no `server` yet and is not in
+  `players.online()`.
+
+## Players and servers
+
+```java
+ProxiedPlayer p = ProxyServer.getInstance().getPlayer("Steve");
+if (p != null) {
+    p.sendMessage(new TextComponent(ChatColor.GREEN + "Hello"));
+    p.connect(ProxyServer.getInstance().getServerInfo("lobby"));
+}
+
+for (ProxiedPlayer who : ProxyServer.getInstance().getPlayers()) { ... }
+int online = ProxyServer.getInstance().getOnlineCount();
+```
+
+```lua
+local p = players.by_name("Steve")
+if p then
+    p:send("<green>Hello")
+    p:connect("lobby")
+end
+
+for _, who in ipairs(players.online()) do ... end
+local online = players.count()
+```
+
+A lookup returns `nil` for a player who is not online, just as Bungee returns `null`. A server is its name from
+`backends.toml`: `servers.list()` returns the names and `servers.exists(name)` checks one, where Bungee hands you a
+`ServerInfo`. `player:connect(name)` returns `true` when the move was accepted and `false` otherwise, for example when the
+backend does not exist. A player table is a snapshot, so `player.server` does not follow later moves.
+
+| BungeeCord | Lua |
+|---|---|
+| `player.getName()` | `player.name` |
+| `player.getUniqueId()` | `player.uuid`, as text |
+| `player.getServer().getInfo().getName()` | `player.server` |
+| `player.sendMessage(...)` | `player:send(text, args)` |
+| `player.disconnect(...)` | `player:kick(reason)` |
+| `ProxyServer.getInstance().broadcast(...)` | `broadcast(text, args)` |
+| `player.connect(serverInfo)` | `player:connect(name)` |
+| `getServers().keySet()` | `servers.list()` |
+
+See [Plugin API](/docs/proxy/plugin-api#players).
+
+## Commands
+
+```java
+public final class CoinsCommand extends Command {
+    public CoinsCommand() {
+        super("coins", "shop.top");
+    }
+
+    @Override
+    public void execute(CommandSender sender, String[] args) {
+        if (args.length != 2 || !args[0].equals("top")) {
+            sender.sendMessage(new TextComponent("Usage: /coins top <limit>"));
+            return;
+        }
+        int limit;
+        try {
+            limit = Integer.parseInt(args[1]);
+        } catch (NumberFormatException ex) {
+            sender.sendMessage(new TextComponent("Not a number"));
+            return;
+        }
+        // ...
+    }
+}
+
+// in onEnable
+getProxy().getPluginManager().registerCommand(this, new CoinsCommand());
+```
+
+```lua
+cmd("coins top [limit: int 1..25]", function(src, limit)
+    src:send("Top {limit}", { limit = limit or 10 })
+end, { permission = "shop.top" })
+```
+
+The spec declares the arguments, their types and their ranges, so you stop splitting and parsing `args` by hand. The
+`Usage:` reply and the tab completion come from it, and 1.13 and later clients complete it from the types and ranges. The
+same command works from the console, where `src.is_console` is `true`, in place of `sender instanceof ProxiedPlayer`. The
+spec syntax is in [Plugin API](/docs/proxy/plugin-api#commands).
+
+<x-docs.callout type="note" title="Permissions are a short list">
+BungeeCord reads groups and permissions from its own `config.yml` or a plugin. The proxy has no groups: a command with a
+`permission` can be run by the console and by the players in `operators` in `config/plugins.toml`, and a command without
+one by everybody. The permission string is a label for the plugin author, and `hasPermission` has no equivalent. Finer
+permissions belong on the backend, where they are checked by the server.
+</x-docs.callout>
+
+## Scheduler
+
+```java
+getProxy().getScheduler().schedule(this, () -> player.sendMessage(new TextComponent("Boom")), 2, TimeUnit.SECONDS);
+
+ScheduledTask task = getProxy().getScheduler().schedule(this, this::announce, 1, 1, TimeUnit.MINUTES);
+task.cancel();
+```
+
+```lua
+later(40, function() player:send("Boom") end)
+
+local task = every(20 * 60, announce)
+task:cancel()
+
+-- pausing in the middle of a handler
+on("player.join", function(e)
+    wait(40)
+    e.player:send("<gray>Two seconds after joining.")
+end)
+```
+
+Time is in ticks of 50 ms, 20 to a second, instead of a `TimeUnit`. `every(period, fn)` runs the first time after one
+period, as the Bungee call with a delay and a period does, and `every(delay, period, fn)` sets the first run apart.
+`wait` pauses the handler that calls it while the plugin thread serves everyone else, so a delay is a line of code and not
+a second callback. It works in handlers, commands, timer callbacks and `plugin.enable`, and not at the top of the script.
+See [Plugin API](/docs/proxy/plugin-api#time).
+
+## Configuration and messages
+
+```java
+File file = new File(getDataFolder(), "config.yml");
+if (!file.exists()) {
+    Files.copy(getResourceAsStream("config.yml"), file.toPath());
+}
+Configuration config = ConfigurationProvider.getProvider(YamlConfiguration.class).load(file);
+String lobby = config.getString("lobby", "lobby");
+```
+
+```toml
+# resources/config.toml
+lobby = "lobby"
+max-players = 100
+```
+
+```lua
+local lobby = config.lobby or "lobby"
+local limit = config.max_players          -- a key with a dash also works with an underscore
+```
+
+Nothing to copy or load: `resources/config.toml` is copied on first load, never overwritten afterwards, and read as the
+`config` table when the plugin loads. Messages go in `resources/lang/en_us.toml` and are used by key:
+
+```toml
+welcome = "Welcome back, {name}. Visit number {visits}."
+```
+
+```java
+player.sendMessage(new TextComponent(ChatColor.GREEN + "Welcome back, " + player.getName()));
+```
+
+```lua
+e.player:send("@welcome", { name = e.player_name, visits = 3 })
+```
+
+`@key` looks the text up and `{name}` fills it from the table. Colours are tags, `<green>` and `<bold>`, in place of
+`ChatColor` and `§`.
+
+## Saving data
+
+| BungeeCord | Lua |
+|---|---|
+| A `Configuration` saved to a YAML file | `store.set(key, value)`, saved at once |
+| A file or table keyed by UUID | `player.data.visits = 5`, per player and plugin |
+| A field that must not survive | A local variable at the top of the file |
+
+```toml
+# plugin.toml
+[capabilities]
+storage = true
+players_data = true
+```
+
+```lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.visits = (d.visits or 0) + 1
+end)
+```
+
+Both need their capability in the manifest, hold strings, numbers and booleans, and live in the proxy's own SQLite file. See
+[Plugin API](/docs/proxy/plugin-api#storage).
+
+## Running a command
+
+`getPluginManager().dispatchCommand(getProxy().getConsole(), line)` becomes `run(line)`. It needs `commands = true` in the
+manifest plus the operator's grant, and it reaches only the commands that plugins registered. The proxy's own commands,
+such as `send` and `reload`, are not reachable.
+
+## Java habits and their Lua form
+
+| Java | Lua |
+|---|---|
+| A class with fields and methods | A table with fields and functions, see [methods](/docs/proxy/lua-introduction#methods-and-the-colon) |
+| `null` | `nil` |
+| `List<T>`, `Map<K, V>` | One table, with `ipairs` or `pairs` |
+| `enum` | A string such as `"late"`, or a table of constants |
+| `try`, `catch` | `pcall`, and only when the failure cannot be predicted |
+| `ProxyServer.getInstance()` | Nothing: the globals are already there |
+| `synchronized`, executors | Nothing: plugins share one thread and run one task at a time |
+| Indexes from 0 | Indexes from 1 |
+
+## What to know before you port
+
+- **No cancelling, no rewriting.** Plugins that block chat, redirect `ServerConnectEvent` or fill in `ServerPing` do not
+  port.
+- **No plugin messaging channels** from a plugin. Backends that need to move players use the BungeeCord channel, which the
+  operator enables per backend with `bungee-messages`, see
+  [Backends and routing](/docs/proxy/backends-and-routing#bungeecord-messages).
+- **Handlers must be short.** A handler that runs out of its instruction budget disables its plugin until the next
+  `reload`. Spread long work with `wait`.
+- **A plugin that keeps failing is switched off** and the proxy keeps running.
+- **Plain source only.** The proxy loads the Lua source from the package, not bytecode.
+
+The sandbox and its limits are in [Plugins](/docs/proxy/plugins#the-sandbox).
+
+## A whole plugin, both ways
+
+A visit counter that greets players and a `/lobby` command.
+
+```java
+public final class Visits extends Plugin implements Listener {
+    private final Map<UUID, Integer> counts = new ConcurrentHashMap<>();
+
+    @Override
+    public void onEnable() {
+        getProxy().getPluginManager().registerListener(this, this);
+        getProxy().getPluginManager().registerCommand(this, new Command("lobby") {
+            @Override
+            public void execute(CommandSender sender, String[] args) {
+                if (sender instanceof ProxiedPlayer p) {
+                    p.connect(getProxy().getServerInfo("lobby"));
+                }
+            }
+        });
+    }
+
+    @EventHandler
+    public void onJoin(PostLoginEvent event) {
+        ProxiedPlayer p = event.getPlayer();
+        int n = counts.merge(p.getUniqueId(), 1, Integer::sum);
+        p.sendMessage(new TextComponent(ChatColor.GREEN + "Visit number " + n));
+    }
+}
+```
+
+```toml
+# plugin.toml
+id = "visits"
+version = "1.0.0"
+api = 1
+
+[capabilities]
+players_data = true
+```
+
+```lua
+-- src/main.lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.visits = (d.visits or 0) + 1
+    e.player:send("<green>Visit number {n}", { n = d.visits })
+end)
+
+cmd("lobby", function(src)
+    if not src.is_console then
+        src:connect("lobby")
+    end
+end, { permission = "" })
+```
+
+The Lua version also keeps the count across restarts, which the Java one does not without more code. A bigger plugin built
+step by step is in the [Worked example](/docs/proxy/plugin-example).
+
+## Where to go next
+
+- [Plugins](/docs/proxy/plugins): the package, the manifest and the limits.
+- [Plugin API](/docs/proxy/plugin-api) and [Plugin events](/docs/proxy/plugin-events).
+- [Worked example](/docs/proxy/plugin-example): a complete plugin.

@@ -1,25 +1,29 @@
 ---
-title: Coming from Java?
-description: How what you do in a Velocity or BungeeCord plugin maps to a Lua plugin on Basalt Proxy, side by side.
+title: Coming from Java? (Velocity)
+description: How what you do in a Velocity plugin maps to a Lua plugin on Basalt Proxy, side by side.
 group: Learn Lua
 ---
 
-If you have written plugins for Velocity or BungeeCord, you know what a proxy plugin does: watch players come and go,
-move them between servers, add commands and keep a little data. This page shows how each of those is written in Lua on
-Basalt Proxy. Lua itself is covered in [Introduction to Lua](/docs/proxy/lua-introduction).
+This page is for people who have written Java plugins for Velocity. If you have not written plugins before, start with
+[Introduction to Lua](/docs/proxy/lua-introduction) and [Plugins](/docs/proxy/plugins) instead.
+
+If you have, you already know what a proxy plugin does: watch players come and go, move them
+between servers, add commands and keep a little data. This page shows how each of those is written in Lua on Basalt Proxy.
+Lua itself is covered in [Introduction to Lua](/docs/proxy/lua-introduction). Coming from BungeeCord instead? See
+[Coming from Java? (BungeeCord)](/docs/proxy/coming-from-bungeecord).
 
 ## What changes
 
-| In a Java proxy plugin | On Basalt Proxy |
+| In a Velocity plugin | On Basalt Proxy |
 |---|---|
-| Java compiled to a jar with Maven or Gradle | Lua source in a folder, zipped into a `.bppkg` with `kiln pack --target proxy` |
-| `@Plugin` annotation, or `bungee.yml` | `plugin.toml` |
-| A main class | A `src/main.lua` that runs when the plugin loads |
-| Event classes and listener methods | Event names (`player.join`) and handler functions |
-| `ProxiedPlayer` or `Player` objects | Player tables with `name`, `uuid`, `server`, and methods called with a colon |
-| Adventure components or `TextComponent` | [MiniMessage](/docs/proxy/plugin-api#text) strings |
+| Java compiled to a jar with Gradle or Maven | Lua source in a folder, zipped into a `.bppkg` with `kiln pack --target proxy` |
+| `@Plugin` annotation | `plugin.toml` |
+| A main class with `@@Inject` | A `src/main.lua` that runs when the plugin loads. Nothing to inject |
+| `@Subscribe` methods on event classes | `on("event.name", handler)` |
+| `Player` objects | Player tables with `name`, `uuid`, `server`, and methods called with a colon |
+| Adventure `Component` | [MiniMessage](/docs/proxy/plugin-api#text) strings, the format Adventure users already know |
 | Restart the proxy to test | `reload` in the console |
-| Threads and executors | One plugin thread, and `wait` to pause |
+| The scheduler and executors | `later`, `every` and `wait` on one plugin thread |
 
 ## The project
 
@@ -54,30 +58,34 @@ on("plugin.enable", function()
 end)
 ```
 
-There is nothing to inject. `log`, `players`, `servers`, `config` and the rest are globals. The data folder is created for
-you and `resources/` is copied into it on first load, see [Plugins](/docs/proxy/plugins#configuration-and-text-resources).
-Plugins are off by default: the operator turns them on in `config/plugins.toml`.
+`log`, `players`, `servers`, `config` and the rest are globals, so there is no `ProxyServer` to hold. The data folder is
+created for you, and `resources/` is copied into it on first load, see
+[Plugins](/docs/proxy/plugins#configuration-and-text-resources). Plugins are off by default: the operator turns them on in
+`config/plugins.toml`. Dependencies go in `[depends]` and `[soft-depends]` of the manifest, like `dependencies` in
+`@Plugin`.
 
 ## Events
 
-| Java (Velocity) | Java (BungeeCord) | Lua |
-|---|---|---|
-| `ProxyInitializeEvent` | `onEnable()` | `plugin.enable` |
-| `ProxyShutdownEvent` | `onDisable()` | `plugin.disable` |
-| `LoginEvent` | `LoginEvent` | `player.login` |
-| `PostLoginEvent` | `PostLoginEvent` | `player.join` |
-| `ServerConnectedEvent` | `ServerConnectedEvent` | `player.server_change` |
-| `PlayerChatEvent` | `ChatEvent` | `player.chat` |
-| `KickedFromServerEvent` | `ServerKickEvent` | `player.kick` |
-| `DisconnectEvent` | `PlayerDisconnectEvent` | `player.quit` |
-| `ProxyPingEvent` | `ProxyPingEvent` | `server.ping` |
+| Velocity event | Lua event |
+|---|---|
+| `ProxyInitializeEvent` | `plugin.enable` |
+| `ProxyShutdownEvent` | `plugin.disable` |
+| `LoginEvent` | `player.login` |
+| `PostLoginEvent` | `player.join` |
+| `ServerPostConnectEvent` | `player.server_change` |
+| `PlayerChatEvent` | `player.chat` |
+| `KickedFromServerEvent` | `player.kick` |
+| `DisconnectEvent` | `player.quit` |
+| `ProxyPingEvent` | `server.ping` |
 
 ```java
 @Subscribe(order = PostOrder.LATE)
-public void onSwitch(ServerConnectedEvent event) {
-    event.getPreviousServer().ifPresent(prev ->
-        logger.info(event.getPlayer().getUsername() + " moved from "
-            + prev.getServerInfo().getName() + " to " + event.getServer().getServerInfo().getName()));
+public void onSwitch(ServerPostConnectEvent event) {
+    RegisteredServer previous = event.getPreviousServer();
+    if (previous != null) {
+        logger.info(event.getPlayer().getUsername() + " moved from " + previous.getServerInfo().getName()
+            + " to " + event.getPlayer().getCurrentServer().get().getServerInfo().getName());
+    }
 }
 ```
 
@@ -87,24 +95,24 @@ on("player.server_change", { priority = "late" }, function(e)
 end)
 ```
 
-- The handler receives one table, `e`. Players come as `e.player` plus the flat fields `e.player_name`, `e.player_uuid` and
-  `e.server`. Every event is in [Plugin events](/docs/proxy/plugin-events).
-- Priorities are `FIRST`, `EARLY`, `NORMAL`, `LATE` and `LAST`, the same five as Velocity's `PostOrder`. BungeeCord's
-  `LOWEST` to `HIGHEST` map onto them in that order.
+- The handler receives one table, `e`. The player is `e.player`, with the flat fields `e.player_name`, `e.player_uuid` and
+  `e.server` next to it. Every event is in [Plugin events](/docs/proxy/plugin-events).
+- Priorities are `FIRST`, `EARLY`, `NORMAL`, `LATE` and `LAST`, the same five as `PostOrder`.
+- `player.server_change` fires when a player moves to another backend, so it plays the part of `ServerPostConnectEvent` with
+  a previous server. The first backend is reported by `player.join`.
 - **A filter is an option**: `on("player.join", { server = "lobby" }, fn)` replaces the `if` that checks the backend.
-- **Events are observations.** A handler cannot cancel an event or change its result, and nothing it returns alters what
-  the proxy does. There is no Lua equivalent of rewriting a chat line, choosing the server a
-  player connects to or editing the ping answer.
+- **Events are observations.** Velocity lets a handler deny a login, change the server a player connects to, redirect a kick
+  or edit the ping. In Basalt Proxy a handler cannot cancel or change any event, and nothing it returns alters what the
+  proxy does.
 - `player.login` carries only `player_name` and `player_uuid`: the player has no `server` yet and is not in
   `players.online()`.
 
 ## Players and servers
 
 ```java
-Optional<Player> target = server.getPlayer("Steve");
-target.ifPresent(p -> {
+server.getPlayer("Steve").ifPresent(p -> {
     p.sendMessage(MiniMessage.miniMessage().deserialize("<green>Hello"));
-    p.createConnectionRequest(server.getServer("lobby").get()).fly();
+    server.getServer("lobby").ifPresent(s -> p.createConnectionRequest(s).fly());
 });
 
 for (Player p : server.getAllPlayers()) { ... }
@@ -122,19 +130,20 @@ for _, who in ipairs(players.online()) do ... end
 local online = players.count()
 ```
 
-`players.by_name` returns `nil` for a player who is not online, where Java returns an empty `Optional`. A server is its
-name from `backends.toml`: `servers.list()` returns the names and `servers.exists(name)` checks one. `player:connect(name)`
-returns `true` when the move was accepted. A player table is a snapshot, so `player.server` does not follow later moves.
+An `Optional` is a value or `nil`. A server is its name from `backends.toml`: `servers.list()` returns the names and
+`servers.exists(name)` checks one. `player:connect(name)` returns `true` when the move was accepted and `false` otherwise,
+for example when the backend does not exist. A player table is a snapshot, so `player.server` does not follow later moves.
 
-| Java | Lua |
+| Velocity | Lua |
 |---|---|
-| `player.getUsername()` or `getName()` | `player.name` |
+| `player.getUsername()` | `player.name` |
 | `player.getUniqueId()` | `player.uuid`, as text |
 | `player.getCurrentServer()` | `player.server` |
-| `player.sendMessage(...)` | `player:send(text, args)` |
-| `player.disconnect(Component)` | `player:kick(reason)` |
-| `server.broadcast(...)` | `broadcast(text, args)` |
+| `player.sendMessage(component)` | `player:send(text, args)` |
+| `player.disconnect(component)` | `player:kick(reason)` |
+| `server.sendMessage(component)` | `broadcast(text, args)` |
 | `player.createConnectionRequest(target).fly()` | `player:connect(name)` |
+| `server.getAllServers()` | `servers.list()` |
 
 See [Plugin API](/docs/proxy/plugin-api#players).
 
@@ -165,14 +174,15 @@ cmd("coins top [limit: int 1..25]", function(src, limit)
 end, { permission = "shop.top" })
 ```
 
-The spec declares the arguments and their types and ranges. Parsing, the `Usage:` reply and the completion that 1.13 and
-later clients show come from it, so the handler only receives values. The same command works from the console, where
-`src.is_console` is `true`. The spec syntax is in [Plugin API](/docs/proxy/plugin-api#commands).
+The spec declares the arguments, their types and their ranges, like a Brigadier command does. The `Usage:` reply and the
+completion that 1.13 and later clients show come from it, so the handler only receives values. The same command works
+from the console, where `src.is_console` is `true`. The spec syntax is in [Plugin API](/docs/proxy/plugin-api#commands).
 
 <x-docs.callout type="note" title="Permissions are a short list">
-The proxy has no groups. A command with a `permission` can be run by the console and by the players in `operators` in
-`config/plugins.toml`, and a command without one by everybody. The permission string is a label for the plugin author.
-Finer permissions belong on the backend, where they are checked by the server.
+Velocity asks a permission provider, usually a plugin. The proxy has no groups: a command with a `permission` can be run
+by the console and by the players in `operators` in `config/plugins.toml`, and a command without one by everybody. The
+permission string is a label for the plugin author, and `player.hasPermission` has no equivalent. Finer permissions belong
+on the backend, where they are checked by the server.
 </x-docs.callout>
 
 ## Scheduler
@@ -201,15 +211,16 @@ on("player.join", function(e)
 end)
 ```
 
-Time is in ticks of 50 ms, 20 to a second, instead of `TimeUnit`. `wait` pauses the handler that calls it while the plugin
-thread serves everyone else, so a delay is a line of code and not a second callback. It works in handlers, commands, timer
-callbacks and `plugin.enable`, and not at the top of the script. See [Plugin API](/docs/proxy/plugin-api#time).
+Time is in ticks of 50 ms, 20 to a second, instead of a `TimeUnit`. `wait` pauses the handler that calls it while the
+plugin thread serves everyone else, so a delay is a line of code and not a second callback. It works in handlers,
+commands, timer callbacks and `plugin.enable`, and not at the top of the script. See
+[Plugin API](/docs/proxy/plugin-api#time).
 
 ## Configuration and messages
 
 ```java
 Path file = dataDirectory.resolve("config.toml");
-// load it, parse it, fall back to defaults...
+// load it with a TOML or YAML library, fall back to defaults...
 String lobby = config.getString("lobby", "lobby");
 ```
 
@@ -235,14 +246,14 @@ welcome = "Welcome back, {name}. Visit number {visits}."
 e.player:send("@welcome", { name = e.player_name, visits = 3 })
 ```
 
-`@key` looks the text up and `{name}` fills it from the table. Legacy `§` codes are not part of the model: write
-`<green>` and `<bold>`.
+`@key` looks the text up and `{name}` fills it from the table. Text is MiniMessage, the same format you would pass to
+`MiniMessage.miniMessage().deserialize`.
 
 ## Saving data
 
-| Java | Lua |
+| Velocity | Lua |
 |---|---|
-| A map saved to a file on disable | `store.set(key, value)`, saved at once |
+| A map saved to a file on shutdown | `store.set(key, value)`, saved at once |
 | A database table keyed by UUID | `player.data.visits = 5`, per player and plugin |
 | A cache that must not survive | A local variable at the top of the file |
 
@@ -265,8 +276,9 @@ Both need their capability in the manifest, hold strings, numbers and booleans, 
 
 ## Running a command
 
-`run(line)` is the console typing a command, and it needs `commands = true` in the manifest plus the operator's grant. It
-reaches the commands that plugins registered. The proxy's own commands, such as `send` and `reload`, are not reachable.
+`run(line)` is the console typing a command. It needs `commands = true` in the manifest plus the operator's grant, and it
+reaches only the commands that plugins registered. The proxy's own commands, such as `send` and `reload`, are not
+reachable.
 
 ## Java habits and their Lua form
 
@@ -283,13 +295,14 @@ reaches the commands that plugins registered. The proxy's own commands, such as 
 
 ## What to know before you port
 
-- **No bytecode and no outside libraries.** The proxy loads the plain Lua source from the package, and a plugin cannot
-  load code from anywhere else.
-- **No plugin messaging.** Backends that need to move players use the BungeeCord channel, which the operator enables per
-  backend with `bungee-messages`, see [Backends and routing](/docs/proxy/backends-and-routing#bungeecord-messages).
+- **No cancelling, no rewriting.** Plugins that deny logins, pick the initial server or edit pings do not port.
+- **No plugin messaging channels** from a plugin. Backends that need to move players use the BungeeCord channel, which the
+  operator enables per backend with `bungee-messages`, see
+  [Backends and routing](/docs/proxy/backends-and-routing#bungeecord-messages).
 - **Handlers must be short.** A handler that runs out of its instruction budget disables its plugin until the next
   `reload`. Spread long work with `wait`.
 - **A plugin that keeps failing is switched off** and the proxy keeps running.
+- **Plain source only.** The proxy loads the Lua source from the package, not bytecode.
 
 The sandbox and its limits are in [Plugins](/docs/proxy/plugins#the-sandbox).
 
