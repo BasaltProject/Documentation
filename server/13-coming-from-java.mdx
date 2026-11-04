@@ -1,0 +1,493 @@
+---
+title: Coming from Java?
+description: How what you do in a Bukkit or Paper plugin maps to a Lua plugin on Basalt Server, side by side.
+group: Learn Lua
+---
+
+If you have written Bukkit, Spigot or Paper plugins, you already know what a plugin does. This page shows how each thing
+you do in Java is written in Lua on Basalt Server. Lua itself is covered in [Introduction to Lua](/docs/server/lua-introduction),
+and you can skim that first if the syntax is new.
+
+<x-docs.callout type="tip" title="You do not have to rewrite anything today">
+Bukkit and Paper jars run on Basalt Server as they are, see [Bukkit plugins](/docs/server/bukkit-plugins). Move plugins to
+Lua one at a time, when it is worth it.
+</x-docs.callout>
+
+## What changes
+
+| In a Bukkit plugin | On Basalt |
+|---|---|
+| Java, compiled to a jar with Maven or Gradle | Lua source in a folder, no build step. `kiln pack` makes a `.bspkg` if you want one file |
+| `plugin.yml` | `plugin.toml` |
+| A main class that extends `JavaPlugin` | A `src/main.lua` that runs when the plugin loads |
+| Restart or a reload plugin to test | `/plugins reload <id>` |
+| Enums (`Material.DIAMOND`) and classes | Namespaced id strings (`"minecraft:diamond"`) and plain tables |
+| Async tasks, callbacks and threads | `wait()` in the middle of a function. No threads to manage |
+| Reflection and NMS for what the API lacks | A larger API: packets, components, block entities, NBT as text |
+| `§` and `ChatColor`, or Adventure components | [MiniMessage](/docs/server/config-and-lang#text) strings |
+| YAML config | TOML config |
+
+## The project
+
+```yaml
+# plugin.yml
+name: Greeter
+version: 0.1.0
+main: org.example.greeter.GreeterPlugin
+api-version: "1.21"
+authors: [Alex]
+depend: [Economy]
+commands:
+  hello:
+    description: Say hello
+```
+
+```toml
+# plugin.toml
+id = "greeter"
+name = "Greeter"
+version = "0.1.0"
+authors = ["Alex"]
+api = 1
+main = "src/main.lua"
+
+[depends]
+economy = ">=1.0"
+```
+
+Commands are not declared in the manifest: they are registered from code with `cmd`. Dependencies carry a version
+requirement. The full list of keys is in [Manifest and layout](/docs/server/plugin-manifest).
+
+```
+greeter/
+  plugin.toml
+  src/main.lua              the entry point, require("name") loads src/name.lua
+  resources/config.toml     what saveDefaultConfig() copies
+  resources/lang/en_us.toml translated messages
+```
+
+## Enable and disable
+
+```java
+public final class GreeterPlugin extends JavaPlugin {
+    @Override public void onEnable() {
+        saveDefaultConfig();
+        getServer().getPluginManager().registerEvents(new JoinListener(), this);
+        getLogger().info("Ready");
+    }
+    @Override public void onDisable() {
+        getLogger().info("Bye");
+    }
+}
+```
+
+```lua
+-- src/main.lua
+-- the code at the top of the file runs once, when the plugin loads: register things here
+on("player.join", function(e) ... end)
+
+on("plugin.enable", function()      -- the other plugins have loaded now
+    log.info("Ready")
+end)
+
+on("plugin.disable", function()
+    log.info("Bye")
+end)
+```
+
+There is no listener class to register: `on` registers a function. Everything a plugin registers is released when it
+unloads, so there is no `HandlerList.unregisterAll`. See [Manifest and layout](/docs/server/plugin-manifest#load-enable-and-disable).
+
+## Events
+
+```java
+public final class JoinListener implements Listener {
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onBreak(BlockBreakEvent event) {
+        if (event.getBlock().getType() == Material.BEDROCK) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage(Component.text("Not that one.", NamedTextColor.RED));
+        }
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        event.joinMessage(MiniMessage.miniMessage()
+            .deserialize("<yellow>" + event.getPlayer().getName() + " is here"));
+    }
+}
+```
+
+```lua
+on("block.break", { priority = "late" }, function(e)
+    if e.block == "minecraft:bedrock" then
+        e:cancel("<red>Not that one.")
+    end
+end)
+
+on("player.join", function(e)
+    e.message = "<yellow>" .. e.player.name .. " is here"
+end)
+```
+
+- The event name replaces the class: `BlockBreakEvent` is `block.break`, `PlayerJoinEvent` is `player.join`,
+  `EntityDamageEvent` is `entity.damage`. The names and fields are in the events reference:
+  [player](/docs/server/events-player), [world and server](/docs/server/events-world),
+  [entities and items](/docs/server/events-entities).
+- Getters become fields: `e.block`, `e.x`, `e.player`. A setter is an assignment to an editable field, marked with `*` in
+  the reference.
+- Values are ids and numbers, not objects. `e.block` is `"minecraft:bedrock"`, and `e.x`, `e.y`, `e.z` are the position.
+- `e:cancel(message)` replaces `setCancelled(true)` and can tell the player why in the same call.
+- **Priorities** map `LOWEST` to `"first"`, `LOW` to `"early"`, `NORMAL` to `"normal"`, `HIGH` to `"late"` and `HIGHEST`
+  to `"last"`. `MONITOR` is `watch`, which runs after every `on` handler and cannot change anything.
+- **Cancelled events are skipped by default**, as if every handler had `ignoreCancelled = true`. Pass `cancelled = true` to
+  see them.
+- **A filter is an option.** `on("block.break", { world = "arena" }, fn)` replaces the `if` that checks the world.
+- Do not keep the event table past the handler. Copy what you need into locals.
+
+See [Events](/docs/server/plugin-events).
+
+## Commands
+
+```java
+getCommand("coins").setExecutor((sender, command, label, args) -> {
+    if (!(sender instanceof Player player)) {
+        sender.sendMessage("Players only");
+        return true;
+    }
+    if (args.length != 2 || !args[0].equals("give")) {
+        return false;
+    }
+    int amount;
+    try {
+        amount = Integer.parseInt(args[1]);
+    } catch (NumberFormatException ex) {
+        return false;
+    }
+    economy.give(player, amount);
+    player.sendMessage("Gave " + amount);
+    return true;
+});
+```
+
+```lua
+cmd("coins give <amount: int 1..1000>", function(src, amount)
+    if src.is_console then
+        src:send("Players only")
+        return
+    end
+    local p = players.by_name(src.name)
+    economy.give(p, amount)
+    src:send("Gave {amount}", { amount = amount })
+end, { permission = "shop.use" })
+```
+
+The spec declares the arguments and their types, so the parsing, the usage message and the tab completion come with it, and
+the client sees the same tree. Subcommands are more `cmd` calls with the same first word. `src` is not a player: look the
+player up with `players.by_name(src.name)`. See [Plugin commands](/docs/server/plugin-commands).
+
+By default a command needs `basalt.plugin.<id>.<name>`, which only operators hold. `permission = ""` opens it to everyone
+and `permission = "some.node"` asks for that node.
+
+## Scheduler
+
+```java
+Bukkit.getScheduler().runTaskLater(this, () -> player.sendMessage("Boom"), 40L);
+
+BukkitTask task = Bukkit.getScheduler().runTaskTimer(this, () -> Bukkit.broadcast(Component.text("tick")), 0L, 20L);
+task.cancel();
+
+Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+    String data = slowLookup();
+    Bukkit.getScheduler().runTask(this, () -> player.sendMessage(data));
+});
+```
+
+```lua
+later(40, function() player:send("Boom") end)
+
+local task = every(0, 20, function() broadcast("tick") end)
+task.cancel()
+
+-- a countdown is a loop that waits, not a chain of tasks
+cmd("countdown", function(src)
+    for i = 3, 1, -1 do
+        broadcast("<yellow>" .. i)
+        for _ = 1, 20 do wait() end
+    end
+    broadcast("<green>Go!")
+end)
+```
+
+Time is always in ticks. `wait()` pauses the function until the next tick and the server carries on, so the code that
+would be a pyramid of nested runnables is a loop. There is no async version of anything and no thread to get back to: you
+write straight-line code. See [Scheduler and coroutines](/docs/server/scheduler), including [where code may
+wait](/docs/server/scheduler#where-code-may-wait).
+
+## Players
+
+```java
+Player p = Bukkit.getPlayerExact("Steve");
+if (p == null) return;
+p.setHealth(20.0);
+p.setGameMode(GameMode.CREATIVE);
+p.teleport(new Location(Bukkit.getWorld("world"), 0, 64, 0));
+p.sendMessage(Component.text("Hello"));
+p.sendActionBar(Component.text("Hi"));
+p.showTitle(Title.title(Component.text("Title"), Component.text("Sub")));
+p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, 200, 1));
+if (p.hasPermission("shop.use")) { ... }
+for (Player online : Bukkit.getOnlinePlayers()) { ... }
+```
+
+```lua
+local p = players.by_name("Steve")
+if not p then return end
+p.health = 20
+p.gamemode = "creative"
+p:teleport("world", 0, 64, 0)
+p:send("Hello")
+p:action_bar("Hi")
+p:title("Title", "Sub")
+p:effect("minecraft:speed", 10, 2)       -- seconds, then the level counting from 1
+if p:may("shop.use") then ... end
+for _, online in ipairs(players.online()) do ... end
+```
+
+Properties are read and written with a dot, operations are methods with a colon. A lookup returns `nil` for a player who is
+not online. The whole surface is in [Players from Lua](/docs/server/players).
+
+Two differences to keep in mind: durations are in seconds for effects and ticks everywhere else, and the player object
+stays valid after they leave, with `p.online` set to `false`.
+
+## Worlds, blocks and entities
+
+```java
+World world = Bukkit.getWorld("world");
+Block block = world.getBlockAt(10, 64, 10);
+if (block.getType() == Material.STONE) {
+    block.setType(Material.GOLD_BLOCK);
+}
+world.spawnEntity(new Location(world, 0, 65, 0), EntityType.ZOMBIE);
+world.createExplosion(0, 65, 0, 3f, false, false);
+world.setTime(0);
+world.setStorm(false);
+```
+
+```lua
+local world = worlds.by_name("world")
+local id = world:block(10, 64, 10)
+if id == "minecraft:stone" then
+    world:set_block(10, 64, 10, "minecraft:gold_block")
+end
+world:spawn("minecraft:zombie", 0, 65, 0)
+world:explode(0, 65, 0, 3, false, false)
+world:set_time(0)
+world:set_weather(false)
+```
+
+A `Location` is a table made by `pos(world, x, y, z)`, and a position can be passed anywhere that takes coordinates:
+`world:set_block(p.pos:offset(0, -1, 0), "minecraft:glowstone")`. Block states are text,
+`"minecraft:oak_stairs[facing=east,half=top]"`. Bulk edits, sections and biomes are in the [world API](/docs/server/world-api),
+and entities in [Entities](/docs/server/entities).
+
+## Items and inventories
+
+```java
+ItemStack sword = new ItemStack(Material.DIAMOND_SWORD);
+ItemMeta meta = sword.getItemMeta();
+meta.displayName(MiniMessage.miniMessage().deserialize("<gold>Excalibur"));
+meta.lore(List.of(Component.text("Legendary")));
+meta.addEnchant(Enchantment.SHARPNESS, 5, true);
+sword.setItemMeta(meta);
+player.getInventory().addItem(sword);
+```
+
+```lua
+p.inventory:add({
+    id = "minecraft:diamond_sword",
+    name = "<gold>Excalibur",
+    lore = { "<gray>Legendary" },
+    enchantments = { ["minecraft:sharpness"] = 5 },
+})
+```
+
+An item is a table. There is no `ItemMeta`: name, lore, damage and enchantments are fields, and every other vanilla data
+component goes in `components`. See [Items and recipes](/docs/server/items-and-recipes).
+
+## Inventory GUIs
+
+```java
+Inventory gui = Bukkit.createInventory(null, 27, Component.text("Shop"));
+gui.setItem(11, new ItemStack(Material.DIAMOND));
+player.openInventory(gui);
+
+@EventHandler
+public void onClick(InventoryClickEvent event) {
+    if (!event.getView().title().equals(Component.text("Shop"))) return;
+    event.setCancelled(true);
+    if (event.getSlot() == 11) buy((Player) event.getWhoClicked());
+}
+```
+
+```lua
+local shop = menu{ title = "Shop", rows = 3 }
+
+shop:set(11, "minecraft:diamond", function(e)
+    buy(e.player)
+end)
+
+shop:open(p)
+```
+
+A menu is made once and owns its click handling: each slot has its own handler, so none has to find out which inventory
+the click belongs to. See [Menus and HUD](/docs/server/menus-and-hud), which also covers dialog forms, the
+sidebar and the boss bar.
+
+## Configuration
+
+```java
+saveDefaultConfig();
+int bonus = getConfig().getInt("welcome-bonus", 50);
+String title = getConfig().getString("shop.title");
+```
+
+```toml
+# resources/config.toml
+welcome-bonus = 50
+
+[shop]
+title = "Coin Shop"
+```
+
+```lua
+local bonus = config.welcome_bonus or 50
+local title = config.shop.title
+```
+
+There is nothing to save or copy: `resources/config.toml` is the `config` table. A key with hyphens also works with
+underscores. `config` is read once when the plugin loads and is read only, so data that changes goes in
+[Storage](/docs/server/storage). Messages live in `resources/lang/` and are used with `@key`, see
+[Config and lang files](/docs/server/config-and-lang).
+
+## Saving data
+
+| Java | Lua |
+|---|---|
+| `PersistentDataContainer` on a player | `p.data.coins = 5`, read back as `p.data.coins` |
+| A field or a plugin data file for the whole server | `store.restarts = 3` |
+| A YAML or JSON file under the data folder | `data.json("warps")` and `data.save("warps")` |
+| Any other file under the data folder | `files.read(path)` and `files.write(path, text)` |
+| A leaderboard query | `store.top("coins", 10)` |
+
+```lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.joins = (d.joins or 0) + 1
+end)
+```
+
+Values are strings, numbers and booleans, and `nil` deletes. Nothing needs saving: writes go straight to the database. See
+[Storage](/docs/server/storage) and [Plugin data on worlds and entities](/docs/server/plugin-data).
+
+## Talking to other plugins
+
+| Java | Lua |
+|---|---|
+| `Bukkit.getServicesManager().load(Economy.class)` | `service("economy")`, which is `nil` when nobody provides it |
+| `RegisteredServiceProvider` | `service("economy", { give = ..., balance = ... })`, with the name listed under `[exports]` |
+| A shared library jar | `[exports] modules` and `require("economy.money")` |
+| Custom `Event` subclasses | `emit("arena:round_start", payload)` and `on("arena:round_start", fn)` |
+| A PlaceholderAPI expansion | `placeholder("coins", function(p) ... end)`, offered as `%<plugin id>_coins%` |
+
+See [Shared code](/docs/server/shared-code) and [Config and lang files](/docs/server/config-and-lang#placeholders).
+
+## Scoreboards, boss bars and packets
+
+| Java | Lua |
+|---|---|
+| `ScoreboardManager`, `Objective`, `Team` | `scoreboards.create()`, `scoreboards.objective_add(...)`, `scoreboards.team_add(...)`, see [Scoreboards and boss bars](/docs/server/scoreboards-and-boss-bars) |
+| `Bukkit.createBossBar` | `boss_bars.create{ ... }`, or `boss_bar{ ... }` to draw one from a function |
+| ProtocolLib or PacketEvents | The [packet API](/docs/server/packets), which the operator grants |
+| NMS and reflection | Not needed for most things: see the [world API](/docs/server/world-api) and the [events](/docs/server/events-player) first |
+
+## Java habits and their Lua form
+
+| Java | Lua |
+|---|---|
+| A class with fields and methods | A table with fields and functions, see [methods](/docs/server/lua-introduction#methods-and-the-colon) |
+| `null` | `nil`. Check it with `if not x then` |
+| `List<T>`, `Map<K, V>` | One table, as a list with `ipairs` or as a map with `pairs` |
+| `enum` | A string such as `"survival"`, or a table of constants |
+| Interfaces and generics | Not needed: a table with the right functions is enough |
+| `try`, `catch` | `pcall`, and only when the failure cannot be predicted |
+| `String.format`, `StringBuilder` | `string.format`, `..` and `table.concat` |
+| Static helper classes | A file you load with `require` |
+| `synchronized` and thread pools | Nothing: a plugin runs one turn at a time |
+| Indexes from 0 | Indexes from 1 |
+
+## What a plugin cannot do
+
+A plugin runs in a sandbox. It cannot read files outside its own data folder, start processes, load Java code or hold the
+tick for longer than its instruction budget. The reasons and the numbers are in [The sandbox](/docs/server/sandbox). The
+trade is that a broken plugin never takes the server down: its errors are logged with its name and a plugin that keeps
+failing is switched off.
+
+## A whole plugin, both ways
+
+A join message, a first-visit gift and a `/spawn` command.
+
+```java
+public final class WelcomePlugin extends JavaPlugin implements Listener {
+    private NamespacedKey visits;
+
+    @Override public void onEnable() {
+        saveDefaultConfig();
+        visits = new NamespacedKey(this, "visits");
+        getServer().getPluginManager().registerEvents(this, this);
+        getCommand("spawn").setExecutor((sender, cmd, label, args) -> {
+            if (sender instanceof Player p) {
+                p.teleport(new Location(p.getWorld(), 0, 64, 0));
+            }
+            return true;
+        });
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent e) {
+        Player p = e.getPlayer();
+        PersistentDataContainer pdc = p.getPersistentDataContainer();
+        int n = pdc.getOrDefault(visits, PersistentDataType.INTEGER, 0) + 1;
+        pdc.set(visits, PersistentDataType.INTEGER, n);
+        if (n == 1) {
+            p.getInventory().addItem(new ItemStack(Material.BREAD, getConfig().getInt("gift")));
+        }
+        p.sendMessage(MiniMessage.miniMessage().deserialize("<green>Visit number " + n));
+    }
+}
+```
+
+```lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.visits = (d.visits or 0) + 1
+    if d.visits == 1 then
+        e.player:give("minecraft:bread", config.gift)
+    end
+    e.player:send("<green>Visit number {n}", { n = d.visits })
+end)
+
+cmd("spawn", function(src)
+    local p = players.by_name(src.name)
+    if p then
+        p:teleport(p.world, 0, 64, 0)
+    end
+end, { permission = "" })
+```
+
+## Where to go next
+
+- [Plugins](/docs/server/plugins): create, run and package a plugin.
+- [Events](/docs/server/plugin-events) and the three events reference pages.
+- [Players](/docs/server/players), [worlds](/docs/server/world-basics) and [entities](/docs/server/entities).
+- [Tooling](/docs/server/tooling): Kiln and the editor extension, which check names against the API as you type.

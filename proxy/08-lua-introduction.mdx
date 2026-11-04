@@ -1,0 +1,254 @@
+---
+title: Introduction to Lua
+description: The parts of Lua 5.5 a proxy plugin author needs, with examples that run on Basalt Proxy.
+group: Learn Lua
+---
+
+Lua is a small scripting language: a few types, one data structure and functions that are values. Basalt Proxy embeds the
+official Lua 5.5, so what you learn here is plain Lua and applies to any other Lua book. This page covers what a proxy
+plugin uses. If you already write Java plugins for Velocity or BungeeCord, [Coming from Java](/docs/proxy/coming-from-java)
+maps that way of working to this one.
+
+## Run something
+
+Plugins are off until the operator enables them, see [Plugins](/docs/proxy/plugins#enabling-plugins). A plugin is a folder
+with a `plugin.toml` and a `src/main.lua`, zipped into a `.bppkg`. Every example here can go in `main.lua`. After a change,
+rebuild the package and type `reload` in the proxy console.
+
+```lua
+log.info("Hello from Lua")
+```
+
+`log.info` writes a line to the proxy log under the plugin's name. `print` does the same.
+
+## Values and variables
+
+```lua
+local name = "Steve"        -- string
+local lives = 3             -- integer
+local speed = 0.2           -- float
+local alive = true          -- boolean
+local nothing = nil         -- the absence of a value
+```
+
+- **Always write `local`.** A name assigned without it becomes a global, visible to every function of the plugin.
+- **`nil` is what you get from a missing key or a failed lookup**, such as `players.by_name("nobody")`. Only `nil` and
+  `false` are false in a condition. `0` and `""` are true.
+- `type(x)` returns `"nil"`, `"boolean"`, `"number"`, `"string"`, `"table"` or `"function"`.
+
+### Numbers and strings
+
+```lua
+log.info(7 / 2)       -- 3.5, `/` always gives a float
+log.info(7 // 2)      -- 3, integer division
+log.info(7 % 2)       -- 1
+
+local greeting = "Hello, " .. name .. "!"        -- `..` joins strings
+log.info(#greeting)                               -- 14, the length in bytes
+log.info(string.format("%s has %d lives", name, lives))
+```
+
+Text sent to players is [MiniMessage](/docs/proxy/plugin-api#text), for example `"<green>Hello"`, and takes `{name}`
+arguments from a table, so you rarely build it with `..`.
+
+### Comparison and logic
+
+```lua
+if lives ~= 0 and alive then      -- `~=` is "not equal"; `and`, `or` and `not` are words
+    log.info("still playing")
+end
+
+local lobby = config.lobby or "lobby"      -- `or` gives a default when the left side is nil
+```
+
+`and` and `or` return one of their operands, not a boolean.
+
+## Tables
+
+A table is the only data structure. It is a list, a map, an object and a module, depending on how you use it.
+
+```lua
+local staff = { "Alex", "Sam" }                    -- a list, from index 1
+log.info(staff[1])                                 -- Alex, not staff[0]
+table.insert(staff, "Robin")
+
+local limits = { lobby = 100, survival = 50 }      -- a map
+limits.lobby = limits.lobby + 10
+limits["creative"] = 20
+limits.survival = nil                              -- setting nil removes the key
+```
+
+```lua
+for i, who in ipairs(staff) do
+    log.info(i .. ": " .. who)
+end
+
+for backend, max in pairs(limits) do
+    log.info(backend .. " " .. max)
+end
+```
+
+Things that catch people out:
+
+- **Lists start at 1.**
+- **`pairs` has no guaranteed order.** Keep a list when order matters.
+- **A `nil` in the middle of a list** breaks `#` and `ipairs`. Use `table.remove`.
+- **Tables are references.** `local b = a` makes two names for one table.
+- **`#` does not count the keys of a map.**
+
+## Functions
+
+Functions are values: store them, pass them, return them.
+
+```lua
+local function visits_message(name, count)
+    return string.format("%s has joined %d times", name, count)
+end
+
+local function min_max(list)
+    local lo, hi = list[1], list[1]
+    for _, v in ipairs(list) do
+        lo = math.min(lo, v)
+        hi = math.max(hi, v)
+    end
+    return lo, hi                 -- more than one result
+end
+```
+
+A function keeps the locals around it alive, which is how a handler remembers things between calls:
+
+```lua
+local joined = 0
+
+on("player.join", function(e)
+    joined = joined + 1
+    log.info(joined .. " joins since the plugin loaded")
+end)
+```
+
+That counter is lost on `reload` and when the proxy stops. For anything that must survive, use
+[Storage](/docs/proxy/plugin-api#storage).
+
+### Methods and the colon
+
+`a:b(x)` is `a.b(a, x)`. Player tables use it:
+
+```lua
+e.player:send("<green>Hello")        -- the same as e.player.send(e.player, "<green>Hello")
+local server = e.player.server       -- a field is read with a dot
+```
+
+Forgetting the colon is the most common mistake when starting. The error usually says a string or `nil` was found where a
+player was expected.
+
+## Control flow
+
+```lua
+for i = 1, 5 do ... end               -- 1, 2, 3, 4, 5
+for i = 10, 1, -2 do ... end          -- 10, 8, 6, 4, 2
+while lives > 0 do lives = lives - 1 end
+
+for _, p in ipairs(players.online()) do
+    if p.server ~= "lobby" then goto continue end     -- Lua has no `continue`
+    p:send("You are in the lobby")
+    ::continue::
+end
+```
+
+`break` leaves a loop, `goto` jumps to a label in the same function, and `return` ends a function and must be the last
+statement of its block.
+
+## Errors
+
+`error("message")` raises an error and `pcall` catches one:
+
+```lua
+local ok, err = pcall(function()
+    players.by_name("nobody"):send("hi")      -- the lookup is nil, so this fails
+end)
+if not ok then
+    log.warn("could not send: " .. err)
+end
+```
+
+You seldom need it. An error in a handler is logged with the plugin and the line, the proxy carries on, and five failures
+in a row switch the plugin off, see [The sandbox](/docs/proxy/plugins#the-sandbox). Check for `nil` where you expect it
+instead of catching it:
+
+```lua
+local target = players.by_name("Steve")
+if not target then
+    return
+end
+```
+
+## Splitting code into files
+
+`require` loads another file of `src/` once and returns what it returns:
+
+```lua
+-- src/visits.lua
+local M = {}
+
+function M.bump(player)
+    player.data.visits = (player.data.visits or 0) + 1
+    return player.data.visits
+end
+
+return M
+```
+
+```lua
+-- src/main.lua
+local visits = require("visits")
+
+on("player.join", function(e)
+    e.player:send("<green>Visit number {n}", { n = visits.bump(e.player) })
+end)
+```
+
+`require("shop.prices")` loads `src/shop/prices.lua`. A plugin can also export modules to the plugins that depend on it,
+see [Plugins](/docs/proxy/plugins#the-package). The worked example splits a plugin this way,
+[Worked example](/docs/proxy/plugin-example).
+
+## What the proxy adds
+
+The functions above, `on`, `cmd`, `later`, `players`, `servers`, `config`, `store` and the rest, are globals the proxy
+provides next to the standard library. They are all in [Plugin API](/docs/proxy/plugin-api).
+
+```lua
+on("player.join", function(e)
+    broadcast("<yellow>{name} joined", { name = e.player_name })
+end)
+
+cmd("lobby", function(src)
+    if not src.is_console then
+        src:connect("lobby")
+    end
+end)
+
+every(20 * 60, function()
+    log.info(players.count() .. " players online")
+end)
+```
+
+Three differences from a standalone Lua program:
+
+- **The standard library is trimmed.** `io`, `debug`, `dofile`, `loadfile` and `collectgarbage` do not exist, and `os`
+  has no `execute`, `exit`, `getenv`, `remove`, `rename`, `tmpname` or `setlocale`. A plugin cannot reach files or processes
+  of the machine.
+- **Every entry into your code has an instruction budget**, so a loop that never ends is stopped and disables the plugin
+  instead of freezing the proxy.
+- **All plugins share one thread.** A handler never runs at the same time as another, and it must be short. To pause
+  without blocking everyone else, call `wait`, see [Plugin API](/docs/proxy/plugin-api#time).
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| To package, configure and load a plugin | [Plugins](/docs/proxy/plugins) |
+| To see every function a plugin can call | [Plugin API](/docs/proxy/plugin-api) |
+| To react to players and pings | [Plugin events](/docs/proxy/plugin-events) |
+| A finished plugin, step by step | [Worked example](/docs/proxy/plugin-example) |
+| To compare with the Java way | [Coming from Java](/docs/proxy/coming-from-java) |
+| The full Lua language | The [Lua 5.5 reference manual](https://www.lua.org/manual/5.5/) |

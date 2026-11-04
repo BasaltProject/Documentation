@@ -1,0 +1,359 @@
+---
+title: Coming from Java?
+description: How what you do in a Velocity or BungeeCord plugin maps to a Lua plugin on Basalt Proxy, side by side.
+group: Learn Lua
+---
+
+If you have written plugins for Velocity or BungeeCord, you know what a proxy plugin does: watch players come and go,
+move them between servers, add commands and keep a little data. This page shows how each of those is written in Lua on
+Basalt Proxy. Lua itself is covered in [Introduction to Lua](/docs/proxy/lua-introduction).
+
+## What changes
+
+| In a Java proxy plugin | On Basalt Proxy |
+|---|---|
+| Java compiled to a jar with Maven or Gradle | Lua source in a folder, zipped into a `.bppkg` with `kiln pack --target proxy` |
+| `@Plugin` annotation, or `bungee.yml` | `plugin.toml` |
+| A main class | A `src/main.lua` that runs when the plugin loads |
+| Event classes and listener methods | Event names (`player.join`) and handler functions |
+| `ProxiedPlayer` or `Player` objects | Player tables with `name`, `uuid`, `server`, and methods called with a colon |
+| Adventure components or `TextComponent` | [MiniMessage](/docs/proxy/plugin-api#text) strings |
+| Restart the proxy to test | `reload` in the console |
+| Threads and executors | One plugin thread, and `wait` to pause |
+
+## The project
+
+```java
+@Plugin(id = "lobbytools", name = "Lobby Tools", version = "1.0.0", authors = {"Alex"})
+public final class LobbyTools {
+    @Inject private ProxyServer server;
+    @Inject private Logger logger;
+    @Inject @DataDirectory private Path dataDirectory;
+
+    @Subscribe
+    public void onInit(ProxyInitializeEvent event) {
+        logger.info("Ready");
+    }
+}
+```
+
+```toml
+# plugin.toml
+id = "lobbytools"
+name = "Lobby Tools"
+version = "1.0.0"
+authors = ["Alex"]
+api = 1
+main = "src/main.lua"
+```
+
+```lua
+-- src/main.lua
+on("plugin.enable", function()
+    log.info("Ready")
+end)
+```
+
+There is nothing to inject. `log`, `players`, `servers`, `config` and the rest are globals. The data folder is created for
+you and `resources/` is copied into it on first load, see [Plugins](/docs/proxy/plugins#configuration-and-text-resources).
+Plugins are off by default: the operator turns them on in `config/plugins.toml`.
+
+## Events
+
+| Java (Velocity) | Java (BungeeCord) | Lua |
+|---|---|---|
+| `ProxyInitializeEvent` | `onEnable()` | `plugin.enable` |
+| `ProxyShutdownEvent` | `onDisable()` | `plugin.disable` |
+| `LoginEvent` | `LoginEvent` | `player.login` |
+| `PostLoginEvent` | `PostLoginEvent` | `player.join` |
+| `ServerConnectedEvent` | `ServerConnectedEvent` | `player.server_change` |
+| `PlayerChatEvent` | `ChatEvent` | `player.chat` |
+| `KickedFromServerEvent` | `ServerKickEvent` | `player.kick` |
+| `DisconnectEvent` | `PlayerDisconnectEvent` | `player.quit` |
+| `ProxyPingEvent` | `ProxyPingEvent` | `server.ping` |
+
+```java
+@Subscribe(order = PostOrder.LATE)
+public void onSwitch(ServerConnectedEvent event) {
+    event.getPreviousServer().ifPresent(prev ->
+        logger.info(event.getPlayer().getUsername() + " moved from "
+            + prev.getServerInfo().getName() + " to " + event.getServer().getServerInfo().getName()));
+}
+```
+
+```lua
+on("player.server_change", { priority = "late" }, function(e)
+    log.info(e.player_name .. " moved from " .. e.from_server .. " to " .. e.server)
+end)
+```
+
+- The handler receives one table, `e`. Players come as `e.player` plus the flat fields `e.player_name`, `e.player_uuid` and
+  `e.server`. Every event is in [Plugin events](/docs/proxy/plugin-events).
+- Priorities are `FIRST`, `EARLY`, `NORMAL`, `LATE` and `LAST`, the same five as Velocity's `PostOrder`. BungeeCord's
+  `LOWEST` to `HIGHEST` map onto them in that order.
+- **A filter is an option**: `on("player.join", { server = "lobby" }, fn)` replaces the `if` that checks the backend.
+- **Events are observations.** A handler cannot cancel an event or change its result, and nothing it returns alters what
+  the proxy does. There is no Lua equivalent of rewriting a chat line, choosing the server a
+  player connects to or editing the ping answer.
+- `player.login` carries only `player_name` and `player_uuid`: the player has no `server` yet and is not in
+  `players.online()`.
+
+## Players and servers
+
+```java
+Optional<Player> target = server.getPlayer("Steve");
+target.ifPresent(p -> {
+    p.sendMessage(MiniMessage.miniMessage().deserialize("<green>Hello"));
+    p.createConnectionRequest(server.getServer("lobby").get()).fly();
+});
+
+for (Player p : server.getAllPlayers()) { ... }
+int online = server.getPlayerCount();
+```
+
+```lua
+local p = players.by_name("Steve")
+if p then
+    p:send("<green>Hello")
+    p:connect("lobby")
+end
+
+for _, who in ipairs(players.online()) do ... end
+local online = players.count()
+```
+
+`players.by_name` returns `nil` for a player who is not online, where Java returns an empty `Optional`. A server is its
+name from `backends.toml`: `servers.list()` returns the names and `servers.exists(name)` checks one. `player:connect(name)`
+returns `true` when the move was accepted. A player table is a snapshot, so `player.server` does not follow later moves.
+
+| Java | Lua |
+|---|---|
+| `player.getUsername()` or `getName()` | `player.name` |
+| `player.getUniqueId()` | `player.uuid`, as text |
+| `player.getCurrentServer()` | `player.server` |
+| `player.sendMessage(...)` | `player:send(text, args)` |
+| `player.disconnect(Component)` | `player:kick(reason)` |
+| `server.broadcast(...)` | `broadcast(text, args)` |
+| `player.createConnectionRequest(target).fly()` | `player:connect(name)` |
+
+See [Plugin API](/docs/proxy/plugin-api#players).
+
+## Commands
+
+```java
+CommandMeta meta = server.getCommandManager().metaBuilder("coins").build();
+server.getCommandManager().register(meta, (SimpleCommand) invocation -> {
+    String[] args = invocation.arguments();
+    if (args.length != 2 || !args[0].equals("top")) {
+        invocation.source().sendMessage(Component.text("Usage: /coins top <limit>"));
+        return;
+    }
+    int limit;
+    try {
+        limit = Integer.parseInt(args[1]);
+    } catch (NumberFormatException ex) {
+        invocation.source().sendMessage(Component.text("Not a number"));
+        return;
+    }
+    // ...
+});
+```
+
+```lua
+cmd("coins top [limit: int 1..25]", function(src, limit)
+    src:send("Top {limit}", { limit = limit or 10 })
+end, { permission = "shop.top" })
+```
+
+The spec declares the arguments and their types and ranges. Parsing, the `Usage:` reply and the completion that 1.13 and
+later clients show come from it, so the handler only receives values. The same command works from the console, where
+`src.is_console` is `true`. The spec syntax is in [Plugin API](/docs/proxy/plugin-api#commands).
+
+<x-docs.callout type="note" title="Permissions are a short list">
+The proxy has no groups. A command with a `permission` can be run by the console and by the players in `operators` in
+`config/plugins.toml`, and a command without one by everybody. The permission string is a label for the plugin author.
+Finer permissions belong on the backend, where they are checked by the server.
+</x-docs.callout>
+
+## Scheduler
+
+```java
+server.getScheduler().buildTask(this, () -> player.sendMessage(Component.text("Boom")))
+    .delay(2, TimeUnit.SECONDS)
+    .schedule();
+
+ScheduledTask task = server.getScheduler().buildTask(this, this::announce)
+    .repeat(1, TimeUnit.MINUTES)
+    .schedule();
+task.cancel();
+```
+
+```lua
+later(40, function() player:send("Boom") end)
+
+local task = every(20 * 60, announce)
+task:cancel()
+
+-- pausing in the middle of a handler
+on("player.join", function(e)
+    wait(40)
+    e.player:send("<gray>Two seconds after joining.")
+end)
+```
+
+Time is in ticks of 50 ms, 20 to a second, instead of `TimeUnit`. `wait` pauses the handler that calls it while the plugin
+thread serves everyone else, so a delay is a line of code and not a second callback. It works in handlers, commands, timer
+callbacks and `plugin.enable`, and not at the top of the script. See [Plugin API](/docs/proxy/plugin-api#time).
+
+## Configuration and messages
+
+```java
+Path file = dataDirectory.resolve("config.toml");
+// load it, parse it, fall back to defaults...
+String lobby = config.getString("lobby", "lobby");
+```
+
+```toml
+# resources/config.toml
+lobby = "lobby"
+max-players = 100
+```
+
+```lua
+local lobby = config.lobby or "lobby"
+local limit = config.max_players          -- a key with a dash also works with an underscore
+```
+
+`resources/config.toml` is the `config` table, read once when the plugin loads. Messages go in `resources/lang/en_us.toml`
+and are used by key:
+
+```toml
+welcome = "Welcome back, {name}. Visit number {visits}."
+```
+
+```lua
+e.player:send("@welcome", { name = e.player_name, visits = 3 })
+```
+
+`@key` looks the text up and `{name}` fills it from the table. Legacy `§` codes are not part of the model: write
+`<green>` and `<bold>`.
+
+## Saving data
+
+| Java | Lua |
+|---|---|
+| A map saved to a file on disable | `store.set(key, value)`, saved at once |
+| A database table keyed by UUID | `player.data.visits = 5`, per player and plugin |
+| A cache that must not survive | A local variable at the top of the file |
+
+```toml
+# plugin.toml
+[capabilities]
+storage = true
+players_data = true
+```
+
+```lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.visits = (d.visits or 0) + 1
+end)
+```
+
+Both need their capability in the manifest, hold strings, numbers and booleans, and live in the proxy's own SQLite file. See
+[Plugin API](/docs/proxy/plugin-api#storage).
+
+## Running a command
+
+`run(line)` is the console typing a command, and it needs `commands = true` in the manifest plus the operator's grant. It
+reaches the commands that plugins registered. The proxy's own commands, such as `send` and `reload`, are not reachable.
+
+## Java habits and their Lua form
+
+| Java | Lua |
+|---|---|
+| A class with fields and methods | A table with fields and functions, see [methods](/docs/proxy/lua-introduction#methods-and-the-colon) |
+| `null`, `Optional<T>` | `nil` |
+| `List<T>`, `Map<K, V>` | One table, with `ipairs` or `pairs` |
+| `enum` | A string such as `"late"`, or a table of constants |
+| `try`, `catch` | `pcall`, and only when the failure cannot be predicted |
+| `@Inject` | Nothing: the globals are already there |
+| `synchronized`, executors | Nothing: plugins share one thread and run one task at a time |
+| Indexes from 0 | Indexes from 1 |
+
+## What to know before you port
+
+- **No bytecode and no outside libraries.** The proxy loads the plain Lua source from the package, and a plugin cannot
+  load code from anywhere else.
+- **No plugin messaging.** Backends that need to move players use the BungeeCord channel, which the operator enables per
+  backend with `bungee-messages`, see [Backends and routing](/docs/proxy/backends-and-routing#bungeecord-messages).
+- **Handlers must be short.** A handler that runs out of its instruction budget disables its plugin until the next
+  `reload`. Spread long work with `wait`.
+- **A plugin that keeps failing is switched off** and the proxy keeps running.
+
+The sandbox and its limits are in [Plugins](/docs/proxy/plugins#the-sandbox).
+
+## A whole plugin, both ways
+
+A visit counter that greets players and a `/lobby` command.
+
+```java
+@Plugin(id = "visits", name = "Visits", version = "1.0.0")
+public final class Visits {
+    private final ProxyServer server;
+    private final Map<UUID, Integer> counts = new ConcurrentHashMap<>();
+
+    @Inject
+    public Visits(ProxyServer server) { this.server = server; }
+
+    @Subscribe
+    public void onInit(ProxyInitializeEvent event) {
+        CommandMeta meta = server.getCommandManager().metaBuilder("lobby").build();
+        server.getCommandManager().register(meta, (SimpleCommand) inv -> {
+            if (inv.source() instanceof Player p) {
+                server.getServer("lobby").ifPresent(s -> p.createConnectionRequest(s).fly());
+            }
+        });
+    }
+
+    @Subscribe
+    public void onJoin(PostLoginEvent event) {
+        int n = counts.merge(event.getPlayer().getUniqueId(), 1, Integer::sum);
+        event.getPlayer().sendMessage(Component.text("Visit number " + n));
+    }
+}
+```
+
+```toml
+# plugin.toml
+id = "visits"
+version = "1.0.0"
+api = 1
+
+[capabilities]
+players_data = true
+```
+
+```lua
+-- src/main.lua
+on("player.join", function(e)
+    local d = e.player.data
+    d.visits = (d.visits or 0) + 1
+    e.player:send("<green>Visit number {n}", { n = d.visits })
+end)
+
+cmd("lobby", function(src)
+    if not src.is_console then
+        src:connect("lobby")
+    end
+end, { permission = "" })
+```
+
+The Lua version also keeps the count across restarts, which the Java one does not without more code. A bigger plugin built
+step by step is in the [Worked example](/docs/proxy/plugin-example).
+
+## Where to go next
+
+- [Plugins](/docs/proxy/plugins): the package, the manifest and the limits.
+- [Plugin API](/docs/proxy/plugin-api) and [Plugin events](/docs/proxy/plugin-events).
+- [Worked example](/docs/proxy/plugin-example): a complete plugin.

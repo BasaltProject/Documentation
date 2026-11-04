@@ -1,0 +1,299 @@
+---
+title: Introduction to Lua
+description: The parts of Lua 5.5 a plugin author needs, with examples that run on Basalt Server.
+group: Learn Lua
+---
+
+Lua is a small scripting language: a few types, one data structure and functions that are values. Basalt Server embeds
+the official Lua 5.5, so what you learn here is plain Lua and works the same in any other Lua book or tutorial. This page
+covers what a plugin uses. If you already write Java, [Coming from Java](/docs/server/coming-from-java) maps the Bukkit
+way of doing things to this one.
+
+## Run something
+
+A plugin is a folder with a `plugin.toml` and a `src/main.lua`, see [Plugins](/docs/server/plugins). Every example on
+this page can go in `main.lua`. After a change, `/plugins reload <id>` loads it again without restarting the server.
+
+```lua
+log.info("Hello from Lua")
+```
+
+`log.info` writes a line to the server log under the plugin's name. `print` does not exist in a server plugin, use `log`.
+
+## Values and variables
+
+```lua
+local name = "Steve"        -- string
+local lives = 3             -- integer
+local speed = 0.2           -- float
+local alive = true          -- boolean
+local nothing = nil         -- the absence of a value
+```
+
+- **Always write `local`.** A name assigned without it becomes a global, shared by every function of the plugin and easy to
+  mistype into a bug nobody reports.
+- **There is one `nil`**, and it is what you get from a missing key, a failed lookup (`players.by_name("nobody")`) or a
+  function that returns nothing. Only `nil` and `false` are false in a condition. `0` and `""` are true.
+- Types are checked when a line runs, not before. `type(x)` returns `"nil"`, `"boolean"`, `"number"`, `"string"`,
+  `"table"` or `"function"`.
+
+### Numbers
+
+Lua has integers and floats, and converts between them when it needs to.
+
+```lua
+log.info(7 / 2)      -- 3.5, `/` always gives a float
+log.info(7 // 2)     -- 3, integer division
+log.info(7 % 2)      -- 1
+log.info(2 ^ 10)     -- 1024.0, `^` always gives a float
+log.info(math.floor(3.7))   -- 3
+```
+
+Block coordinates in events are integers and positions of entities are floats, which matters when an
+[event filter](/docs/server/plugin-events#options) compares them.
+
+### Strings
+
+Strings are immutable. `..` joins them and `#` is the length in bytes.
+
+```lua
+local greeting = "Hello, " .. name .. "!"
+log.info(#greeting)                          -- 14
+log.info(string.format("%s has %d lives", name, lives))
+log.info(("abc"):upper())                    -- ABC
+```
+
+Strings written with `[[ ... ]]` can span lines and ignore backslashes. Text that goes to a player is
+[MiniMessage](/docs/server/config-and-lang#text), for example `"<green>Hello"`, and takes `{name}` arguments from a
+table, so you rarely build it with `..`.
+
+### Comparison and logic
+
+```lua
+if lives ~= 0 and alive then     -- `~=` is "not equal", `and`, `or` and `not` are words
+    log.info("still playing")
+end
+
+local label = lives > 1 and "lives" or "life"     -- the usual ternary
+```
+
+`and` and `or` return one of their operands, not a boolean, which is why `config.prefix or "[Basalt]"` is the usual way to
+write a default.
+
+## Tables
+
+A table is the only data structure. It is a list, a map, an object and a module, depending on how you use it.
+
+```lua
+local ranks = { "guest", "member", "admin" }       -- a list, from index 1
+log.info(ranks[1])                                 -- guest, not ranks[0]
+log.info(#ranks)                                   -- 3
+table.insert(ranks, "owner")
+table.remove(ranks, 1)
+
+local home = { world = "world", x = 10, y = 64, z = -3 }   -- a map
+home.y = home.y + 1
+home["x"] = 20                                     -- the same as home.x = 20
+home.bed = nil                                     -- setting nil removes a key
+```
+
+Iterate a list with `ipairs` and a map with `pairs`:
+
+```lua
+for i, rank in ipairs(ranks) do
+    log.info(i .. ": " .. rank)
+end
+
+for key, value in pairs(home) do
+    log.info(key .. " = " .. tostring(value))
+end
+```
+
+Things that catch people out:
+
+- **Lists start at 1.** The API follows it: `form` buttons are reported as `answer.button == 1` for the first.
+- **`pairs` has no guaranteed order.** If order matters, keep a list.
+- **A `nil` in the middle of a list** breaks `#` and `ipairs`. Remove with `table.remove` instead of assigning `nil`.
+- **Tables are references.** `local b = a` makes two names for one table. Copy it when you need a copy.
+- **`#` is not a count of a map.** `#home` is 0. Count with a loop.
+
+Useful library functions: `table.concat(list, ", ")`, `table.sort(list, function(a, b) return a > b end)`,
+`table.unpack`, `table.move`.
+
+## Functions
+
+Functions are values. You can store one in a variable, put it in a table and pass it to another function.
+
+```lua
+local function double(n)
+    return n * 2
+end
+
+local function stats(list)
+    local sum = 0
+    for _, v in ipairs(list) do sum = sum + v end
+    return sum, sum / #list         -- more than one result
+end
+
+local total, average = stats({ 4, 8, 6 })
+```
+
+A function can read the locals around it and keep them alive. That is a closure, and it is how a handler remembers
+things:
+
+```lua
+local function counter()
+    local n = 0
+    return function()
+        n = n + 1
+        return n
+    end
+end
+
+local next_id = counter()
+log.info(next_id())      -- 1
+log.info(next_id())      -- 2
+```
+
+Extra arguments are dropped and missing ones are `nil`, which is how the API gets its optional parameters:
+`p:title("Hi")` and `p:title("Hi", "subtitle")` call the same function.
+
+### Methods and the colon
+
+`a:b(x)` is `a.b(a, x)`: it passes the table on the left as the first argument. Player, world and entity objects use it.
+
+```lua
+p:send("<green>Hello")      -- the same as p.send(p, "<green>Hello")
+p.health = 20               -- a property is read and written with a dot
+```
+
+Forgetting the colon is the most common error when starting out. The message is usually about a `nil` or a string where a
+player was expected.
+
+You can build your own objects the same way:
+
+```lua
+local Arena = {}
+Arena.__index = Arena
+
+function Arena.new(name)
+    return setmetatable({ name = name, players = {} }, Arena)
+end
+
+function Arena:add(player)
+    self.players[#self.players + 1] = player
+end
+
+local pvp = Arena.new("pvp")
+pvp:add(players.by_name("Steve"))
+```
+
+`function Arena:add(player)` is sugar for `function Arena.add(self, player)`. Most plugins need no more of this than
+plain tables and functions.
+
+## Control flow
+
+```lua
+for i = 1, 5 do ... end               -- 1, 2, 3, 4, 5
+for i = 10, 1, -2 do ... end          -- 10, 8, 6, 4, 2
+while lives > 0 do lives = lives - 1 end
+repeat lives = lives + 1 until lives >= 3
+
+for _, p in ipairs(players.online()) do
+    if p.world ~= "world" then goto continue end     -- Lua has no `continue`
+    p:send("You are in the overworld")
+    ::continue::
+end
+```
+
+`break` leaves a loop, `goto` jumps to a label in the same function, and `return` leaves a function and must be the last
+statement of its block.
+
+## Errors
+
+An error stops the running function. `error("message")` raises one, and `pcall` runs a function and catches it:
+
+```lua
+local ok, result = pcall(function()
+    return worlds.by_name("arena"):block(0, 64, 0)    -- fails when the world is nil
+end)
+
+if not ok then
+    log.warn("lookup failed: " .. result)
+end
+```
+
+You seldom need `pcall`. An error in an event handler or a command is logged with the plugin and the line, and the server
+carries on, see [The sandbox](/docs/server/sandbox#when-a-plugin-fails). Check for `nil` where it is expected instead of
+catching what you could have predicted:
+
+```lua
+local world = worlds.by_name("arena")
+if not world then
+    return
+end
+```
+
+## Splitting code into files
+
+`require` loads another file of `src/` once and returns what it returns, so a file is a module:
+
+```lua
+-- src/money.lua
+local M = {}
+
+function M.format(amount)
+    return string.format("$%.2f", amount)
+end
+
+return M
+```
+
+```lua
+-- src/main.lua
+local money = require("money")
+log.info(money.format(2.5))        -- $2.50
+```
+
+`require("game.round")` loads `src/game/round.lua`. Plugins can also share modules with each other, see
+[Shared code](/docs/server/shared-code).
+
+## What the server adds
+
+The functions you have seen, `on`, `cmd`, `later`, `players`, `worlds`, `config`, `store` and the rest, are globals the
+server provides next to the standard library. They are listed in [The sandbox](/docs/server/sandbox#what-a-plugin-can-use).
+
+```lua
+on("player.join", function(e)
+    e.player:send("<green>Welcome, {name}!", { name = e.player.name })
+end)
+
+cmd("heal", function(src)
+    local p = players.by_name(src.name)
+    if p then p.health = 20 end
+end, { permission = "" })
+
+every(20 * 60, function()
+    broadcast("<gray>One more minute has passed.")
+end)
+```
+
+Two differences from a standalone Lua program are worth knowing now:
+
+- **The standard library is trimmed.** `string`, `table`, `math`, `utf8`, `coroutine` and `os.time`, `os.clock`, `os.date`
+  and `os.difftime` are there. There is no `io`, `debug`, `package`, `dofile`, `loadfile` or `collectgarbage`, and no way
+  to run a process. Files go through `files` and `data`, see [Storage](/docs/server/storage).
+- **Every entry into your code has an instruction budget.** A handler that loops for too long is stopped, which is what
+  keeps one plugin from freezing the tick. Waiting between pieces of work is free, see
+  [Scheduler and coroutines](/docs/server/scheduler).
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| To make a plugin and run it | [Plugins](/docs/server/plugins) |
+| To react to something that happens | [Events](/docs/server/plugin-events) |
+| To add a command | [Plugin commands](/docs/server/plugin-commands) |
+| To do something later or every so often | [Scheduler and coroutines](/docs/server/scheduler) |
+| To compare with the Bukkit way | [Coming from Java](/docs/server/coming-from-java) |
+| The full Lua language | The [Lua 5.5 reference manual](https://www.lua.org/manual/5.5/) |
