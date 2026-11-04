@@ -277,7 +277,7 @@ reaches the commands that plugins registered. The proxy's own commands, such as 
 | `List<T>`, `Map<K, V>` | One table, with `ipairs` or `pairs` |
 | `enum` | A string such as `"late"`, or a table of constants |
 | `try`, `catch` | `pcall`, and only when the failure cannot be predicted |
-| `@Inject` | Nothing: the globals are already there |
+| `@@Inject` | Nothing: the globals are already there |
 | `synchronized`, executors | Nothing: plugins share one thread and run one task at a time |
 | Indexes from 0 | Indexes from 1 |
 
