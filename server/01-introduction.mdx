@@ -15,14 +15,14 @@ A Basalt Server with no plugins plays like the official one: same seed, same wor
 Every option that makes it differ is off by default and marked `NO VANILLA` (or `NOT VANILLA`) in the comments of the generated file, so a fresh install changes nothing you did not ask for.
 
 <x-docs.callout type="note" title="Where Basalt differs on purpose">
-A few defaults are not vanilla's because they are plain upgrades: `max-players` ships at 80 instead of 20, the world format is Linear instead of Anvil (see [Worlds](/docs/server/worlds)), and the configuration is TOML split into one file per domain instead of `server.properties`.
+A few defaults are not vanilla's because they are plain upgrades: `max-players` ships at 80 instead of 20, the world format is bsw (Basalt's own) instead of Anvil (see [Worlds](/docs/server/worlds)), and the configuration is TOML split into one file per domain instead of `server.properties`.
 </x-docs.callout>
 
 ## What an operator gets
 
 - **One binary, one directory.** Everything the server writes lives next to the binary. See [Installation](/docs/server/installation).
 - **Configuration that explains itself.** Every file in `config/` is generated with a comment per option and vanilla's values. Options added by an update are appended as comments, and most files can be reloaded without a restart. See [Configuration](/docs/server/configuration).
-- **Several clients, one server.** The same worlds and players are reachable from the current Java Edition client, from older Java clients (translated at the edge) and from Bedrock Edition.
+- **Java and Bedrock, one server.** The same worlds and players are reachable from the current Java Edition client (26.3), from Bedrock Edition (1.26.60) and from older Java clients (translated at the edge).
 - **Several worlds and dimensions** declared in `worlds.toml`, each with its own settings, including more than one Overworld with its own Nether and End. See [Worlds](/docs/server/worlds).
 - **Permission groups, commands, MOTD, tab list, scoreboard and boss bar** configurable in files, with no plugin needed. See [Groups and permissions](/docs/server/groups-and-permissions).
 - **A remote management API and RCON**, off the public interface by default. See [Operations](/docs/server/operations).

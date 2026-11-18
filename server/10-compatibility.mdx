@@ -1,6 +1,6 @@
 ---
 title: Client versions and Bedrock
-description: Which Java versions can join and how to limit them, how Bedrock Edition joins the same server, and what differs for those players.
+description: Which Java versions can join and how to limit them, how Bedrock Edition (1.26.60) joins the same server, and what differs for those players.
 group: Administration
 ---
 
@@ -75,12 +75,13 @@ When the server runs behind Basalt Proxy, the proxy can do the translation itsel
 
 ## Bedrock Edition
 
-Phones, consoles and Windows Bedrock clients join the same worlds. It is on by default, on a UDP port of its own.
+Phones, consoles and Windows Bedrock clients join the same worlds as Java players. The native version is Bedrock 1.26.60 (protocol 2225). It is on by default, on ports of its own.
 
 ```toml
 [network.bedrock]
 enabled = true
 port = 19132
+transport = "both"
 prefix = "."
 protocols = "all"
 future-protocols = "warn"
@@ -89,12 +90,15 @@ future-protocols = "warn"
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Turns the Bedrock door on. `[network.java] enabled` and this cannot both be `false` |
-| `port` | `19132` | The UDP port, which is the one every Bedrock client tries first. Open it in the firewall as UDP |
+| `port` | `19132` | The UDP port every Bedrock client tries first (RakNet), and the TCP port NetherNet signs in on. Open it as UDP and TCP |
+| `transport` | `"both"` | `"both"`, `"nethernet"` or `"raknet"`. See [Transports](#transports) |
+| `nethernet-port` | `0` | UDP port of NetherNet's game traffic: `port` + 1 while RakNet is on, `port` when it is off |
+| `advertise-address` | `""` | The address NetherNet tells clients to send traffic to. Set the public one when the server sits behind NAT |
 | `prefix` | `"."` | Put in front of a Bedrock player's name inside the server, so a Steve from each edition is two players and not one. Set it to `""` on a server where only Bedrock players join; then two accounts with the same name are two players shown with the same name |
-| `protocols` | `"all"` | Which Bedrock protocols may join. `"all"` is every one this build speaks (`1001`, `2168`, `2169` and `2193` today), so updating the server adds versions. A list fixes it to those, such as `protocols = [2193]` |
+| `protocols` | `"all"` | Which Bedrock protocols may join. `"all"` is every one this build speaks (`1001`, `2168`, `2169`, `2193` and `2225` today), so updating the server adds versions. A list fixes it to those, such as `protocols = [2225]` |
 | `future-protocols` | `"warn"` | A client newer than anything this server speaks. Bedrock updates itself and will not let anyone stay behind, so the day a version lands half the players are locked out until the server is updated. `warn` lets them in and says so, `accept` lets them in quietly, `refuse` turns them away with the screen that offers to update the server |
 
-A protocol you list that this build cannot speak is reported and ignored (`server.toml asks for Bedrock protocols this build cannot speak: ...`). The start-up line shows the port, the game version and the protocols in use: `Bedrock on UDP port 19132 (<game version>, protocol 1001, 2168, 2169, 2193)`.
+A protocol you list that this build cannot speak is reported and ignored (`server.toml asks for Bedrock protocols this build cannot speak: ...`). The start-up line shows the port, the game version and the protocols in use: `Bedrock on UDP port 19132 (<game version>, protocol 1001, 2168, 2169, 2193, 2225)`.
 
 If the UDP port cannot be bound the server keeps running without Bedrock and says so:
 
@@ -103,6 +107,15 @@ Could not bind UDP port 19132 for Bedrock. Something else is on it, which is usu
 ```
 
 A refused Bedrock client reads either `This server runs Minecraft <version>. Update your game and come back.` (too old) or `This server runs Minecraft <version> and does not speak your version yet.` (too new). The log has `A Bedrock client on protocol N was turned away: ...`; with `future-protocols = "warn"` it has `A Bedrock client on protocol N is newer than this server speaks and was let in anyway; it may not get far.`
+
+### Transports
+
+Bedrock clients reach the server over one of two transports, and both end in the same session.
+
+- **NetherNet** is Mojang's replacement for RakNet and the only one clients on 26.60 and newer use. It signs in over TCP on `port` and carries the game over UDP on `nethernet-port`. The server's identity key lives in `.basalt/nethernet-identity.der`, because clients pin it on first use.
+- **RakNet** stays for older clients that have not updated, and will be removed from Basalt once none are left.
+
+Leave `transport` at `"both"`. Setting it to `"raknet"` keeps every client on 26.60 or newer out.
 
 ### How Bedrock players appear
 

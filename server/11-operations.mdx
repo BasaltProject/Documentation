@@ -8,12 +8,13 @@ This page is about running a server day to day. How to install and start it is i
 
 ## Remote access
 
-There are three ways in from outside the process, all configured under `[network]` in `config/server.toml`.
+There are four ways in from outside the process, all configured under `[network]` in `config/server.toml`.
 
 | Door | Default | Port | For |
 |---|---|---|---|
 | Management API | on, loopback only | TCP 25580 | Scripts, panels and dashboards. Prefer it to RCON |
 | RCON | off | TCP 25575 | Tools that only speak RCON |
+| Management protocol | off | TCP 25585 | Vanilla's JSON-RPC management protocol over WebSocket, see [Server settings](/docs/server/server-settings#networkmanagement) |
 | Query | off | UDP 25565 | Server list sites and monitoring tools that ask for the player list |
 
 ### Management API
@@ -167,6 +168,10 @@ In order of how much each usually matters:
 
 The generation threads are sized from the machine and have no setting; they yield to the tick, so the tick stays at its rate while the world generates.
 
+### Memory
+
+On Linux with glibc the server limits malloc's arenas, returns freed memory to the system in the background and, while nobody is online, drops the clean file mappings of the region files. There is nothing to configure. Musl, macOS, Windows, Android and FreeBSD builds do not do this.
+
 ### The watchdog
 
 `watchdog-seconds` in `[performance]` (60 by default; `0` turns it off) is the longest one tick may take before the server decides it has crashed. It logs the following and exits:
@@ -185,7 +190,7 @@ The process exits with code `1` without saving, so run the server under a superv
 | `/timings start`, `stop`, `reset`, `report` | The same measurements, without ending the window. `report` writes the file now |
 | `/debug start` then `/debug stop` | Vanilla's profiling command: measures the same way and reports the ticks and ticks per second of the window |
 
-Reports are JSON files in `.basalt/timings/`, named after the time. A report holds the server's version, the tick rates and durations, counts of what is loaded (chunks, worlds, caches), CPU use and memory, and a list of sections with the calls, total, average and maximum time of each. A section nobody called is absent: if the report has no sections, start measuring, let the server do the slow thing, then report. `/timings report` says so when that is the case.
+Reports are JSON files in `.basalt/timings/`, named after the time. A report holds the server's version, the tick rates and durations, counts of what is loaded (chunks, worlds, caches), CPU use and memory, and a list of sections with the calls, total, average and maximum time of each. A section nobody called is absent: if the report has no sections, start measuring, let the server do the slow thing, then report. `/timings report` says so when that is the case. With `timings-url` set (the default is basaltmc.org), `/timings stop` and `/timings report` also upload the report and give you a link; nothing is uploaded unless you run them, and an empty `timings-url` keeps reports on the machine.
 
 ## Backups
 

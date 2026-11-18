@@ -25,7 +25,7 @@ backend-id = "lobby"
 | `secret` | `""` | `velocity` | The content of the proxy's `forwarding.secret`, not the path to it |
 | `trusted-keys` | `[]` | `basalt` | Public keys, 64 hex characters each, whose signature is accepted |
 | `backend-id` | `""` | `basalt` | The name of this server, 1 to 64 bytes. It is part of what the proxy signs |
-| `session-envelope` | `false` | `basalt` | Offers the proxy to forward each player's original packets so this server translates them, instead of the proxy doing it. Applies when the proxy accepts the offer |
+| `session-envelope` | `true` | `basalt` | Offers the proxy to forward each player's original packets so this server translates them, instead of the proxy doing it. Applies when the proxy accepts the offer |
 | `tokens` | `[]` | `bungeeguard`, `safenet` | The tokens or passphrases accepted. More than one so a key can be rotated without restarting everything at once |
 | `property-name` | `"safe_net_passphrase"` | `safenet` | The property SafeNET carries its passphrase in, if you changed `property-name.handshake` on the proxy |
 

@@ -124,7 +124,7 @@ Once the EULA is accepted the server downloads the official server archive from 
 ```
 eula.toml        the EULA acceptance
 config/          one TOML file per domain, generated with comments
-worlds/          one directory per world: worlds/<name>/region/, settings.toml, mobs.toml
+worlds/          one directory per world: worlds/<name>/region/, settings.toml
 plugins/         .bspkg packages
 players.db       player data, permission group membership, whitelist, bans
 .basalt/         state the server owns:
@@ -139,12 +139,18 @@ players.db       player data, permission group membership, whitelist, bans
 If there is a `server.properties` and no `config/server.toml` on the first start, the values Basalt recognises are imported once, with a line in the log, and the file is not read again. The `motd` goes to the server list profile. The view distance is not imported: it is a per-world setting in `worlds.toml`. An Anvil world copied into `worlds/` is read as it is, see [Worlds](/docs/server/worlds#importing-a-world).
 </x-docs.callout>
 
+## Keeping it updated
+
+The server checks GitHub at startup and logs a warning when a newer release is out (`update-checker` in `[server]`). [Hoist](https://github.com/BasaltProject/Hoist) can also run the server and apply updates for you, with backups and automatic rollback.
+
 ## Ports
 
 | Port | Protocol | Used for | Default |
 |---|---|---|---|
 | 25565 | TCP | Java Edition | on |
-| 19132 | UDP | Bedrock Edition | on |
+| 19132 | UDP | Bedrock Edition (RakNet) | on |
+| 19132 | TCP | Bedrock Edition (NetherNet signalling) | on |
+| 19133 | UDP | Bedrock Edition (NetherNet data) | on |
 | 25565 | UDP | GameSpy 4 query | off |
 | 25575 | TCP | RCON, plaintext | off |
 | 25580 | TCP | Management API | on, bound to loopback only |

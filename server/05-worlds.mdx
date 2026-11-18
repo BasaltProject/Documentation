@@ -1,6 +1,6 @@
 ---
 title: Worlds
-description: Declaring worlds and dimensions, per-world settings, game rules, the Linear format, importing existing worlds, and non-vanilla toggles.
+description: Declaring worlds and dimensions, per-world settings, game rules, the bsw format, importing existing worlds, and non-vanilla toggles.
 group: Configuration
 ---
 
@@ -8,10 +8,9 @@ A Basalt world is one dimension. A server loads as many as `worlds.toml` declare
 
 ```
 worlds/<name>/
-  region/            r.<x>.<z>.linear
+  region/            r.<x>.<z>.bsw
   poi/               points of interest (villager workstations, beds, portals)
-  settings.toml      this world's settings, inheriting from worlds.toml
-  mobs.toml          this world's mob settings, inheriting from worlds/mobs.toml
+  settings.toml      this world's settings and mob settings, inheriting from worlds.toml
 ```
 
 Player data is not stored here. It lives in `players.db` next to `worlds/`, so a world can be deleted, copied or reset without touching anyone's inventory.
@@ -215,7 +214,7 @@ Every key defaults to vanilla's value, and any other value is marked **NOT VANIL
 
 ## Mob settings
 
-Mob caps, spawning, despawning, dropped-item lifetimes and per-type tweaks live in `config/worlds/mobs.toml`, and a world overrides any key in `worlds/<name>/mobs.toml`. Every value shipped is vanilla's, and a change applies when the world loads. Both files are generated with a comment on every key.
+Mob caps, spawning, despawning, dropped-item lifetimes and per-type tweaks live in `worlds.toml`, as `[defaults.mobs.*]` tables, and a world overrides any key in `[mobs.*]` tables of its `worlds/<name>/settings.toml`. Every value shipped is vanilla's unless marked otherwise, and a change applies when the world loads. The generated files carry a comment on every key.
 
 | Table | Covers |
 |---|---|
@@ -224,19 +223,33 @@ Mob caps, spawning, despawning, dropped-item lifetimes and per-type tweaks live 
 | `[spawning]` | `per-player-mob-spawns` (`false`, **NOT VANILLA**), `range-chunks` (8), `monster-max-light-level` (`-1` keeps vanilla's rules, **NOT VANILLA** when 0 or more) |
 | `[despawn]` | `shape` (`sphere` is vanilla, or `cylinder`), `idle-ticks-before-random` (600), `random-odds` (800), and `soft-range` and `hard-range` per category under `[despawn.<category>]` |
 | `[items]`, `[experience]`, `[projectiles]` | Despawn time of dropped items (6000 ticks), merge radius of items and experience orbs (0.5), arrow and trident despawn (1200 ticks) |
+| `[activation-range]` | Mobs far from every player skip their AI and run a full tick only every `inactive-tick-interval` ticks (20). `enabled` is `false`, **NOT VANILLA**; `monster` and `animal` are 32 blocks and `misc` 16. Turn it on to lower the tick cost on a server with many mobs |
 | `[tracking-range]` | How far, in chunks, entities are shown to a player, per group: `animals`, `monsters`, `misc`, `display`, `other`. `0` keeps vanilla's own range |
 | `[phantoms]`, `[pillager-patrols]`, `[wandering-trader]` | Timing and odds of those events |
 | `[overrides.<entity_type>]` | Per-type changes: attributes (health, damage, speed...), experience and drops, behaviour switches (burn in daylight, no AI, persistent, ridable...), natural spawning limits, breeding, creeper blast radius, and AI goals to disable. Lists only the fields to change |
 
-## The Linear format
+## The bsw format
 
-Worlds are stored as **Linear** (`.linear`) region files, not Anvil (`.mca`). The format is invisible to players, so it is not a parity difference, and it is better in every way an operator notices:
+Worlds are stored as **bsw** (Basalt Server World, `.bsw`) region files, not Anvil (`.mca`). The format is invisible to players, so it is not a parity difference. Linear (`.linear`) and Anvil are still read and written.
 
-- About half the disk space for the Overworld and Nether, and far less for the End.
-- One compressed stream per region (zstd) instead of one per chunk, so a region is one read or write.
-- No per-chunk padding to 4096 bytes and no separate files for very large chunks.
+- Each chunk is compressed on its own and found through an index, so reading one chunk does not decompress a whole region. A region file costs a few megabytes of memory instead of over a hundred, and a cold chunk reads in about a millisecond.
+- Writes are atomic and every chunk carries a checksum: a corrupted chunk is reported and left alone, and never takes the rest of the region with it.
+- A trained dictionary per world (`region/bsw.dict`) keeps the disk use close to Linear's. Copy it with the world.
 
-Files are `worlds/<name>/region/r.<x>.<z>.linear`.
+Files are `worlds/<name>/region/r.<x>.<z>.bsw`.
+
+### Choosing the format
+
+`region-format` in `worlds.toml` (under `[defaults]`) and in a world's `settings.toml`:
+
+| Value | Effect |
+|---|---|
+| `"bsw"` (default) | A new world is created as bsw, and a Linear or Anvil world is converted on start |
+| `"linear"` | A bsw world goes back to Linear on start |
+| `"anvil"` | A bsw or Linear world is converted to Anvil on start and saved as Anvil |
+| `"auto"` | A new world is bsw and an existing one keeps its format |
+
+The conversion compares every chunk of the result with the original, and only then swaps the folders. The original stays as `region.<format>-original/` and is never deleted. If anything does not match, the server does not start and the originals are untouched.
 
 ## Importing a world
 
@@ -246,7 +259,7 @@ Moving an existing world to Basalt is "copy the folder and start", not "run a co
 2. Declare it in `worlds.toml` with the matching `dimension`.
 3. Start the server.
 
-When a region has only an Anvil file (`region/r.<x>.<z>.mca`), Basalt reads it and the entities that vanilla keeps in `entities/`, and writes it back as Linear. When the world has a vanilla `level.dat`, its seed, spawn point, time and difficulty are imported once and kept in the world.
+When a region has only an Anvil file (`region/r.<x>.<z>.mca`), Basalt reads it and the entities that vanilla keeps in `entities/`, and writes it back in the world's format. When the world has a vanilla `level.dat`, its seed, spawn point, time and difficulty are imported once and kept in the world.
 
 A vanilla save holds three dimensions in one folder, while Basalt has one dimension per world. Import each as its own world: the Overworld's `region/` is the root `region/`, the Nether's is `DIM-1/region/` and the End's is `DIM1/region/`. Declare the second and third with `dimension = "nether"` and `"end"` and `linked_to` pointing at the Overworld, as in [Declaring worlds](#declaring-worlds).
 
@@ -261,6 +274,7 @@ For a world saved by a much older game version, run it through Metamorph first. 
 [Metamorph](https://github.com/BasaltProject/Metamorph) is the command line tool behind this conversion. It never modifies its input: the result goes to `<world>.converted` unless `-o` says otherwise, and an output folder that already holds files is refused.
 
 ```bash
+metamorph convert <world> --to bsw [-o <out>]
 metamorph convert <world> --to linear [-o <out>]
 metamorph convert <world> --to anvil [-o <out>]
 metamorph upgrade <world> [-o <out>]
@@ -268,6 +282,7 @@ metamorph upgrade <world> [-o <out>]
 
 | Command | Result |
 |---|---|
+| `convert --to bsw` | Every region file as `.bsw`, the format Basalt uses by default |
 | `convert --to linear` | Every region file as `.linear` |
 | `convert --to anvil` | Every region file as `.mca`, for taking a Basalt world back to another server |
 | `upgrade` | Every chunk and entity file brought to the current world version, each keeping its format |

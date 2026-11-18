@@ -45,6 +45,7 @@ Tables that belong to a dedicated feature are documented with it: `[network.rcon
 | `allow-flight` | boolean | `false` | Stop kicking players who hover for four seconds without being able to fly. Only turn it on if a mod or plugin lets players float, because it also lets flight hacks through |
 | `entity-broadcast-range-percentage` | integer, 10 to 1000 | `100` | How far other entities are drawn from a player, as a percentage of each kind's distance. `200` doubles it, `50` halves it. Never beyond the player's view distance |
 | `max-chained-neighbor-updates` | integer, -1 or more | `1000000` | Block updates one change may set off in a row before the server stops answering them. `-1` never stops. **NO VANILLA** below `1000000` |
+| `update-checker` | boolean | `true` | Check GitHub at startup for newer releases (or newer nightlies, on a nightly build) and log a warning when this build is behind |
 | `max-world-size` | integer, 1 to 29999984 | `29999984` | Farthest from the centre, in blocks, that the world border may reach. The playable area is never wider than twice this |
 
 ### `[network.java]`
@@ -68,8 +69,26 @@ Tables that belong to a dedicated feature are documented with it: `[network.rcon
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Accept Bedrock Edition clients |
-| `port` | integer, 1 to 65535 | `19132` | UDP port |
+| `port` | integer, 1 to 65535 | `19132` | RakNet's UDP port, and the TCP port NetherNet clients sign in on |
+| `transport` | string | `"both"` | How Bedrock clients connect: `"both"`, `"nethernet"` or `"raknet"`. Clients on 26.60 and newer only use NetherNet, so `"raknet"` locks them out. See [Compatibility](/docs/server/compatibility#transports) |
+| `nethernet-port` | integer | `0` | UDP port of NetherNet's game traffic. `0` is `port`, or `port` + 1 while RakNet is on |
+| `advertise-address` | string | `""` | Address NetherNet tells clients to send traffic to. Empty is the one the client reached. Set the public one behind NAT |
 | `prefix` | string | `"."` | Put in front of a Bedrock player's name, so a Steve from each edition are two players. Set it to `""` on a server where only Bedrock players join |
+
+### `[network.management]`
+
+The management protocol of vanilla's dedicated server: JSON-RPC 2.0 over a WebSocket, for the allowlist, bans, operators, players, settings and game rules, with notifications. Off by default.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Turn the protocol on |
+| `bind`, `port` | string, integer | `"127.0.0.1"`, `25585` | Where it listens |
+| `secret` | string | `""` | Exactly 40 letters and digits. Empty generates one on the first run and keeps it in `.basalt/management-secret`. Clients send `Authorization: Bearer <secret>` |
+| `tls`, `tls-cert`, `tls-key` | boolean, strings | `false` | Serve WSS with PEM files. Off loopback, the secret crosses the network in the clear without it |
+| `allowed-origins` | list of strings | `[]` | Browser origins allowed to sign in with the `minecraft-v1,<secret>` subprotocol |
+| `status-heartbeat-interval` | integer | `0` | Seconds between `server/status` notifications, `0` for none |
+| `max-failures`, `lockout-seconds` | integer | `5`, `30` | Bad secrets from one address before it is locked out, and the first lockout (it doubles each time) |
+| `requests-per-minute`, `max-connections`, `max-connections-per-address`, `idle-seconds` | integer | `600`, `16`, `8`, `60` | Rate and connection limits |
 
 ### `[network.query]`
 
@@ -84,6 +103,10 @@ Tables that belong to a dedicated feature are documented with it: `[network.rcon
 |---|---|---|---|
 | `watchdog-seconds` | integer | `60` | Seconds one tick may take before the watchdog logs it and exits (vanilla's `max-tick-time`). `0` turns it off |
 | `chunk-send-rate` | integer, 0 to 1280 | `0` | Most chunks sent to one player per second. `0` leaves it to the client, which in vanilla asks for up to 1280. **NO VANILLA** below 1280 |
+| `timings-url` | string | `"https://basaltmc.org"` | Where `/timings` uploads a finished profile to give you a link, only when you run `/timings stop` or `/timings report`. Empty keeps reports in `.basalt/timings/` and uploads nothing |
+| `timings-ca-file` | string | `""` | PEM file with the certificate authority of a viewer you host behind a private CA. Empty uses the system's |
+| `regional` | boolean | `false` | **NO VANILLA.** Reserved for splitting a world into regions that tick independently. Not built yet: every world is still one region |
+| `region-threads` | string or integer | `"auto"` | How many regions tick at once with `regional = true`. Ignored while it is off |
 | `generation-metrics` | boolean | `false` | Count noise evaluations, biome lookups and per-phase timings while generating chunks and log a report once the startup chunks are ready. Forces startup generation onto one thread. Diagnostics only |
 
 ### `[plugins]`
