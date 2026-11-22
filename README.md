@@ -41,6 +41,34 @@ group: Configuration
 The body is markdown, with callouts (`<x-docs.callout type="note|tip|warning" title="...">`) and fenced code blocks
 tagged with a language (`lua`, `bash`, `toml`).
 
+### Charts
+
+A fenced block tagged `chart` draws horizontal bars. Header lines come first, then `---`, then groups separated by a
+blank line: an optional group name and `series: value` lines. A series keeps its colour across groups; `colors:` pins
+a series to a palette slot (0 to 7, separated by `;`) so a name has the same colour in every chart.
+
+````mdx
+```chart
+title: Time per call
+note: Less is better.
+unit: ns
+scale: log
+scope: group
+colors: Before=0; After=2
+---
+Region check
+Before: 4996
+After: 276
+
+Chat
+Before: 1486
+After: 238
+```
+````
+
+`scale: log` draws a logarithmic scale and says so in the note, and `scope: group` gives each group its own scale
+instead of sharing one. A block that does not parse is shown as plain code.
+
 ## License
 
 [MIT](LICENSE).
