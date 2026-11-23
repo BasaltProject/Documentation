@@ -1,6 +1,6 @@
 ---
 title: Groups and permissions
-description: groups.toml, how permissions are resolved, the node of every built-in command, how players are put in a group, and the access calls a plugin can make.
+description: groups.toml, how permissions are resolved, the node of every built-in command, and how players are put in a group.
 group: Administration
 ---
 
@@ -78,7 +78,7 @@ permissions = ["basalt.command.*", "-basalt.command.stop", "-basalt.command.op"]
 Here a builder may use every command except `/stop` and `/op`, because each denial names a node more precisely than the wildcard does.
 
 <x-docs.callout type="note" title="Plugins can override a group">
-A plugin may grant or deny a node to one player for the session, and those entries are consulted before the group. See [Granting and denying permissions](#granting-and-denying-permissions) below.
+A plugin may grant or deny a node to one player for the session, and those entries are consulted before the group. See [Permissions](/docs/server/wasm-permissions).
 </x-docs.callout>
 
 ## Permission nodes
@@ -130,34 +130,3 @@ A player whose recorded group is no longer declared in `groups.toml` is treated 
 <x-docs.callout type="tip" title="Applying changes">
 `/reload` re-reads `groups.toml` and applies it to everybody online without a restart. A file that does not validate is reported and the running groups stay as they were.
 </x-docs.callout>
-
-## Access
-
-The global `access` answers about players whether or not they are online. Each call takes a player, a uuid or a name.
-
-| Call | Returns |
-|---|---|
-| `access.is_banned(who)` | Whether the profile is banned |
-| `access.is_whitelisted(who)` | Whether it is on the whitelist |
-| `access.is_operator(who)` | Whether it belongs to the operator group |
-| `access.known(name)` | `{ uuid, name, first_seen, last_seen }`, or `nil` when the server never saw it |
-| `access.statistic(uuid, key)` | A stored statistic counter of a player who may be offline, such as `minecraft:custom/minecraft:jump` |
-| `access.set_statistic(uuid, key, value)` | Sets that counter in the player database; returns whether it did |
-| `access.last_death(uuid)` | `{ dimension, x, y, z }` where the player last died, or `nil` |
-
-```lua
-if access.is_banned("Steve") then log.info("Steve is banned") end
-```
-
-## Granting and denying permissions
-
-A plugin can grant or deny a permission to one player on top of their group, for the session. The source is the calling plugin.
-
-```lua
-p:grant("myplugin.fly")
-p:deny("essentials.spawn")
-p:revoke("myplugin.fly")        -- drops this plugin's entry
-p:may("basalt.command.kick")    -- what the server's own checks would answer
-```
-
-An exact node beats a wildcard (`a.b.*`, `*`), the longest wildcard wins, and a denial wins a tie. The server's own checks (`p:may(node)` and command permissions) consult these entries before the group.

@@ -1,0 +1,304 @@
+---
+title: Commands
+description: Register commands with arguments and permissions, read what the player typed, reply, complete, alias and run commands from a plugin.
+group: Plugin API
+---
+
+A plugin registers a command with the server's command dispatcher, so it shows up in the client's command tree, in tab
+completion and in `/help` like any command that ships with the server. You describe the command in one line, the
+**spec**, and the server parses what the player types and hands your callback the arguments already checked.
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void balance(bs::core::Ctx ctx) {
+    const auto target = bs::commands::command_arg_str(ctx, "target");
+    bs::core::Args args;
+    if (target.ok()) {
+        args.add("name", target.c_str());
+        bs::commands::command_reply(ctx, "<green>{name} has 12 coins.", &args);
+    } else {
+        bs::commands::command_reply(ctx, "<green>You have 5 coins.");
+    }
+}
+
+static void give(bs::core::Ctx ctx) {
+    long long amount = 0;
+    if (bs::commands::command_arg_i64(ctx, "amount", &amount) != 0) {
+        return;
+    }
+    char digits[24];
+    bs::core::format_i64(amount, digits);
+    bs::core::Args args;
+    args.add("amount", digits).add("target", bs::commands::command_arg_str(ctx, "target").c_str());
+    bs::commands::command_reply(ctx, "<green>Gave {amount} coins to {target}.", &args);
+}
+
+void plugin_init() {
+    bs::commands::command("coins [target: word]", "", balance);
+    bs::commands::command("coins give <target: word> <amount: int 1..1000>", "shop.use", give);
+}
+```
+
+Calls on this page are written in their C++ spelling, `commands::command` for instance. Other languages use their own
+casing, see [The SDK](/docs/server/wasm-sdk).
+
+## The spec
+
+A spec is words separated by spaces. The words before the first argument are **literals**: the first one is the command
+name and any others are subcommands. After the literals come the arguments, each written `name: type`, in `<>` when it is
+required and in `[]` when it is optional.
+
+```
+coins
+coins top [limit: int 1..25]
+warp set <name: word>
+tell-staff <message: text>
+scale [factor: float 0..10] [loud: bool]
+```
+
+| Type | Accepts | Read it with |
+|---|---|---|
+| `word` | One word. This is the type when none is written, so `[who]` is the same as `[who: word]` | `commands::command_arg_str` |
+| `text` | The rest of the line, spaces included. Put it last | `commands::command_arg_str` |
+| `int` | A whole number of 32 bits | `commands::command_arg_i64` |
+| `float` | A decimal number | `server::command_arg_f64` |
+| `bool` | `true` or `false` | `server::command_arg_bool` |
+
+`int` and `float` take a range after the type, written `min..max` with no spaces, and either end may be left out:
+`int 1..25`, `int 0..`, `int ..100`. The bounds of both types are whole numbers, and a decimal bound is ignored. A
+value outside the range is refused by the client and by the server with the usual command error, and your callback does
+not run.
+
+Several registrations may start with the same command name, which is how subcommands are made. `coins`, `coins top` and
+`coins give` above are three registrations of one command tree. A spec is identified by its literals: registering
+`coins give` a second time is refused, whatever its arguments are.
+
+A spec is refused with `ERR_INVALID` when:
+
+| Spec | Problem |
+|---|---|
+| (empty) | There is no name |
+| `<amount: int> pay` | It starts with an argument |
+| `pay <amount: int> now` | A literal comes after an argument |
+| `pay [amount: int] <who: word>` | A required argument comes after an optional one |
+| `pay <who: player>` | The type is not one of the five above |
+| `pay <who: word` | An argument never closes |
+| `pay <: word>` | An argument has no name |
+
+The server logs a warning that says what is wrong with the spec.
+
+## Registering
+
+Two calls register a command. They share the grammar and the callback, and differ in what you can do with the command
+afterwards:
+
+| Call | Adds |
+|---|---|
+| `commands::command(spec, permission, handler)` | The plain registration |
+| `server::command(spec, permission, handler, complete)` | The same, and the command can be given [tab completion](#tab-completion), [aliases](#aliases-and-removing-commands) and be removed again. `complete` may be left out |
+
+Both return 0 on success. The two read an empty `permission` differently, see the next section.
+
+## Permissions
+
+Who may run a command depends on the permission you register it with.
+
+| Call | `permission` | Who may run it |
+|---|---|---|
+| `commands::command` | `"some.node"` | Whoever holds that node |
+| `commands::command` | `""` | Everyone |
+| `server::command` | `"some.node"` | Whoever holds that node |
+| `server::command` | `""` | Whoever holds the default node, `basalt.plugin.<id>.<command>`, where `<id>` is the plugin id and `<command>` the first word of the spec |
+
+The console, command blocks and the remote console are not checked against nodes. The default operator group holds `*`,
+and the default group holds none of the plugin nodes, so a command on its default node is for operators and the console
+until the server owner grants the node to a group in `groups.toml`, see
+[Groups and permissions](/docs/server/groups-and-permissions). A plugin can grant a node to one player itself, see
+[Permissions](/docs/server/wasm-permissions).
+
+The permission belongs to the command name, the first word of the spec, and not to a subcommand. When several
+registrations share a name, give them all the same `permission`. A player who may not run a command does not see it in
+tab completion.
+
+## The callback
+
+The callback receives a `ctx`, the handle of this one run of the command. It answers the `commands::command_*` calls and
+stops being valid when the callback returns. In C++ a callback is a plain function (or a lambda that captures nothing),
+so state that outlives a call lives in a `static` variable.
+
+### Reading arguments
+
+An argument is read by its name in the spec. Every reader answers `ERR_ABSENT` when the argument was optional and not
+typed.
+
+| Call | Reads |
+|---|---|
+| `commands::command_arg_str(ctx, name)` | The argument as text, whatever its type: a number or a boolean reads as the text of its value. Returns a `Text<256>`: `ok()` says whether it was typed, `c_str()` gives the text, and a longer text is cut at 256 bytes |
+| `commands::command_arg_i64(ctx, name, &out)` | An `int` argument. `ERR_INVALID` for another type |
+| `server::command_arg_f64(ctx, name, &out)` | A `float` argument, or an `int`, as a decimal. `ERR_INVALID` for another type |
+| `server::command_arg_bool(ctx, name, &out)` | A `bool` argument, written as 1 or 0 into an `int`. `ERR_INVALID` for another type |
+
+```cpp
+static void scale(bs::core::Ctx ctx) {
+    double factor = 1.0;
+    int loud = 0;
+    bs::server::command_arg_f64(ctx, "factor", &factor);
+    bs::server::command_arg_bool(ctx, "loud", &loud);
+    bs::commands::command_reply(ctx, loud == 1 ? "<yellow>Scaled!" : "<gray>Scaled.");
+}
+
+void plugin_init() {
+    bs::server::command("scale [factor: float 0..10] [loud: bool]", "", scale);
+}
+```
+
+The variables keep their starting value when an argument was not typed, which makes a default easy to write.
+
+### The source
+
+| Call | Gives |
+|---|---|
+| `commands::command_source_name(ctx)` | The name of whoever ran the command, as a `Text<256>` |
+| `commands::command_is_console(ctx)` | `true` when the sender is not a player: the console, a command block or the remote console |
+
+The source is a name, not a player handle. To act on the player, look them up:
+
+```cpp
+static void spark(bs::core::Ctx ctx) {
+    if (bs::commands::command_is_console(ctx)) {
+        bs::commands::command_reply(ctx, "<red>Players only.");
+        return;
+    }
+    const bs::core::Player player = bs::players::player_by_name(bs::commands::command_source_name(ctx).c_str());
+    bs::players::particle(player, "minecraft:happy_villager", 20, 0.5);
+}
+
+void plugin_init() {
+    bs::commands::command("spark", "example.spark", spark);
+}
+```
+
+The ABI has one more call, `command_source`, that describes the sender in a single [value](/docs/server/wasm-values): the
+name, the console flag, the kind (`console`, `player`, `command_block`, `proxied` or `other`), the world and the position
+(`x`, `y`, `z`) of the sender, and for a command relayed through a proxy the sender that asked, as its kind, a colon and
+its name. See [The ABI](/docs/server/wasm-abi) for how to call it. `command_source_player` answers the sender's player
+handle directly, 0 for the console.
+
+### Replying
+
+`commands::command_reply(ctx, text, &args)` sends a line to whoever ran the command, and prints it when that is the
+console. The text follows the [text rules](/docs/server/wasm-text): it is MiniMessage, `@key` names an entry of the
+plugin's lang files, and each `{name}` is replaced from the `Args` you pass. It returns `ERR_ABSENT` when the lang key
+does not exist. A command may reply as many times as it likes.
+
+The `ctx` is valid only until the callback returns. To tell a player something later, from a [task](/docs/server/wasm-tasks)
+for instance, keep their name, look them up again when the time comes, and use `players::send`.
+
+## Tab completion
+
+Pass a second callback to `server::command` and the server asks it for candidates when a player is typing the **last**
+argument of the spec. Inside it, `server::complete_input(ctx)` gives the text typed so far for that argument, as a
+`Text<256>`, and `server::complete_add(ctx, candidate)` offers one candidate. A candidate is a non-empty text without a
+line break, and a call with anything else is `ERR_INVALID`.
+
+```cpp
+static void warp(bs::core::Ctx ctx) { bs::commands::command_reply(ctx, "<gray>Warping."); }
+
+static void warp_complete(bs::core::Ctx ctx) {
+    bs::server::complete_add(ctx, "spawn");
+    bs::server::complete_add(ctx, "market");
+}
+
+void plugin_init() {
+    bs::server::command("warp <name: word>", "", warp, warp_complete);
+}
+```
+
+The sender can be read with `commands::command_source_name` and `commands::command_is_console` in a completion
+callback, but no argument has a value yet. Completion is offered when the plugin is idle: while it is inside another
+callback, no candidates are given.
+
+## Aliases and removing commands
+
+Both calls work on the commands registered with `server::command`. A command registered with `commands::command` stays
+for as long as the plugin runs.
+
+| Call | Does |
+|---|---|
+| `server::command_alias(name, alias)` | Adds `alias` as another first word for every command the plugin registered under `name`, with the same arguments, callback and permission. When the command used the default node, the alias asks for the node of the original name. `ERR_ABSENT` when the plugin has no command called `name`, `ERR_INVALID` when `alias` is empty, has a space, or is already a command of the plugin |
+| `server::command_unregister(name)` | Removes every such command under the first word `name`, together with its aliases. Returns how many were removed, `ERR_ABSENT` for none. It works at any time, so a plugin can change its command set while the server runs |
+
+```cpp
+static void warp(bs::core::Ctx ctx) { bs::commands::command_reply(ctx, "<gray>Warping."); }
+
+void plugin_init() {
+    bs::server::command("warp <name: word>", "", warp);
+    bs::server::command_alias("warp", "w");
+}
+```
+
+## Running commands from a plugin
+
+`server::command_run(line, player)` runs a command line as the console, or as a player when you pass their handle. The
+leading slash is optional. The call queues the line and returns 1: it runs on the next tick, after the callback has
+returned, so the command can call back into your plugin without a callback inside a callback. It returns `ERR_DENIED`
+without the capability, `ERR_STALE` for a player who left and `ERR_INVALID` for an empty line.
+
+```cpp
+static void announce_closing(bs::core::Ctx) {
+    bs::server::command_run("say The server closes in one minute", 0);
+}
+
+void plugin_init() {
+    bs::tasks::after(1200, announce_closing);
+}
+```
+
+It needs the `commands` capability in `plugin.toml`:
+
+```toml
+[capabilities]
+commands = true
+```
+
+and the server owner's grant in `config/server.toml`, see [Server settings](/docs/server/server-settings):
+
+```toml
+[plugins.allow]
+lobby = ["commands"]
+```
+
+A plugin that asks for the capability without the grant loads without it, and the call answers `ERR_DENIED`. See
+[plugin.toml](/docs/server/wasm-plugin-toml) for the capabilities. To change what a player typed before it runs, or to
+refuse it, listen to [`player.command`](/docs/server/wasm-events#player-events).
+
+## Things that catch people out
+
+- An empty permission means "everyone" for `commands::command` and "the default node" for `server::command`. Write the
+  node you mean.
+- A spec is identified by its literals. Registering `warp list` twice, with the same or other arguments, is `ERR_INVALID`
+  and the second callback is never used.
+- An `int` argument is 32 bits wide, so a range cannot go beyond about two billion. Range bounds are whole numbers, even
+  for `float`.
+- `text` takes the rest of the line, so nothing after it can be typed. Put it last.
+- `commands::command_is_console` is true for every sender that is not a player. Do not assume it is the console.
+- `commands::command_arg_str` stops at 256 bytes. A `text` argument longer than that is cut.
+- The `ctx` is dead once the callback returns. Reply inside it, and use `players::send` for anything later.
+- A command callback has to return quickly like any callback: a plugin stuck for about a quarter of a second is
+  interrupted, and three failures in a row switch it off until `/plugins reload`.
+- A callback of a plugin never starts inside another callback of the same plugin. A command your plugin runs with
+  `server::command_run` is queued for the next tick for that reason.
+- Aliases, removal and completion exist only for commands registered with `server::command`.
+
+## Where to go next
+
+| To | Read |
+|---|---|
+| Decide who may run what | [Groups and permissions](/docs/server/groups-and-permissions) and [Permissions](/docs/server/wasm-permissions) |
+| Format replies and keep texts in lang files | [Text](/docs/server/wasm-text) |
+| Change or refuse what a player typed | [Events](/docs/server/wasm-events) |
+| Do something a few seconds after a command | [Tasks and time](/docs/server/wasm-tasks) |
+| Open a menu or a form from a command | [Menus](/docs/server/wasm-menus) |

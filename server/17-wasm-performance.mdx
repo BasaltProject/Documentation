@@ -1,0 +1,80 @@
+---
+title: Performance
+description: Measured numbers for WebAssembly plugins and how to write plugins that keep the tick short.
+group: Plugin basics
+---
+
+A plugin runs on the same threads as the game, so a slow plugin is a slow server. This page gives the numbers that were
+measured when Basalt chose WebAssembly, and then what they mean when you write a plugin.
+
+## Compute speed
+
+Eight compute kernels (`fib`, a xorshift loop, a sieve, n-body, matmul, quicksort, an open-addressing hash table and binary
+trees) were run with the same algorithm and the same checksum on every engine, in release builds, one after another on
+one machine (Ryzen 7 5800X, JDK 25). The chart is the geometric mean of their time against Java HotSpot:
+
+```chart
+title: Compute time against Java HotSpot
+note: Less is better. The WebAssembly was compiled from C, the best case for it.
+unit: x
+---
+Native C: 0.79
+Wasmtime Cranelift: 0.85
+Java HotSpot: 1
+Wasmtime Winch (baseline): 1.57
+```
+
+Wasmtime with the Cranelift compiler is about as fast as HotSpot, and close to the same code compiled natively. A
+WebAssembly interpreter measured 30 to 49 times HotSpot's time in the same runs, and an interpreted scripting language
+sat far above that. Speed comes from the compiler, which is why the server uses Cranelift and compiles each plugin once.
+
+This figure is for code written in a language that compiles to plain WebAssembly. A language that carries a garbage
+collector or a large runtime inside the module (Kotlin, C#, Java, Go) does the same work plus the collector's, and will
+not reach the C figure.
+
+## The boundary
+
+What matters most in a plugin is not the arithmetic but the crossing between plugin and server. Per call:
+
+```chart
+title: Cost of a call across the boundary
+note: Less is better. Measured with Wasmtime and Cranelift.
+unit: ns
+---
+Server into plugin: 15.1
+Plugin into server: 4.7
+```
+
+An event handler that makes eight calls into the server costs about 47 ns in total. At that price a plugin can react to
+thousands of events per tick, and the cost you can feel comes from what the calls do (changing a block, resending a
+chunk), not from the crossing.
+
+## Start-up
+
+| | Time |
+|---|---|
+| Compile a 1.4 MB module with Cranelift | 0.23 s |
+| Instantiate a module that is already compiled | 4 to 6 microseconds |
+
+The compiled code is cached under `.basalt/wasm-cache/`, so a restart does not compile again. FreeBSD runs plugins with
+WAMR instead of Wasmtime, which these numbers do not cover.
+
+## Writing fast plugins
+
+- **Do less per tick.** Almost everything slow in a plugin is work repeated every tick that did not need to be. Cache a
+  value in a variable, react to the event that changes it, and run periodic work in a [task](/docs/server/wasm-tasks) with a
+  sensible period.
+- **Batch calls that have a batch form.** Reading or writing many blocks has bulk calls (`world_fill`, section and chunk
+  reads) that cost one crossing for thousands of blocks, see [Worlds and blocks](/docs/server/wasm-worlds#blocks-in-bulk).
+  Rankings come from one `store_top` instead of a read per player.
+- **Read an event field once** and keep it in a local, instead of asking the ctx again.
+- **Right-size your buffers.** A call that returns text or a structure tells you the length it needs. A buffer that is big
+  enough the first time saves the second call, so size the one you use for a hot path to fit the usual answer.
+- **Listen narrowly.** A packet listener on `*` or on movement runs for every packet of every player, and an event
+  listener with a [filter](/docs/server/wasm-events#filters) is not called at all when the filter does not match. See
+  [Packets and plugin channels](/docs/server/wasm-packets).
+- **Keep callbacks short.** A callback that stays in the plugin for about a quarter of a second is cut off, and three in a
+  row switch the plugin off, see [Execution model](/docs/server/wasm-execution-model#when-a-plugin-fails). Split long work
+  over several ticks with tasks.
+- **Pick the language for the goal.** C, C++, Zig and Rust produce the code these numbers describe, in small modules.
+  The other languages are a fine choice when the plugin is not on a hot path, and the tick time you give them is higher.

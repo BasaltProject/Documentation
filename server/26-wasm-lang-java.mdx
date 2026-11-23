@@ -1,0 +1,217 @@
+---
+title: Java
+description: Write a Basalt plugin in Java with TeaVM: plain classes and lambdas in a module of about 120 KB, on every platform except FreeBSD.
+group: Languages
+---
+
+Choose Java when it is the language you know and you do not need to run on FreeBSD. Plugins are ordinary classes with
+lambdas and method references as handlers, and a small one compiles to about 120 KB. That is a fraction of what Kotlin or
+C# need, but the module still carries a garbage collector, its heap is capped at 16 MB, and only the part of the JDK that
+the TeaVM compiler implements is available. Speed has not been measured the way C was, and a garbage-collected language
+will not match C, C++, Zig or Rust for a plugin that runs often.
+
+<x-docs.callout type="warning" title="Not on FreeBSD">
+Java plugins do not run on a server for FreeBSD: its WebAssembly engine does not load the modules Kiln produces for Java.
+They run on the other platforms the server supports. The other eight languages are not affected.
+</x-docs.callout>
+
+## What Kiln installs
+
+Nothing by hand. Java plugins are compiled by TeaVM, which turns your classes into C, and Zig, which compiles that C to
+WebAssembly. Kiln downloads TeaVM and the Eclipse Java compiler (about 30 MB together) on the first build, and Zig (about
+55 MB, 407 MB unpacked) unless you have one. It uses a `java` of version 17 or newer from your `PATH` to run them, and
+otherwise downloads a JRE 21 (about 50 MB). The cache is per-user, on Linux, macOS and Windows. See
+[Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang java
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/org/basaltmc/server/example/Main.java
+```
+
+Every `.java` file under `src/` is compiled together, as Java 17. Folders follow the package, as usual. The module is
+written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time. While it
+builds, Kiln shows the progress lines TeaVM prints.
+
+## The entry point
+
+Write a class `Main` in a file called `Main.java`, with a `public static void init()`. Kiln finds that file, reads its
+`package` line, and generates the exports the server needs and a call to `Main.init()`. `init` runs once, after the module
+loads; that is where you register listeners, commands and tasks. Other classes can have any name.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `Main.java`.
+
+```java
+package org.basaltmc.server.example;
+
+import org.basaltmc.server.commands.Arguments;
+import org.basaltmc.server.commands.Registry;
+import org.basaltmc.server.commands.Sender;
+import org.basaltmc.server.core.Args;
+import org.basaltmc.server.core.Priority;
+import org.basaltmc.server.events.EventBus;
+import org.basaltmc.server.log.Logger;
+import org.basaltmc.server.players.Directory;
+
+public final class Main {
+    private static void onJoin(int ctx) {
+        int player = EventBus.eventPlayer(ctx);
+        if (player == 0) {
+            return;
+        }
+        String name = Directory.playerName(player);
+        if (name == null) {
+            name = "player";
+        }
+        Directory.send(player, "<green>Welcome, {name}!", new Args().add("name", name));
+    }
+
+    private static void hello(int ctx) {
+        Long given = Arguments.i64(ctx, "times");
+        long times = given == null ? 1 : given;
+        for (long i = 0; i < times; i++) {
+            Sender.reply(ctx, "<yellow>Hello from greeter!");
+        }
+    }
+
+    public static void init() {
+        Logger.logInfo("greeter loaded");
+        EventBus.on("player.join", Priority.NORMAL, Main::onJoin);
+        Registry.register("greeter hello [times: int 1..5]", "", Main::hello);
+    }
+}
+```
+
+`EventBus.on` listens to an event, see [Events](/docs/server/wasm-events); `Registry.register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Java spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: a package per area, `org.basaltmc.server.<area>`, holding one class named for its job, not for the
+  area. Methods are the C++ name in camelCase, and are `static`. The classes are:
+
+  | Area | Package and class |
+  |---|---|
+  | `core` | `org.basaltmc.server.core`: `Args`, `Priority`, `Level`, `Handler` |
+  | `log` | `org.basaltmc.server.log.Logger` |
+  | `config` | `org.basaltmc.server.config.Settings` |
+  | `text` | `org.basaltmc.server.text.Translations` |
+  | `players` | `org.basaltmc.server.players.Directory` |
+  | `data` | `org.basaltmc.server.data.PlayerStore` |
+  | `events` | `org.basaltmc.server.events.EventBus` |
+  | `commands` | `org.basaltmc.server.commands`: `Registry` (register), `Arguments` (read arguments), `Sender` (reply, name, console) |
+  | `tasks` | `org.basaltmc.server.tasks.Scheduler` |
+  | `menus` | `org.basaltmc.server.menus.InventoryMenu` |
+  | `worlds` | `org.basaltmc.server.worlds.WorldManager` |
+  | `entities` | `org.basaltmc.server.entities.EntityManager` |
+  | `items` | `org.basaltmc.server.items.Catalog` |
+  | `hud` | `org.basaltmc.server.hud.Displays` |
+  | `packets` | `org.basaltmc.server.packets.Interceptor` |
+  | `server` | `org.basaltmc.server.services.RuntimeServices` |
+  | `values` | `org.basaltmc.server.values.Documents`, with the nested `Writer` and `Value` |
+
+  So `players::send` is `Directory.send`, `players::player_name` is `Directory.playerName`, `commands::command_reply` is
+  `Sender.reply` and `config::config_i64` is `Settings.configI64`.
+- **Strings in** are `String`.
+- **Strings out** are `String`, `null` when the call failed. A number that may be absent is a `Long`, `null` when absent.
+- **Optional arguments** are overloads: `Sender.reply(ctx, text)` and `Sender.reply(ctx, text, args)`.
+- **Handles** are plain `int`. `0` is never a valid handle. `Directory.playersOnline()` returns an `int[]`.
+- **`Args`** is `new Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.LOWEST` to `Priority.HIGHEST` and `Level.DEBUG` to `Level.ERROR`.
+- **Handlers** are the functional interface `Handler`, `void run(int ctx)`: a method reference such as `Main::onJoin`, or a
+  lambda (`ctx -> { ... }`), which can capture effectively final variables.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `new Documents.Writer()` builds a document, its
+methods chain and `finish()` returns a `byte[]`, or `null` if the writer failed. A call that returns a value gives you a
+reply with a `code` that is `0` when it worked and a `value` to read. This keeps a count of joins in a JSON document (it
+needs the `storage` [capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```java
+import org.basaltmc.server.services.RuntimeServices;
+import org.basaltmc.server.values.Documents;
+
+private static void recordJoin(String who) {
+    RuntimeServices.Reply reply = RuntimeServices.dataRead("joins");
+    Documents.Value found = reply.code == 0 ? reply.value.find("total") : null;
+    long total = found == null ? 0 : found.asLong(0);
+
+    byte[] doc = new Documents.Writer()
+            .beginMap()
+            .key("total").integer(total + 1)
+            .key("last").string(who)
+            .end()
+            .finish();
+    if (doc != null) {
+        RuntimeServices.dataWrite("joins", doc);
+    }
+}
+```
+
+The writer has `nul`, `bool`, `integer`, `number`, `string`, `bytes`, `beginList`, `beginMap`, `end` and `key`. For reading,
+`find` (a map, `null` when the key is missing), `at` (a list), `count` and `iter()` walk a document, and `asLong`,
+`asDouble`, `asBool` take a fallback for a value of another kind, while `asString` and `asBytes` return `null`. A failed
+call has a negative `code`, one of the [result codes](/docs/server/wasm-execution-model#result-codes).
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles the sources with the Eclipse compiler, translates them to C with TeaVM, compiles that with Zig for WebAssembly,
+writes `build/plugin.wasm` and checks it. The plugin above is about 120 KB (150 KB with the join counter) and takes about
+6 seconds to build once the toolchain is in place. `kiln pack` writes `build/greeter-0.1.0.bspkg` for the server's
+`plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang java --target proxy`, with `org.basaltmc.proxy.<area>` in place
+of `org.basaltmc.server.<area>` (`org.basaltmc.proxy.events.EventBus`). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **Not on FreeBSD.** See the note at the top.
+- **The heap is 16 MB.** TeaVM's collector manages a heap of at most 16 MB, and the module as a whole uses about 19 MB of
+  memory, inside the default plugin limit of 32 MB. A plugin that holds a lot of data in memory will run out of heap
+  before it reaches that limit.
+- **Only the JDK that TeaVM implements.** Strings, `StringBuilder`, `java.util` collections, `Math` and streams work.
+  Threads, files, sockets and most of the rest of the JDK do not exist in the module.
+- **Avoid `String.format`.** It pulls a lot of library code into the module: one call grew the plugin above from 150 KB to
+  800 KB and the build from 6 to 15 seconds. Concatenate strings with `+` or a `StringBuilder` instead. Streams cost far
+  less, about 50 KB.
+- **No `System.out`.** Printing pulls in operating-system calls the server does not provide, and Kiln's check fails the
+  build. Write to the server log with `Logger.logInfo`.
+- **Garbage collected.** Objects are freed when unreachable, so allocating in a callback is fine, but collection adds work
+  to handlers that run often.
+- **An uncaught exception ends the callback** and counts as a failure (three in a row switch the plugin off), see
+  [Execution model](/docs/server/wasm-execution-model).
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `java`.

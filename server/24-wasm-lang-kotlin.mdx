@@ -1,0 +1,174 @@
+---
+title: Kotlin
+description: Write a Basalt plugin in Kotlin with Kotlin/Wasm: lambdas and nullable types, in a module of about 800 KB.
+group: Languages
+---
+
+Choose Kotlin when you know it and want its comfort: lambdas as handlers, nullable types for answers that may be missing,
+and the standard library. The price is weight. Kotlin/Wasm puts the Kotlin runtime in the module, so even a tiny plugin is
+about 800 KB, builds take 15 seconds or so instead of a fraction of a second, and the module uses WebAssembly's
+garbage-collection feature, which the server's engine provides. Speed has not been measured the way C was, and a
+garbage-collected language will not match C, C++, Zig or Rust for a plugin that runs often.
+
+## What Kiln installs
+
+Nothing by hand. Kiln downloads the Kotlin compiler 2.4 on the first build (about 90 MB), and a JRE 21 (about 50 MB, 253 MB
+unpacked in all) unless a `java` of version 17 or newer is on your `PATH`, into a per-user cache on Linux, macOS and
+Windows. See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang kotlin
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/org/basaltmc/server/example/main.kt
+```
+
+Every `.kt` file under `src/` is compiled together. The folders follow the package, which is a habit and not a
+requirement. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is
+rebuilt each time.
+
+## The entry point
+
+Write a top-level `fun init()` in a file that starts with a `package` line. Kiln finds it by searching your sources for
+`fun init()`, reads the package of that file, and generates the exports the server needs and a call to it. `init` runs
+once, after the module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `main.kt`.
+
+```kotlin
+package org.basaltmc.server.example
+
+import org.basaltmc.server.commands.command
+import org.basaltmc.server.commands.commandArgI64
+import org.basaltmc.server.commands.commandReply
+import org.basaltmc.server.core.Args
+import org.basaltmc.server.core.Ctx
+import org.basaltmc.server.core.Priority
+import org.basaltmc.server.events.eventPlayer
+import org.basaltmc.server.events.on
+import org.basaltmc.server.log.logInfo
+import org.basaltmc.server.players.playerName
+import org.basaltmc.server.players.send
+
+fun onJoin(ctx: Ctx) {
+    val player = eventPlayer(ctx)
+    if (player == 0) return
+    val name = playerName(player) ?: "player"
+    send(player, "<green>Welcome, {name}!", Args().add("name", name))
+}
+
+fun hello(ctx: Ctx) {
+    val times = commandArgI64(ctx, "times") ?: 1L
+    for (i in 0 until times) commandReply(ctx, "<yellow>Hello from greeter!")
+}
+
+fun init() {
+    logInfo("greeter loaded")
+    on("player.join", Priority.NORMAL, ::onJoin)
+    command("greeter hello [times: int 1..5]", "", ::hello)
+}
+```
+
+`on` listens to an event, see [Events](/docs/server/wasm-events); `command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Kotlin spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: one package per area, `org.basaltmc.server.<area>`, holding top-level functions that you import by
+  name. Functions are the C++ name in camelCase: `players::send` is `send`, `players::player_name` is `playerName`,
+  `commands::command_reply` is `commandReply`, `log::log_info` is `logInfo`. The `server` area is the package
+  `org.basaltmc.server.services`.
+- **Strings in** are `String`.
+- **Strings out** are `String?`, `null` when the call failed.
+- **Optional arguments** are default parameters: `commandReply(ctx, text)` and `commandReply(ctx, text, args)`. A number
+  that may be absent comes back as `Long?`.
+- **Handles** are `Player` and `Ctx`, both aliases of `Int`. `0` is never a valid handle. `playersOnline()` returns a
+  `List<Player>`.
+- **`Args`** is `Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.LOWEST` to `Priority.HIGHEST` and `Level.DEBUG` to `Level.ERROR`.
+- **Handlers** are `(Ctx) -> Unit`: function references such as `::onJoin`, or lambdas, which can capture variables. The
+  repeating-task call takes a trailing lambda, `every(period, period) { ... }`.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `ValueWriter()` builds a document and its methods
+chain; a call that returns a value gives you an `OutResult`, and `.value()` is the `Value?` to read. This keeps a count of
+joins in a JSON document (it needs the `storage` [capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```kotlin
+import org.basaltmc.server.services.dataRead
+import org.basaltmc.server.services.dataWrite
+import org.basaltmc.server.values.ValueWriter
+
+fun recordJoin(who: String) {
+    val total = dataRead("joins").value()?.find("total")?.asLong() ?: 0L
+
+    val doc = ValueWriter()
+        .beginMap()
+        .key("total").int(total + 1)
+        .key("last").string(who)
+        .end()
+    dataWrite("joins", doc)
+}
+```
+
+The writer has `nul`, `bool`, `int`, `float`, `string`, `bytes`, `beginList`, `beginMap`, `end` and `key`; `dataWrite` takes
+the writer itself. For reading, `find` (a map), `at` (a list), `count` and `iter()` walk a document, and `asLong`,
+`asDouble`, `asBool`, `asString` and `asBytes` return a nullable that is `null` when the value has another kind. A failed
+call has a negative `error` in its `OutResult`, one of the [result codes](/docs/server/wasm-execution-model#result-codes).
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles your sources and the SDK with the Kotlin/Wasm compiler for WASI, links the module, writes `build/plugin.wasm` and
+checks it. The plugin above is about 800 KB and takes 14 to 17 seconds to build once the toolchain is in place. The server
+compiles a module once when it loads it, so the size is a one-time cost, not a cost per call. `kiln pack` writes
+`build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang kotlin --target proxy`, with `org.basaltmc.proxy.<area>` in
+place of `org.basaltmc.server.<area>` (`org.basaltmc.proxy.events.on`). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **The module is large and fixed in size.** About 800 KB of it is the Kotlin runtime, whatever your plugin does.
+- **Garbage collection.** Kotlin objects live on the engine's garbage-collected heap, so allocating in a callback is fine
+  and nothing leaks. The collector adds work compared with C, so keep handlers that run often (a task every tick, a
+  listener on a busy event) light.
+- **No `println`.** Printing pulls in operating-system calls the server does not provide, and Kiln's check fails the build.
+  Write to the server log with `logInfo`.
+- **Only the Kotlin standard library.** `kotlinx` libraries, coroutines and anything that needs an operating system are
+  not there. Collections, strings and `kotlin.math` are.
+- **An uncaught exception is a trap.** It stops the callback and counts as a failure (three in a row switch the plugin
+  off), see [Execution model](/docs/server/wasm-execution-model).
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `kotlin`.

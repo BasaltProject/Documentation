@@ -1,0 +1,177 @@
+---
+title: AssemblyScript
+description: Write a Basalt plugin in AssemblyScript: TypeScript-like syntax compiled to a compact module with its own small runtime.
+group: Languages
+---
+
+Choose AssemblyScript when you know TypeScript and want to write a plugin in a similar syntax. Modules are compact (a
+greeter is about 8 KB) and the build is quick. It is not TypeScript, though: it compiles to WebAssembly with static types,
+so there are no closures, no exceptions and no dynamic features. The module carries a small garbage-collected runtime, and
+every string that crosses to the server is converted from UTF-16 to UTF-8, so it does not reach the speed of C, C++, Zig
+or Rust. Plugins that run often or loop over many players are better written in one of those.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses the compiler of a `node_modules/assemblyscript` folder in your project when there is one, and
+otherwise downloads Node 22 and AssemblyScript 0.28 (about 57 and 23 MB, 301 MB unpacked) into a per-user cache on the
+first build, on Linux, macOS and Windows. A `node` of version 18 or newer on your `PATH` is used instead of the Node download.
+See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang assemblyscript
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/main.ts
+```
+
+`src/main.ts` is the root of your plugin. Other files are modules you `import` from it with relative paths. The module is
+written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time.
+
+## The entry point
+
+Write `export function init(): void` in `src/main.ts`. Kiln generates the exports the server needs and calls your `init`
+once, after the module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/main.ts`.
+
+```ts
+import * as bsCommands from "basalt-server/commands";
+import * as bsCore from "basalt-server/core";
+import * as bsEvents from "basalt-server/events";
+import * as bsLog from "basalt-server/log";
+import * as bsPlayers from "basalt-server/players";
+
+function onJoin(ctx: bsCore.Ctx): void {
+  const player = bsEvents.eventPlayer(ctx);
+  if (player == 0) return;
+  const name = bsPlayers.playerName(player);
+  bsPlayers.send(player, "<green>Welcome, {name}!", new bsCore.Args().add("name", name ? name : "player"));
+}
+
+function hello(ctx: bsCore.Ctx): void {
+  const times = bsCommands.commandArgI64(ctx, "times", 1);
+  for (let i: i64 = 0; i < times; i++) {
+    bsCommands.commandReply(ctx, "<yellow>Hello from greeter!");
+  }
+}
+
+export function init(): void {
+  bsLog.logInfo("greeter loaded");
+  bsEvents.on("player.join", bsCore.NORMAL, onJoin);
+  bsCommands.command("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`events.on` listens to an event, see [Events](/docs/server/wasm-events); `command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the AssemblyScript spelling is in
+[The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: one module per area, `basalt-server/<area>`, imported as a namespace
+  (`import * as bsPlayers from "basalt-server/players"`). Functions are the C++ name in camelCase: `players::send` is
+  `send`, `players::player_name` is `playerName`, `commands::command_reply` is `commandReply`, `events::event_player` is
+  `eventPlayer`, `log::log_info` is `logInfo`.
+- **Strings in** are `string`.
+- **Strings out** are `string | null`, `null` when the call failed.
+- **Optional arguments** are default parameters: `commandReply(ctx, text)` and `commandReply(ctx, text, args)`. Calls that
+  read a number take the fallback instead of returning an optional: `commandArgI64(ctx, "times", 1)`.
+- **Handles** are `Player` and `Ctx`, both `i32`. `0` is never a valid handle. `playersOnline()` returns a `Player[]`.
+- **`Args`** is `new bsCore.Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `bsCore.LOWEST` to `bsCore.HIGHEST` for priorities and `bsCore.DEBUG` to `bsCore.ERROR` for levels.
+- **Integers**: a server `i64` is an `i64`, not a `number`. Write `1` where an `i64` is expected and keep loop counters
+  typed (`let i: i64 = 0`).
+- **Handlers** are named top-level functions of type `(ctx: Ctx) => void`. Closures are not implemented in
+  AssemblyScript, so a handler cannot capture a local; keep state in module-level `let` variables.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `new ValueWriter()` builds a document, its methods
+chain, and `finish()` returns a `Uint8Array`. A call that returns a value gives you an `OutResult`, and `.value()` is the
+`Value` to read, or `null` when the call failed. This keeps a count of joins in a JSON document (it needs the `storage`
+[capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```ts
+import * as bsServer from "basalt-server/server";
+import * as bsValues from "basalt-server/values";
+
+function recordJoin(who: string): void {
+  let total: i64 = 0;
+  const reply = bsServer.dataRead("joins").value();
+  if (reply !== null) {
+    const found = reply.find("total");
+    if (found !== null) total = found.toInt();
+  }
+
+  const doc = new bsValues.ValueWriter()
+    .beginMap()
+    .key("total").int(total + 1)
+    .key("last").string(who)
+    .end()
+    .finish();
+  bsServer.dataWrite("joins", doc);
+}
+```
+
+The writer has `nullValue`, `boolean`, `int`, `float`, `string`, `bytes`, `beginList`, `beginMap`, `end` and `key`;
+`finish()` is `null` when the writer failed. For reading, `find` (a map), `at` (a list), `count` and `iter()` walk a
+document, `find` and `at` return `null` for a missing entry, and `toInt`, `toFloat` and `toBool` take a fallback for a value
+of another kind while `toStr` returns `string | null`.
+
+## Building
+
+```bash
+kiln build
+```
+
+runs the AssemblyScript compiler with `--optimizeLevel 3 --shrinkLevel 2 --noAssert` and the incremental runtime, writes
+`build/plugin.wasm` and then checks it. The plugin above is about 8 KB and builds in a second or two. `kiln pack` writes
+`build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang assemblyscript --target proxy`, with `basalt-proxy/<area>`
+in place of `basalt-server/<area>` (`import * as bsEvents from "basalt-proxy/events"`). Proxy plugins are packed as
+`.bppkg`, see [Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **No closures.** An arrow function that captures a local variable is a compile error. Use top-level functions and
+  module-level variables.
+- **No exceptions.** `try` and `catch` do not compile, and `throw` aborts the callback as a trap. A trap counts as a
+  failure of that callback, see [Execution model](/docs/server/wasm-execution-model).
+- **Nothing that needs the environment.** The module may import only from the server, so `console.log`, `trace()`,
+  `Date.now()` and `Math.random()` make the build fail its check. Use `log` to write to the server log.
+- **`assert` is removed** by the build flag, so do not rely on it to guard an assumption.
+- **Strings are UTF-16.** Every string you pass to or get from the server is encoded or decoded on the way, so avoid
+  building long strings in tight loops. Keep the work in a handler small.
+- **A garbage-collected runtime is part of the module.** It frees what you drop, so allocation per call is fine, but it
+  adds some work and size to every plugin.
+- **A subset of TypeScript.** Types are static and `number` is an `f64`; use `i32`, `i64` and `f64` on purpose. Check the
+  [AssemblyScript documentation](https://www.assemblyscript.org/) for what the language and its standard library support.
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `assemblyscript`.

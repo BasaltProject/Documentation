@@ -1,0 +1,247 @@
+---
+title: Text, language files and placeholders
+description: How a plugin writes messages with MiniMessage, language files and named arguments, and how it offers and resolves %placeholders%.
+group: Plugin API
+---
+
+Everything a plugin says to a player goes through the same small system: a text is either a literal MiniMessage string or
+the key of a line in the plugin's language files, and it can carry named arguments. Keeping the wording in
+`resources/lang/en_us.toml` means the server owner can change or translate it without touching the code. This page covers
+that system, then `%placeholders%`: how a plugin offers its own and how it fills in the ones the server knows.
+
+Function names are written as in C++ (`players::send`, `text::translate`). Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk).
+
+```toml
+# resources/lang/en_us.toml
+welcome = "<gold>Welcome, <yellow>{name}</yellow>!"
+balance = "<gray>You have <gold>{amount}</gold> coins."
+
+[shop]
+title = "<dark_gray>Coin Shop"
+```
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    bs::core::Args args;
+    args.add("name", bs::players::player_name(player).c_str());
+    bs::players::send(player, "@welcome", &args);
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+}
+```
+
+When Steve joins, the plugin sends `@welcome` with `name` set to `Steve`. The server looks the key up, puts `Steve` where
+`{name}` stands and shows the result as gold and yellow chat text.
+
+## How a text is read
+
+Every call that sends text to a person reads its string in three steps:
+
+1. **`@key`.** A text that starts with `@` is the key of a line in the plugin's language files, written without the `@`.
+   Anything else is used as it is.
+2. **`{name}`.** Each `{name}` is replaced by the argument of that name. A name with no argument stays as written, braces
+   included.
+3. **MiniMessage.** The result is parsed as MiniMessage, the format the server's own configuration files use:
+   `<red>`, `<bold>`, `<gradient:aqua:green>`, `<hover:...>`, `<click:...>`. See [Interface](/docs/server/interface#text)
+   for the tags. Legacy `§` codes are not part of the model.
+
+A literal text and a key behave the same way, so `"<green>Saved."` and `"@saved"` can be swapped freely. Use a literal in a
+quick experiment and a key in anything an operator may want to reword.
+
+A key that does not exist is `ERR_ABSENT` and nothing is sent, so a typo in a key is visible in the return value and not
+as a stray line of text in chat.
+
+### Calls that take text
+
+These resolve `@key`, apply arguments and parse MiniMessage:
+
+| Call | Text it takes |
+|---|---|
+| `players::send` | A chat message |
+| `players::action_bar` | The line above the hotbar |
+| `events::player_title` | The title and the subtitle. One set of arguments serves both, and an empty subtitle means none |
+| `events::player_kick` | The message the player sees when disconnected |
+| `commands::command_reply` | The answer to whoever ran a command, console included |
+| `events::event_cancel_with` | The message kept for the player whose action was cancelled |
+| `server::broadcast` | A line for every player online, the console log of the plugin, or both |
+
+Forms and the boards, boss bars, holograms and NPC names of the HUD area also accept `@key` or MiniMessage in each
+of their texts, but they take no named arguments: build the final string first with `text::translate` when it needs
+values. Menu titles, item names and lore are plain MiniMessage and do not resolve `@key` at all, so they need
+`text::translate` too, see [Translating without sending](#translating-without-sending).
+
+## Named arguments
+
+Arguments are built with the `Args` helper and passed by address as the last parameter, or left out when the text has no
+`{name}`:
+
+```cpp
+static void balance(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::players::player_by_name(bs::commands::command_source_name(ctx).c_str());
+    char coins[24];
+    bs::core::format_i64(bs::data::data_get_i64(player, "coins", 0), coins);
+    bs::core::Args args;
+    args.add("amount", coins);
+    bs::commands::command_reply(ctx, "@balance", &args);
+}
+```
+
+`Args::add(key, value)` takes text for both parts and returns the `Args`, so calls chain:
+`args.add("name", n).add("amount", a)`. A number is turned into text first, and `core::format_i64` does that without
+allocating (24 bytes are enough).
+
+- One call can carry up to 32 arguments, and `Args` has room for about 1 KiB of names and values together. An entry that
+  does not fit is not added, so its `{name}` stays in the text.
+- Arguments apply to literal texts as well as to keys.
+- A value is put into the text before MiniMessage is parsed. That matters when the value is not yours, see
+  [Escaping](#escaping).
+
+## Language files
+
+The files live in `resources/lang/`, one per locale, named after the locale: `en_us.toml`, `es_es.toml`. The name is
+lower-cased, so `ES_ES.toml` is the locale `es_es`. A line is a TOML string; nested tables are flattened with dots, so the
+file above has the keys `welcome`, `balance` and `shop.title`, and `@shop.title` reads the last one. Values that are not
+strings are ignored.
+
+The files are read when the plugin loads. Operators edit them where the plugin's files live, see
+[Configuration and storage](/docs/server/wasm-storage#where-the-files-live), and `/plugins reload <id>` applies the change.
+
+### Which language is used
+
+A plugin speaks one language at a time, not one per player. A key is looked up in `en_us` first. When `en_us` does not have
+it, the other locale files are tried in alphabetical order and the first one that has the key wins. A key found nowhere is
+`ERR_ABSENT`.
+
+In practice: ship an `en_us.toml` that has every key, and let operators translate by editing it in place or by adding
+another file. A language file that is not valid TOML stops the plugin from loading, and the log names the file.
+
+## Translating without sending
+
+`text::translate` returns the line for a key with its arguments filled in, as text:
+
+```cpp
+static void build_shop() {
+    const auto title = bs::text::translate("shop.title");
+    if (!title.ok()) {
+        return;
+    }
+    bs::menus::menu_create(title.c_str(), 3);
+}
+```
+
+Pass the key without the `@`. The answer is still MiniMessage, only resolved: it is parsed when it finally reaches a
+player, for example as a menu title. Use it wherever a text is taken as a plain string, which means menu titles, item
+names and lore, and arguments that are themselves translated:
+
+```cpp
+const auto item = bs::text::translate("shop.sparkles");
+bs::core::Args args;
+args.add("item", item.c_str()).add("price", "100");
+bs::players::send(player, "@shop-bought", &args);
+```
+
+`translate` gives back a `Text<256>`: `ok()` is false when the key does not exist, and a line longer than 256 bytes is cut.
+
+## Escaping
+
+Because a value is substituted before the text is parsed, a value that contains `<` is read as a tag. A player name cannot
+contain one, but a chat message or a text the player typed into a command can. A backslash in front of `<` shows it as
+plain text, so put one before every `<` of a value you did not write:
+
+```toml
+# Single quotes keep the backslash as it is: the player sees <gold>text</gold>
+usage = 'Wrap a line in \<gold>text\</gold> to colour it'
+```
+
+The same backslash form works in any text, literal or from a language file. Inside a double-quoted TOML string the
+backslash itself has to be doubled, so use single quotes or `\\<`.
+
+## Placeholders
+
+A placeholder is a `%name%` token that the server replaces with a value when it prints text: in `server_list.toml`,
+`tab_list.toml`, `scoreboard.toml`, `boss_bar.toml`, `messages.toml` and in anything a plugin resolves with
+`server::placeholder_fill`. The ones the server provides all start with `basalt_`, and are listed in
+[Interface](/docs/server/interface#placeholders). A plugin can add its own to the same set.
+
+### Offering a placeholder
+
+`menus::placeholder(name, handler)` registers one. Its callback answers with `menus::placeholder_result`, and
+`menus::placeholder_player` says whose value is asked for:
+
+```cpp
+static void coins_placeholder(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::menus::placeholder_player(ctx);
+    char coins[24];
+    bs::core::format_i64(player == 0 ? 0 : bs::data::data_get_i64(player, "coins", 0), coins);
+    bs::menus::placeholder_result(ctx, coins);
+}
+
+void plugin_init() {
+    bs::menus::placeholder("coins", coins_placeholder);
+}
+```
+
+A plugin whose id is `example` has now added `%example_coins%`: the plugin id and an underscore always come before the
+name. It works in the server's own files, in commands that resolve placeholders such as `/placeholder parse`, and in every
+other plugin that calls `server::placeholder_fill`.
+
+| Call | Does |
+|---|---|
+| `menus::placeholder(name, handler)` | Registers `%<plugin id>_<name>%`. A name that is empty or already registered by this plugin is `ERR_INVALID` |
+| `menus::placeholder_player(ctx)` | The player the value is for, or 0 when the text has no player (a server list ping, the console) |
+| `menus::placeholder_result(ctx, text)` | Sets the value. Without a result the placeholder is empty |
+
+The callback is asked while some text is being printed, so it has to answer on the spot and it cannot wait. The player
+handle is a normal [player handle](/docs/server/wasm-players). A placeholder disappears when the plugin unloads.
+
+### Filling placeholders in your own text
+
+The text calls above do not resolve placeholders. When a message should contain them, run it through
+`server::placeholder_fill` first, passing the player the values are for (0 for none):
+
+```cpp
+static void line(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::players::player_by_name(bs::commands::command_source_name(ctx).c_str());
+    const auto filled = bs::server::placeholder_fill("<gray>%example_coins% coins, %basalt_server_online% online", player);
+    bs::commands::command_reply(ctx, filled.c_str());
+}
+```
+
+Every `%name%` that some plugin or the server provides is replaced. One the server does not know stays visible and is
+explained once in the log. The result is a `Text<256>`, and `ERR_STALE` is returned for a player who has left.
+
+When the text comes from a language file, translate or resolve it first and pass the result on: `placeholder_fill` takes a
+plain string, so a key is not resolved by it.
+
+## Things that catch people out
+
+- A text whose key is missing returns `ERR_ABSENT` and sends nothing. Check the return value while you are writing the lang file.
+- A value that comes from a player is read as MiniMessage unless you put a backslash before each `<`.
+- `translate` and `Args` have fixed room (256 bytes per answer, about 1 KiB of arguments), so keep one line to one message.
+- Keys use the plugin's language order, not the player's own client language.
+- Placeholders are not filled in automatically by `players::send` and friends. Call `server::placeholder_fill`.
+- Callbacks do not nest. While your plugin is inside one of its own callbacks, a call to `server::placeholder_fill` does not
+  get an answer from your own placeholders: the call is skipped and the log says so. Placeholders of other plugins and the
+  server's own are not affected. Read your own data directly when you need it there.
+- Menu titles, item names and lore do not resolve `@key`. Translate them first.
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| The tags MiniMessage understands and the placeholders the server provides | [Interface](/docs/server/interface) |
+| Where `resources/` lands on disk and how settings are read | [Configuration and storage](/docs/server/wasm-storage) |
+| To reply to a command with these texts | [Commands](/docs/server/wasm-commands) |
+| To send titles, kick, and play sounds | [Players](/docs/server/wasm-players) |
+| Menus whose titles come from a language file | [Menus, forms and dialogs](/docs/server/wasm-menus) |

@@ -1,0 +1,277 @@
+---
+title: Tasks and time
+description: Run code after a delay or on a timer, wait in ticks, hand work to the code that owns a place, and write multi-step flows without blocking.
+group: Plugin API
+---
+
+A plugin cannot pause. When a callback returns the plugin is done until the server calls it again, so there is no
+`sleep`, and nothing that suspends a function in the middle and carries on later. To do something later you ask the
+server to call you back, and you keep whatever the next step needs in a variable. A pause in a flow is a callback that
+starts the next step.
+
+Time is counted in ticks, 20 to a second at the default tick rate: 20 is one second and 1200 is a minute.
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void remind(bs::core::Ctx) {
+    bs::server::broadcast("<gray>Remember to vote for the server.", nullptr, bs::server::kBroadcastPlayers);
+}
+
+void plugin_init() {
+    bs::tasks::every(6000, 6000, remind);
+}
+```
+
+Calls on this page are written in their C++ spelling, `tasks::every` for instance. Other languages use their own casing,
+see [The SDK](/docs/server/wasm-sdk).
+
+## Delayed and repeating tasks
+
+| Call | Does |
+|---|---|
+| `tasks::after(delay, handler)` | Runs the handler once, `delay` ticks from now. `delay` is 0 or more. Returns a task handle |
+| `tasks::every(delay, period, handler)` | Runs the handler after `delay` ticks and then every `period` ticks. `period` is 1 or more. Returns a task handle |
+| `tasks::task_cancel(task)` | Stops a task. Returns 0, or `ERR_ABSENT` for a handle that is unknown, already finished or already cancelled |
+
+Both scheduling calls return a positive handle, or `ERR_INVALID` for a negative delay or a period below 1. The handle
+of an `after` task stops being valid once the task ran, and cancelling it then answers `ERR_ABSENT`, which is harmless.
+A repeating task goes on until it is cancelled, and every task of a plugin is cancelled when the plugin is unloaded.
+
+A task callback receives a `ctx` with nothing to read: the event and command calls answer an error when given it. A
+callback that cancels its own repeating task needs the handle, so keep it in a `static` variable:
+
+```cpp
+static int g_task = 0;
+static int g_runs = 0;
+
+static void ping(bs::core::Ctx) {
+    bs::server::broadcast("<gray>Every five seconds.", nullptr, bs::server::kBroadcastPlayers);
+    if (++g_runs == 12) {
+        bs::tasks::task_cancel(g_task);
+    }
+}
+
+void plugin_init() {
+    g_task = bs::tasks::every(100, 100, ping);
+}
+```
+
+In C++ a callback is a plain function (or a lambda that captures nothing), so what it needs to remember lives in
+`static` variables.
+
+Delays count ticks, not seconds. When the server lags, or the tick rate has been changed with `/tick`, 20 ticks take
+longer than a second. The `server.tick` event carries the number of the tick, see [Events](/docs/server/wasm-events), and
+the tick rate and pace can be read and changed through [Server control](/docs/server/wasm-server-control).
+
+Tasks live in memory only. They do not survive a server restart or a `/plugins reload`, so keep what must last in
+[storage](/docs/server/wasm-storage).
+
+## What may run where
+
+Any callback may schedule any task. Registering a task never blocks, and that is the same in `plugin_init`, in an event
+listener, in a command, and in another task. What differs is whether the server is waiting for you:
+
+- **The server waits for an answer.** The decision listeners of [events](/docs/server/wasm-events) (the ones that may
+  cancel or edit), and the callbacks that must answer inside the call, such as a permission provider, a service handler
+  or a placeholder. Decide inside the callback. Whatever is slow goes into a task you schedule from there: cancel the
+  break now, and have a task put things right a few ticks later.
+- **The server does not wait.** Post listeners, commands, tasks, completions and `plugin.enable`. These may take their
+  time, within the limit that every callback has to return quickly: a plugin stuck for about a quarter of a second is
+  interrupted, and three failures in a row switch it off until `/plugins reload`.
+
+A plugin runs one callback at a time and never starts one inside another.
+
+## Waits and requests
+
+Some calls cannot answer straight away: a pause, a form the player has not filled in yet, a chunk that has to be
+loaded. They take a callback and return a **request handle**, a positive number that stands for the pending call. When it
+finishes, the server calls your callback once. Inside it, the `ctx` answers one question, what the finished call
+produced, as a [value](/docs/server/wasm-values).
+
+A request handle is valid until the request completed or was cancelled, and then it is `ERR_STALE`.
+
+| Call | Does |
+|---|---|
+| `server::wait(ticks, handler)` | Calls the handler after `ticks` ticks, 1 or more. The value is null. Returns a request handle |
+| `server::at(world, x, z, handler)` | Calls the handler once the server runs the code that owns the place at `x`, `z` of the world, see [below](#handing-work-to-the-owner-of-a-place). The value is null. `ERR_ABSENT` for an unknown world, `ERR_INVALID` for an empty name |
+| `worlds::world_request_cancel(request)` | Drops a pending request so its callback never runs. Returns 0, or `ERR_ABSENT` for a handle that is unknown, completed or already cancelled. It works for every request, whichever call made it |
+| `server::result(ctx, reply)` | Inside the callback, reads the value the request finished with |
+
+`server::wait` and `tasks::after` both give you a callback in a number of ticks. They differ in the handle:
+
+| | `tasks::after` | `server::wait` |
+|---|---|---|
+| Delay | 0 or more ticks | 1 or more ticks |
+| Handle | A task handle, cancelled with `tasks::task_cancel` | A request handle, cancelled with `worlds::world_request_cancel` |
+| Callback `ctx` | Nothing to read | Reads a null value |
+
+Use whichever reads better. `server::wait` is the natural choice for a flow in which other steps are requests too,
+because every step then has the same shape and is cancelled the same way.
+
+The calls that open a form or a dialog, call a [service](/docs/server/wasm-services) or load a chunk finish with the same
+request model, and are described on their own pages: [Menus](/docs/server/wasm-menus), [Services](/docs/server/wasm-services)
+and [Worlds](/docs/server/wasm-worlds).
+
+## Multi-step flows
+
+A countdown is the usual example: three numbers, a second apart, then a message. With no way to pause, each step does its
+part and schedules the next. The state, here the number still to show, is a `static` variable.
+
+### A chain of tasks
+
+```cpp
+static int g_count = 0;
+static bool g_running = false;
+
+static void step(bs::core::Ctx) {
+    if (g_count == 0) {
+        bs::server::broadcast("<green>Go!", nullptr, bs::server::kBroadcastPlayers);
+        g_running = false;
+        return;
+    }
+    char digits[24];
+    bs::core::format_i64(g_count, digits);
+    bs::core::Args args;
+    args.add("n", digits);
+    bs::server::broadcast("<yellow>{n}", &args, bs::server::kBroadcastPlayers);
+    --g_count;
+    bs::tasks::after(20, step);
+}
+
+static void countdown(bs::core::Ctx ctx) {
+    if (g_running) {
+        bs::commands::command_reply(ctx, "<red>A countdown is already running.");
+        return;
+    }
+    g_running = true;
+    g_count = 3;
+    step(ctx);
+}
+
+void plugin_init() {
+    bs::commands::command("countdown", "example.countdown", countdown);
+}
+```
+
+The command starts the chain by calling the first step itself. Each step shows its number and asks for the next one a
+second later. The flag stops a second `/countdown` from starting a second chain over the first.
+
+### A chain of waits
+
+The same flow with `server::wait` changes one line of `step`. The variables, the command and `plugin_init` stay as they
+are:
+
+```cpp
+static void step(bs::core::Ctx) {
+    if (g_count == 0) {
+        bs::server::broadcast("<green>Go!", nullptr, bs::server::kBroadcastPlayers);
+        g_running = false;
+        return;
+    }
+    char digits[24];
+    bs::core::format_i64(g_count, digits);
+    bs::core::Args args;
+    args.add("n", digits);
+    bs::server::broadcast("<yellow>{n}", &args, bs::server::kBroadcastPlayers);
+    --g_count;
+    bs::server::wait(20, step);
+}
+```
+
+To stop the countdown halfway, keep the request handle that `server::wait` returned in a `static` variable and pass it to
+`worlds::world_request_cancel`. With tasks, keep the task handle and use `tasks::task_cancel`.
+
+### One repeating task
+
+When the steps are evenly spaced, one repeating task does the job with no chain. It cancels itself when the work is
+done:
+
+```cpp
+static int g_ticker = 0;
+static int g_left = 0;
+
+static void tick_down(bs::core::Ctx) {
+    if (g_left == 0) {
+        bs::tasks::task_cancel(g_ticker);
+        g_ticker = 0;
+        bs::server::broadcast("<green>Go!", nullptr, bs::server::kBroadcastPlayers);
+        return;
+    }
+    char digits[24];
+    bs::core::format_i64(g_left, digits);
+    bs::core::Args args;
+    args.add("n", digits);
+    bs::server::broadcast("<yellow>{n}", &args, bs::server::kBroadcastPlayers);
+    --g_left;
+}
+
+static void countdown(bs::core::Ctx) {
+    if (g_ticker == 0) {
+        g_left = 3;
+        g_ticker = bs::tasks::every(0, 20, tick_down);
+    }
+}
+
+void plugin_init() {
+    bs::commands::command("countdown", "example.countdown", countdown);
+}
+```
+
+Prefer this shape for anything that goes on for a long time or never ends. A chain registers a new callback for every
+step, and the C and C++ SDKs have room for 1024 registrations in a module's lifetime, see
+[the things that catch people out](#things-that-catch-people-out).
+
+## Handing work to the owner of a place
+
+The server gives every part of the world to one **region**, the code that runs it. A call into a world is valid for the
+positions the calling region owns. With the default settings one region owns everything, so every place is yours, and
+`server::at` calls you back on the next tick. On a server that runs a world as several regions, `server::at` is how a
+plugin reaches the owner of another place, and the code stays the same.
+
+```cpp
+static void at_the_market(bs::core::Ctx) {
+    bs::log::log_info("running where the market is owned");
+}
+
+static void visit(bs::core::Ctx) {
+    bs::server::at("world", 120.0, -40.0, at_the_market);
+}
+
+void plugin_init() {
+    bs::commands::command("visit", "example.visit", visit);
+}
+```
+
+Use `server::at` before a run of world calls to a place that may be far from where your callback started, and make those
+calls inside its callback. The callback never runs inside the call that asked for it: it runs when the owner is free,
+which is the next tick at the earliest. The [Worlds](/docs/server/wasm-worlds) page has the world calls and the
+matching world-level handoff.
+
+## Things that catch people out
+
+- A callback is a plain function in C++. A lambda with a capture does not convert to one, so keep state in `static`
+  variables.
+- Every call that takes a callback uses one of the 1024 handler slots of the C and C++ SDKs, and a slot is not given back,
+  not even when the same function is registered again. A chain that schedules itself over and over runs out. Use one
+  `tasks::every` for repeating work. A call that cannot get a slot returns `ERR_INVALID`.
+- `tasks::after` accepts 0, `server::wait` needs 1 or more, and `tasks::every` needs a period of 1 or more. A value
+  outside that is `ERR_INVALID`, so a task with a computed delay deserves a check on the result.
+- Cancelling a task or request that already ran answers `ERR_ABSENT`. It is safe to cancel without checking.
+- Tasks are not saved. Restarting the server or reloading the plugin drops them all.
+- A task callback cannot read an event or a command. Copy what the task needs into variables before you schedule it, and
+  look a player up again by name when the task runs, because a player handle goes stale when the player leaves.
+- A callback that is slow gets interrupted. Split long work into small steps and let a repeating task carry on with the
+  rest.
+
+## Where to go next
+
+| To | Read |
+|---|---|
+| Start a flow from a command | [Commands](/docs/server/wasm-commands) |
+| React to events and schedule follow-up work | [Events](/docs/server/wasm-events) |
+| Work on blocks, chunks and regions | [Worlds](/docs/server/wasm-worlds) |
+| Keep data that survives a restart | [Storage](/docs/server/wasm-storage) |
+| Open a form and wait for the answer | [Menus](/docs/server/wasm-menus) |

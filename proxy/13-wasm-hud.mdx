@@ -1,0 +1,245 @@
+---
+title: HUD
+description: Show players boss bars, a sidebar, tab list text, titles, pause menu links and chat completions straight from the proxy.
+group: Plugins
+---
+
+A proxy plugin can put things on a player's screen without any backend being involved: a boss bar over the network's name, a sidebar with the player's rank, a header and footer in the tab list, a title when a countdown ends. Everything on this page is sent by the proxy on the player's own connection, whichever backend they are on.
+
+No capability is needed. Every call takes a player [handle](/docs/proxy/wasm-players) as its first argument and runs inside a callback, like the rest of the [execution model](/docs/proxy/wasm-execution-model).
+
+## A first example
+
+This plugin greets every player who joins with a tab list header and footer, a boss bar and a small sidebar.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static void on_join(proxy::core::Ctx ctx) {
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    proxy::hud::hud_tab_list(player, "<gold><bold>My Network", "<gray>play.example.org");
+    proxy::hud::hud_bossbar_show(player, "welcome", "<yellow>Welcome to the network", 1.0, "yellow", "notched_10");
+
+    const char* lines[] = {"<gray>Rank: <white>Member", "<gray>Online: <white>soon"};
+    proxy::hud::hud_sidebar(player, "<gold>Network", lines, 2);
+}
+
+void plugin_init() { proxy::events::on("player.join", proxy::core::kNormal, on_join); }
+```
+
+In tables below the functions are written as `hud::bossbar_show`. In C++ the area name is repeated in the function name, so the call is `hud::hud_bossbar_show`; other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+
+## What a call answers
+
+| Result | Meaning |
+|---|---|
+| `0` | The proxy handed the change to the player's connection. |
+| `ERR_STALE` | The player left. A handle belongs to one connection and never comes back. |
+| `ERR_ABSENT` | The proxy could not hand the change over: the player is not in the play state yet, or is leaving. |
+| `ERR_INVALID` | An id that is empty or longer than 64 bytes, a text or value of the wrong type, a progress that is not a number, an unknown action. |
+
+A `0` means the change was handed over, not that the client showed it. The proxy sends these packets only to Java players on the game version the proxy itself is built for. A player on an older version (translated by the proxy) and a Bedrock player do not receive boss bars, sidebars, tab list changes or the rest of this page, and the call does not always tell you so. Treat this as decoration: do not make a plugin depend on the player having seen it.
+
+Everything a plugin shows is attached to the player's connection and disappears when it ends. Show it again on `player.join`.
+
+## Text
+
+Every text on this page is [MiniMessage](/docs/server/wasm-text), or a language key of the plugin when it starts with `@`, and is cut at 4096 bytes.
+
+```cpp
+proxy::hud::hud_bossbar_title(player, "welcome", "@bar.welcome");
+```
+
+The `{name}` fields of a text need arguments. The calls below take plain strings and pass none, so resolve a text that needs them first with `text::translate` and hand over the result.
+
+## Boss bars
+
+A boss bar is named by an id you choose, 1 to 64 bytes, and belongs to one player. Showing an id that already exists replaces the bar. The id space is shared by every plugin on the proxy: two plugins that use `timer` are working on the same bar, so give yours a prefix.
+
+| Function | What it does |
+|---|---|
+| `hud::bossbar_show` | Shows the bar, or replaces it. |
+| `hud::bossbar_progress` | Sets the fill, from 0 (empty) to 1 (full). A value outside the range is clamped; a NaN is `ERR_INVALID`. |
+| `hud::bossbar_title` | Changes the text. |
+| `hud::bossbar_style` | Changes the color and the overlay. |
+| `hud::bossbar_hide` | Removes the bar. |
+
+`bossbar_show` takes the player, the id, the text (required), the progress (default `1.0`), the color (default `"purple"`) and the overlay (default `"progress"`).
+
+| Color | Overlay |
+|---|---|
+| `pink`, `blue`, `red`, `green`, `yellow`, `purple`, `white` | `progress` (a plain bar), `notched_6`, `notched_10`, `notched_12`, `notched_20` (a bar cut into that many segments) |
+
+A color or overlay that is not in the lists is not an error: the bar falls back to purple and progress.
+
+A countdown that shrinks a bar every second and ends with a title:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static const int kTotal = 60;
+static int seconds_left = 0;
+static int task = 0;
+
+static int everyone(proxy::core::Player* out, int capacity) {
+    const int count = proxy::players::players_online(out, capacity);
+    return count < capacity ? count : capacity;
+}
+
+static void tick(proxy::core::Ctx) {
+    proxy::core::Player online[128];
+    const int count = everyone(online, 128);
+    --seconds_left;
+    for (int i = 0; i < count; ++i) {
+        if (seconds_left > 0) {
+            proxy::hud::hud_bossbar_progress(online[i], "restart", static_cast<double>(seconds_left) / kTotal);
+        } else {
+            proxy::hud::hud_bossbar_hide(online[i], "restart");
+            proxy::players::player_title(online[i], "<red>Restarting", "<gray>Back in a minute", 10, 60, 10);
+        }
+    }
+    if (seconds_left <= 0) {
+        proxy::tasks::task_cancel(task);
+        task = 0;
+    }
+}
+
+static void start(proxy::core::Ctx ctx) {
+    if (task != 0) {
+        proxy::commands::command_reply(ctx, "<red>A countdown is already running.");
+        return;
+    }
+    seconds_left = kTotal;
+    proxy::core::Player online[128];
+    const int count = everyone(online, 128);
+    for (int i = 0; i < count; ++i) {
+        proxy::hud::hud_bossbar_show(online[i], "restart", "<red>The network restarts soon", 1.0, "red", "notched_20");
+    }
+    task = proxy::tasks::every(20, 20, tick);
+}
+
+void plugin_init() { proxy::commands::command("countdown", "restart.countdown", start); }
+```
+
+Tasks on the proxy count steps of 50 ms, so a period of 20 is one second.
+
+## Sidebar
+
+The player has one sidebar, and the last plugin to set it wins.
+
+| Function | What it does |
+|---|---|
+| `hud::sidebar` | Shows the sidebar with a title and lines, top to bottom. Calling it again updates it in place. |
+| `hud::sidebar_clear` | Takes it down. |
+
+The title is required. A sidebar holds at most 15 lines and any extra lines are ignored. Lines have no score numbers next to them, only your text. A line that is not text is `ERR_INVALID`.
+
+## Tab list
+
+### Header and footer
+
+`hud::tab_list` sets the header and the footer of the player's tab list. Each part is separate:
+
+- Passing `nullptr` keeps what the player has now.
+- Passing an empty string clears it.
+- Passing text sets it.
+
+```cpp
+proxy::hud::hud_tab_list(player, nullptr, "<gray>Players online: 12");
+```
+
+The player has one tab list, so the last plugin to set a part wins.
+
+### Extra rows
+
+`hud::tab_entry` adds a row to the player's own tab list that is not a real player: a section heading, a spacer, a line of text. The row is shown only to that player.
+
+| Function | What it does |
+|---|---|
+| `hud::tab_entry` | Adds the row `id`, or updates it. |
+| `hud::tab_entry_remove` | Removes the row. |
+
+A row has an id (1 to 64 bytes, per player, shared by all plugins), a `name` (the profile name of the row, cut at 16 characters), the display `text` and a latency in milliseconds that decides the connection bars next to it (0 to 10000, clamped, default 0). The name and the text are both required. A player can have at most 80 plugin rows: a new id beyond that is ignored.
+
+```cpp
+proxy::hud::hud_tab_entry(player, "head-staff", "staff", "<red><bold>Staff online", 0);
+proxy::hud::hud_tab_entry(player, "staff-1", "alex", "<white>Alex", 20);
+```
+
+## Titles and the action bar
+
+Titles and the action bar use calls from the players area, next to the other player calls of the proxy (see [Players and backends](/docs/proxy/wasm-players)). The one HUD call about them is `hud::clear_title`.
+
+| Function | What it does |
+|---|---|
+| `players::player_title` | Shows a title and subtitle. A part given as an empty text is not changed. The fade in, stay and fade out times are in ticks (20 per second); a negative time means the client's default, and no times are sent at all when all three are negative. |
+| `players::action_bar` | Shows one line above the hotbar. |
+| `hud::clear_title` | Takes the title, subtitle and action bar off the screen. With `reset` true the fade times also return to their defaults. |
+
+```cpp
+proxy::players::player_title(player, "<gold>Round 1", "<gray>Get ready", 10, 40, 10);
+proxy::players::action_bar(player, "<yellow>Round starts in 10 seconds");
+```
+
+## Pause menu links
+
+`hud::server_links` replaces the links in the client's pause menu (the "Server Links" screen). It takes a list of label and URL pairs. An empty list clears them.
+
+A label that is exactly one of these names becomes one of the client's own link types, shown with the client's own wording:
+
+`report_bug`, `community_guidelines`, `support`, `status`, `feedback`, `community`, `website`, `forums`, `news`, `announcements`
+
+Any other label is MiniMessage text shown as written.
+
+```cpp
+const char* links[] = {
+    "website", "https://example.org",
+    "<aqua>Discord", "https://example.org/discord",
+};
+proxy::hud::hud_server_links(player, links, 2);
+```
+
+The `pairs` argument holds label then URL, `count` times. The links of the backend the player is on are kept: yours are shown after them. A call holds at most 64 links.
+
+## Chat completions
+
+`hud::chat_completions` changes the words the client offers when the player completes text in the chat box, for example names of your custom commands' arguments.
+
+| Action | Effect |
+|---|---|
+| `"add"` | Adds the words to the player's list. |
+| `"remove"` | Removes them. |
+| `"set"` | Replaces the whole list. |
+
+```cpp
+const char* words[] = {"alpha", "beta"};
+proxy::hud::hud_chat_completions(player, "set", words, 2);
+```
+
+Any other action is `ERR_INVALID`. A call holds at most 256 words.
+
+## Things that catch people out
+
+- **Ids are shared.** A boss bar or tab row id is one name for every plugin on the proxy. Prefix yours (`myplugin:timer`).
+- **One sidebar, one tab list.** The last plugin to set them wins, and nothing is restored when it stops.
+- **Nothing survives a disconnect.** Show the elements again on `player.join`.
+- **`0` is not "seen".** A change is handed to the connection. Players on another game version and Bedrock players do not receive it.
+- **Handles go stale.** A player handle kept across callbacks answers `ERR_STALE` after the player leaves. Look the player up again.
+- **A wrong style is not an error.** A misspelled color becomes purple. Check the names against the table above.
+- **Limits are quiet.** A sidebar line past the 15th is ignored. A call with more than 64 links or 256 words, or a new tab row past the 80th, has no effect and gives no error.
+
+## Where to go next
+
+| Page | What is in it |
+|---|---|
+| [Players and backends](/docs/proxy/wasm-players) | Player handles, sending text, moving and kicking players. |
+| [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) | Dialogs, resource packs and the other things a client can be asked to do. |
+| [Events](/docs/proxy/wasm-events) | `player.join` and the other events to hang a HUD on. |
+| [The SDK](/docs/server/wasm-sdk) | How the calls are spelled in each language. |

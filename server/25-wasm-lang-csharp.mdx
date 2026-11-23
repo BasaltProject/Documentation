@@ -1,0 +1,216 @@
+---
+title: C#
+description: Write a Basalt plugin in C# with NativeAOT-LLVM: familiar .NET code in a module of about 950 KB, built on Linux x64.
+group: Languages
+---
+
+Choose C# when .NET is the language you work in and you can build on Linux x64. Plugins are ordinary C# classes with
+delegates as handlers and nullable values for answers that may be missing. It is the heaviest option to set up and run:
+the compiler is the experimental NativeAOT-LLVM for WebAssembly, the module carries the .NET runtime and its garbage
+collector (about 950 KB for a small plugin), the first build downloads about 400 MB, and the module needs about 51 MB of
+memory as soon as it starts. Speed has not been measured the way C was, and a garbage-collected runtime will not match C,
+C++, Zig or Rust for a plugin that runs often.
+
+<x-docs.callout type="warning" title="Memory limit and platform">
+A C# module needs about 51 MB of memory when it starts, and the default `memory-mb` under `[plugins]` is 32. Raise it, for
+example to `64`, in the [server settings](/docs/server/server-settings), or the plugin does not start. Kiln builds C# only on
+Linux x64.
+</x-docs.callout>
+
+## What Kiln installs
+
+Nothing by hand. Kiln downloads the .NET 10 SDK, the NativeAOT-LLVM compiler packages and the WASI SDK on the first build
+(about 243, 44 and 114 MB, 1.1 GB unpacked), into a per-user cache. It does not use a .NET SDK from your machine. On any
+platform other than Linux x64 the build stops with a message saying so. See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang csharp
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/Main.cs
+```
+
+Every `.cs` file under `src/` is compiled together. There is no project file to write: Kiln generates one, with implicit
+usings and nullable reference types off, so each file lists its own `using` lines. The module is written to
+`build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time.
+
+## The entry point
+
+Write a `public static class Plugin` with a `public static void Init()`, inside a namespace. Kiln finds the class by the
+text `class Plugin` in your sources, takes the namespace from that file, and generates the exports the server needs and a
+call to `Plugin.Init()`. `Init` runs once, after the module loads; that is where you register listeners, commands and
+tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/Main.cs`.
+
+```csharp
+using Basalt.Server.Commands;
+using Basalt.Server.Core;
+using Basalt.Server.Events;
+using Basalt.Server.Log;
+using Basalt.Server.Players;
+
+namespace Greeter;
+
+public static class Plugin
+{
+    static void OnJoin(int ctx)
+    {
+        int player = EventBus.EventPlayer(ctx);
+        if (player == 0)
+        {
+            return;
+        }
+        string name = Directory.PlayerName(player) ?? "player";
+        Directory.Send(player, "<green>Welcome, {name}!", new Args().Add("name", name));
+    }
+
+    static void Hello(int ctx)
+    {
+        long times = Arguments.I64(ctx, "times") ?? 1;
+        for (long i = 0; i < times; i++)
+        {
+            Sender.Reply(ctx, "<yellow>Hello from greeter!");
+        }
+    }
+
+    public static void Init()
+    {
+        Logger.LogInfo("greeter loaded");
+        EventBus.On("player.join", Priority.Normal, OnJoin);
+        Registry.Register("greeter hello [times: int 1..5]", "", Hello);
+    }
+}
+```
+
+`EventBus.On` listens to an event, see [Events](/docs/server/wasm-events); `Registry.Register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the C# spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: a namespace per area, `Basalt.Server.<Area>`, holding one static class named for its job, not for
+  the area. Methods are the C++ name in PascalCase. The classes are:
+
+  | Area | Namespace and class |
+  |---|---|
+  | `core` | `Basalt.Server.Core`: `Args`, `Priority`, `Level`, `Handler` |
+  | `log` | `Basalt.Server.Log.Logger` |
+  | `config` | `Basalt.Server.Config.Settings` |
+  | `text` | `Basalt.Server.Text.Translations` |
+  | `players` | `Basalt.Server.Players.Directory` |
+  | `data` | `Basalt.Server.Data.PlayerStore` |
+  | `events` | `Basalt.Server.Events.EventBus` |
+  | `commands` | `Basalt.Server.Commands`: `Registry` (register), `Arguments` (read arguments), `Sender` (reply, name, console) |
+  | `tasks` | `Basalt.Server.Tasks.Scheduler` |
+  | `menus` | `Basalt.Server.Menus.InventoryMenu` |
+  | `worlds` | `Basalt.Server.Worlds.WorldManager` |
+  | `entities` | `Basalt.Server.Entities.EntityManager` |
+  | `items` | `Basalt.Server.Items.Catalog` |
+  | `hud` | `Basalt.Server.Hud.Displays` |
+  | `packets` | `Basalt.Server.Packets.Interceptor` |
+  | `server` | `Basalt.Server.Services.RuntimeServices` |
+  | `values` | `Basalt.Server.Values`: `ValueWriter`, `Value`, `ValueIter` |
+
+  So `players::send` is `Directory.Send`, `players::player_name` is `Directory.PlayerName`, `commands::command_reply` is
+  `Sender.Reply` and `config::config_i64` is `Settings.ConfigI64`.
+- **Strings in** are `string`.
+- **Strings out** are `string`, `null` when the call failed. A number that may be absent is `long?`.
+- **Optional arguments** are default parameters: `Sender.Reply(ctx, text)` and `Sender.Reply(ctx, text, args)`.
+- **Handles** are plain `int`. `0` is never a valid handle. `Directory.PlayersOnline()` returns an `int[]`.
+- **`Args`** is `new Args().Add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.Lowest` to `Priority.Highest` and `Level.Debug` to `Level.Error`.
+- **Handlers** are the delegate `Handler`, `void (int ctx)`: a method group such as `OnJoin`, or a lambda
+  (`ctx => { ... }`), which can capture variables.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `new ValueWriter()` builds a document, its methods
+chain and `Finish()` returns a `byte[]`, or `null` if the writer failed. A call that returns a value gives you a status and
+an `out Value` to read. This keeps a count of joins in a JSON document (it needs the `storage`
+[capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```csharp
+using Basalt.Server.Services;
+using Basalt.Server.Values;
+
+static void RecordJoin(string who)
+{
+    long total = 0;
+    if (RuntimeServices.DataRead("joins", out Value doc) == 0 && doc.TryFind("total", out Value found))
+    {
+        found.TryInt(out total);
+    }
+
+    byte[] document = new ValueWriter()
+        .BeginMap()
+        .Key("total").Int(total + 1)
+        .Key("last").String(who)
+        .End()
+        .Finish();
+    RuntimeServices.DataWrite("joins", document);
+}
+```
+
+The writer has `Null`, `Bool`, `Int`, `Float`, `String`, `Bytes`, `BeginList`, `BeginMap`, `End` and `Key`. For reading,
+`TryFind` (a map), `TryAt` (a list), `Count` and `Iter()` walk a document, and `TryInt`, `TryFloat`, `TryBool`,
+`TryString` and `TryBytes` return `false` when the value has another kind. `Find` and `At` return an absent `Value` instead
+of failing, which answers every getter with `false`. The status of a failed call is one of the
+[result codes](/docs/server/wasm-execution-model#result-codes).
+
+## Building
+
+```bash
+kiln build
+```
+
+generates a project for the NativeAOT-LLVM compiler, publishes it for `wasi-wasm`, writes `build/plugin.wasm` and checks
+it. The plugin above is about 940 KB and takes 5 to 7 seconds to build once the toolchain is in place. `kiln pack` writes
+`build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang csharp --target proxy`, with `Basalt.Proxy.<Area>` in place of
+`Basalt.Server.<Area>` (`Basalt.Proxy.Events`). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **The module needs about 51 MB of memory at start.** The .NET runtime sets up its heap when the module starts, so a plugin begins
+  above the default plugin memory limit of 32 MB and needs `memory-mb = 64` or more, see the warning at the top.
+- **The runtime is part of the module.** About 940 KB of it is .NET and its garbage collector, so size and start-up are
+  fixed costs. The collector frees what you drop, so allocating in a callback does not leak, but it adds work to
+  handlers that run often.
+- **Keep exceptions out of callbacks.** Exceptions are emulated in this build, so check values and return early instead of
+  throwing.
+- **No `Console`.** `Console.WriteLine` and anything that touches files or the operating system pull in calls the server
+  does not provide, and Kiln's check fails the build. Write to the server log with `Logger.LogInfo`.
+- **Invariant culture.** Globalization is in invariant mode, so formatting and comparison behave the same everywhere and
+  no culture data is shipped.
+- **An experimental compiler.** Keep plugin code to plain C#: classes, collections, strings and math. Library features
+  that depend on the operating system, on threads or on reflection are best avoided.
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `csharp`.

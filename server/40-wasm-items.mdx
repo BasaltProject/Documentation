@@ -1,0 +1,255 @@
+---
+title: Items and inventories
+description: Build item stacks, open the inventories of players, blocks, windows and ender chests, move items in and out, and read item and enchantment registries.
+group: Plugin API
+---
+
+This page is about item stacks and the places that hold them. You will use it to give a player a reward, take a price
+out of a pocket, fill a chest, read what a container holds, put a cooldown on an ender pearl, or look up how much a
+sharpness level is worth. Recipes, loot tables and villager trades are on [Recipes, loot and trades](/docs/server/wasm-recipes),
+and plugin-owned windows and click menus are on [Menus](/docs/server/wasm-menus).
+
+The calls live in the `items` area. Other languages use their own casing for the same names, see
+[The SDK](/docs/server/wasm-sdk). In C++ the SDK has an `Inventory` class and an `Item` builder for the common
+calls (`items::Inventory::of_player(player)`, `inventory.give(...)`). The registry and enchantment calls described below
+have no wrapper in C++, so there you call them by their plain C name, which is the area name with a `basalt_` prefix.
+None of these calls needs a capability in `plugin.toml`.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void ration(core::Ctx ctx) {
+    const auto name = commands::command_source_name(ctx);
+    const core::Player player = players::player_by_name(name.c_str());
+
+    const auto inventory = items::Inventory::of_player(player);
+    if (!inventory.valid()) {
+        return;
+    }
+
+    const int left_over = inventory.give("minecraft:bread", 16, "<gold>Ration");
+    if (left_over > 0) {
+        commands::command_reply(ctx, "<yellow>Your inventory is full, some bread was not given.");
+        return;
+    }
+    items::item_set_cooldown(player, "minecraft:ender_pearl", 100);
+    commands::command_reply(ctx, "<green>Here is your ration.");
+}
+
+void plugin_init() {
+    commands::command("ration", "", ration);
+}
+```
+
+The `Inventory` object releases its handle when it goes out of scope.
+
+## The item stack
+
+Everything that takes or gives a stack uses the same [value](/docs/server/wasm-values): a map. Unknown keys are ignored.
+
+| Key | Kind | Meaning |
+|---|---|---|
+| `id` | string | The item id (`minecraft:` may be left out). Required: an empty or missing id is `ERR_INVALID`, and so is an unknown item |
+| `count` | whole number | How many, 1 by default, and at least 1. A stack value holds at most 99 |
+| `name` | string | A custom name, written as MiniMessage |
+| `lore` | list of strings | One string per lore line, MiniMessage |
+| `damage` | whole number | Durability already used, 0 by default |
+| `enchantments` | map | Enchantment id to level |
+| `components` | map | An item component id (`minecraft:custom_model_data`) to its value written as SNBT text. The server parses and checks it, and unparsable text is `ERR_INVALID`. Every other piece of item data lives here |
+
+A slot that holds nothing is the null value. Stacks that the server writes back to you always carry `id` and `count`,
+and the other keys only when they are set (`damage` only above 0). Every component the stack has comes under
+`components`.
+
+```cpp
+values::ValueBuffer<384> sword;
+sword.map()
+    .key("id").string("minecraft:diamond_sword")
+    .key("name").string("<aqua>Frostbrand")
+    .key("lore").list().string("<gray>Cold to the touch").end()
+    .key("enchantments").map().key("minecraft:sharpness").integer(3).end()
+    .key("components").map().key("minecraft:custom_model_data").string("{floats:[3.0f]}").end()
+    .end();
+```
+
+For the simple case, `items::Item(id, count, name)` builds a stack with only an id, a count and an optional name.
+
+## Getting an inventory
+
+An inventory handle is made by one of the calls below, and each call makes a new handle. The handle stays valid until you
+release it or the plugin is disabled. It answers `ERR_STALE` when what it points at is gone: the player left, the window
+closed, the block entity was removed.
+
+| You want | Call | Notes |
+|---|---|---|
+| A player's inventory | `Inventory::of_player(player)` | `ERR_STALE` for a player who left |
+| A player's ender chest | `Inventory::of_ender(player)` | 27 slots |
+| The container a player has open | `Inventory::of_window(player)` | `ERR_ABSENT` when no window is open, or the player's connection has none (Bedrock players). The handle goes stale when that window closes |
+| A container block | `Inventory::of_block(world, x, y, z)` | An empty world name means the default world. `ERR_ABSENT` when the world is unknown or the block holds no container |
+| The inventory of a player entity | `Inventory::of_entity(entity)` | Takes the entity handle of a player (see [Entities](/docs/server/wasm-entities)). `ERR_ABSENT` for any other entity |
+| Nothing, you are done | `inventory.release()` | The destructor does it too |
+
+`Inventory::of_entity` is the same inventory that `of_player` opens, reached from an entity handle. The held items of
+mobs are reached with the entity operations `equipment`, `set_equipment` and `held_get` on the
+[entities](/docs/server/wasm-entities#equipment-riding-and-saved-data) page.
+
+### Slot numbers
+
+| Kind | Slots |
+|---|---|
+| Player | 0 to 26 storage, 27 to 35 the hotbar (the selected slot is 27 plus the held slot), 36 to 39 armor from boots to helmet, 40 the off hand. 41 slots in all |
+| Ender chest | 0 to 26 |
+| Block | The slots of the block entity, see below |
+| Window | The window's own slot numbers, followed by the player's 36 inventory slots as in the protocol. Slot -1 is the item on the cursor |
+
+A block inventory is one block entity. Half of a double chest is one inventory of 27 slots, and the other half is another
+one at its own position.
+
+| Container | Slots |
+|---|---|
+| Chest, trapped chest, barrel, shulker box | 27 |
+| Hopper, brewing stand | 5 |
+| Dispenser, dropper, crafter | 9 |
+| Furnace, blast furnace, smoker | 3 |
+| Chiseled bookshelf | 6 |
+| Campfire | 4 |
+| Decorated pot, lectern, jukebox | 1 |
+
+## Working with inventories
+
+| Call | What it does |
+|---|---|
+| `inventory.size()` | The number of slots (for a window, the slots of the whole window) |
+| `inventory.get(slot, out, capacity)` | The stack in a slot as an item value. An empty slot is null. `ERR_INVALID` for a slot out of range |
+| `inventory.put(slot, item)`, `inventory.put(slot, id, count)` | Puts a stack in a slot and resends the inventory to whoever has it open |
+| `inventory.clear_slot(slot)` | Empties one slot |
+| `inventory.give(id, count, name)`, `inventory.give(item)` | Adds a stack where it fits, merging with existing stacks first. Answers how many did not fit |
+| `inventory.take(id, count)` | Removes up to `count` of an item, whatever its components. Answers how many were taken |
+| `inventory.count(id)` | How many of an item the inventory holds in total |
+| `inventory.slot_count(slot)` | The count of the stack in a slot, 0 for an empty one |
+| `inventory.clear()` | Empties every slot (for a window, only the container part) |
+| `inventory.contents(out, capacity)` | Every non-empty slot as a list of maps `{slot, item}`, in slot order |
+| `inventory.held_slot()`, `inventory.set_held_slot(slot)` | The selected hotbar index, 0 to 8, of a player inventory |
+
+`give` is the call to reach for when you hand something to a player. It answers the count that did **not** fit, so 0
+means everything went in, and a negative number is an error (an unknown item, a stale handle). `take` and `count` match
+by item id and ignore components, so a renamed diamond counts as a diamond.
+
+Writes with `put`, `give`, `take` and `clear` resend the inventory to a player who has it open. For a window, `give` and
+`clear` leave the player's own inventory part of the window alone.
+
+`held_slot` and `set_held_slot` answer `ERR_ABSENT` for an inventory that is not a player's, and `set_held_slot` answers
+`ERR_INVALID` for an index outside 0 to 8.
+
+### Stacks with more than an id
+
+The `Item` builder and the `give(id, count, name)` shortcut cover an id, a count and a name. For lore, enchantments and
+components, write the stack map yourself (see [The item stack](#the-item-stack)) and pass it to the add call. In C++:
+
+```cpp
+const int left_over = basalt_inventory_add(inventory.handle(), sword.data(), sword.finish());
+```
+
+### Reading a slot
+
+```cpp
+static long long held_count(const items::Inventory& inventory) {
+    const int held = inventory.held_slot();
+    if (held < 0) {
+        return 0;
+    }
+    char buffer[512];
+    const int length = inventory.get(27 + held, buffer, sizeof buffer);
+    values::Value stack;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !stack.open(buffer, length) || stack.is_null()) {
+        return 0;
+    }
+    return stack.find("count").i64_or(0);
+}
+```
+
+`inventory.slot_count(27 + held)` does the same in one call. Reach for `get` when you need the `id`, the `name` or
+the components too.
+
+## Cooldowns
+
+A use cooldown is the gray sweep over an item in the hotbar, like the one ender pearls and shields have.
+
+| Call | What it does |
+|---|---|
+| `items::item_cooldown(player, id)` | Ticks left on that item's cooldown for the player, 0 when there is none |
+| `items::item_set_cooldown(player, id, ticks)` | Starts a cooldown (`ticks` above 0) or clears it (0 or less) |
+
+Both answer `ERR_INVALID` for an empty id, and `ERR_STALE` for a player that left.
+
+## Registries
+
+`items::registry_get(kind, key, out, capacity)` reads item related registry data as a value. The `kind` picks what you
+get and `key` is the text after it.
+
+| Kind | Key | Answer |
+|---|---|---|
+| `item` | An item id | A map of what the registries know about it (`max_stack_size`, `max_damage`, food, tool rules...). `ERR_ABSENT` for an unknown id |
+| `items` | ignored | A list of every item id in registry order |
+| `creative_tab` | A tab such as `building_blocks` | The item ids in display order, empty for a tab without a list |
+| `enchantment` | An enchantment id | Its datapack definition as a map. `ERR_ABSENT` for an unknown id |
+| `enchantments` | ignored | A list of every enchantment id |
+| `tags` | `enchantment` | A map from tag id to the list of its members. Any other registry answers an empty map |
+| `mob_effects` | ignored | A list of maps `{id, protocol_id, colour}` |
+| `potions` | ignored | A list of maps `{id, effects}` |
+
+An unknown kind answers `ERR_INVALID`.
+
+```cpp
+char out[1024];
+const int length = bs_registry("item", "minecraft:bread", out, sizeof out);
+values::Value item;
+if (length > 0 && length <= static_cast<int>(sizeof out) && item.open(out, length)) {
+    const long long stack_size = item.find("max_stack_size").i64_or(64);
+}
+```
+
+### Enchantment level values
+
+Enchantments describe numbers that depend on the level (a damage bonus, a cost) as small formulas.
+`items::enchantment_level_value(spec, length, level)` evaluates one at a level and returns the number, or 0.0 for a
+malformed spec. The `spec` value is a bare number, or a map with a `type` and the fields of that type:
+
+| `type` | Fields |
+|---|---|
+| `constant` | `value` |
+| `linear` | `base`, `per_level_above_first` |
+| `levels_squared` | `added` |
+| `clamped` | `min`, `max`, and the formula to clamp as `value` |
+| `fraction` | `numerator`, `denominator`, each a formula |
+| `exponent` | `base`, `power`, each a formula |
+| `lookup` | `values` (a list of numbers by level) and `fallback` |
+
+```cpp
+values::ValueBuffer<128> spec;
+spec.map().key("type").string("linear").key("base").number(1.0).key("per_level_above_first").number(0.5).end();
+const double bonus = basalt_enchantment_level_value(spec.data(), spec.finish(), 3);   // 2.0
+```
+
+## Gotchas
+
+- The remainder of `give` is a count of items, not an error code. Check for a negative number separately.
+- A stack value holds at most 99 items. To hand out more, call `give` more than once.
+- `take` and `count` ignore components. To tell stacks with different names or data apart, read the slots with
+  `get` or `contents`.
+- A block inventory is only the block entity at the position you named. A double chest is two inventories.
+- Window slot numbers are the protocol's: the container's own slots first, then the player's 36 inventory slots.
+- Let an `Inventory` object go out of scope, or call `release()`, when you are done, rather than keeping handles around
+  for the whole run.
+- An inventory handle answers `ERR_STALE` the moment its owner goes away, so check results after a player may have left.
+
+## Where to go next
+
+| You want to | Page |
+|---|---|
+| Craft, smelt, loot and trade | [Recipes, loot and trades](/docs/server/wasm-recipes) |
+| Build a click menu or a plugin-held window | [Menus](/docs/server/wasm-menus) |
+| Equip mobs and drop items | [Entities](/docs/server/wasm-entities) |
+| Read the values these calls return | [Values](/docs/server/wasm-values) |

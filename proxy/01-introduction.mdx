@@ -15,7 +15,7 @@ It shares its network layer with [Basalt Server](/docs/server/introduction), but
 - **Moving between servers.** A player is moved with the `send` console command, by a plugin, or by a backend that uses the BungeeCord plugin channel. From Minecraft 1.20.2 the client reconfigures in place instead of reconnecting.
 - **Version bridging.** Clients from 1.8 up to 26.2 can join a 26.3 backend, and 26.3 clients can reach backends from 1.21.5 up to 26.2. See [Bedrock and versions](/docs/proxy/bedrock-and-versions).
 - **Bedrock players.** An optional UDP listener lets Bedrock Edition players join a Java backend.
-- **Lua plugins.** Off by default. Plugins add commands, react to player events and move players, see [Plugins](/docs/proxy/plugins).
+- **Plugins.** Off by default. Plugins add commands, react to player events and move players. Plugins are WebAssembly modules, see [Plugins](/docs/proxy/wasm-plugins).
 - **Protection.** Token-bucket admission control per origin address and globally, bounded buffers, timeouts for every stage of a connection. See [Operations](/docs/proxy/operations).
 
 ## When to use it
@@ -31,7 +31,7 @@ When a backend trusts forwarded identities, anyone who can reach the backend dir
 | Page | Covers |
 |---|---|
 | [Installation](/docs/proxy/installation) | Downloading, running, systemd, Docker, updating |
-| [Configuration](/docs/proxy/configuration) | Every key of `proxy.toml` and `plugins.toml` |
+| [Configuration](/docs/proxy/configuration) | Every key of `proxy.toml` |
 | [Backends and routing](/docs/proxy/backends-and-routing) | `backends.toml`, forced hosts, fallback, commands |
 | [Forwarding](/docs/proxy/forwarding) | Identity schemes and the matching backend configuration |
 | [Bedrock and versions](/docs/proxy/bedrock-and-versions) | Bedrock listener, client and backend versions |

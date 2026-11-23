@@ -1,0 +1,122 @@
+---
+title: ABI reference
+description: The contract between a plugin module and the server: module shape, exports, conventions and where each import is documented.
+group: Plugin API
+---
+
+You do not need this page to write a plugin: the [SDK](/docs/server/wasm-sdk) turns everything below into functions of
+your language. It is for people who write a binding for another language, read a module with a disassembler or want the
+exact contract. The normative definition is a set of C headers that ship with Basalt and that Kiln and the server are both
+generated from, so they cannot disagree.
+
+## The module
+
+A plugin is a `wasm32` module in little-endian, with one exported linear memory. It uses core WebAssembly 2.0: multi-value,
+bulk memory, sign extension, non-trapping float to integer conversions, reference types and fixed-width SIMD. A module
+built with WasmGC (Kotlin does) is accepted on Wasmtime. Kiln refuses a module over 16 MiB, one with more than 4096
+initial memory pages and one with more than 2048 imports.
+
+A module is distributed as portable `.wasm`, never as precompiled code: every server compiles and caches it itself.
+
+### Imports
+
+Functions the server provides are imported from the module **`basalt`** under the names this section documents
+(`player_send`, `world_block_set`, `event_on`). The header declares each as `basalt_<name>`, and the SDK strips the prefix.
+A proxy plugin imports the same module for the calls that mean the same on a proxy, and a second module, `basalt_proxy`,
+for the rest. A module that imports something outside its product is rejected when it loads, with the name of the import.
+
+A toolchain that insists on a C library can also import a small subset of `wasi_snapshot_preview1`:
+
+| Function | Behaviour |
+|---|---|
+| `fd_write` | Standard output and standard error go to the plugin's log |
+| `clock_time_get`, `random_get` | Work |
+| `environ_get`, `environ_sizes_get`, `args_get`, `args_sizes_get` | Empty |
+| `proc_exit` | Traps |
+
+A module that needs no C library imports nothing from WASI.
+
+### Exports
+
+| Export | Signature | Meaning |
+|---|---|---|
+| `memory` | | The linear memory, exported under this name and not imported |
+| `basalt_abi_version` | `() -> i32` | Returns `1`. A module built for another version is refused when it loads |
+| `basalt_init` | `() -> ()` | Called once after instantiation. Register everything here |
+| `basalt_callback` | `(token: i32, ctx: i32) -> ()` | The single way back into the plugin. `token` is the number the plugin gave when it registered, `ctx` the handle of the call |
+| `_initialize` | `() -> ()` | Optional. A WASI reactor initialiser, called once before `basalt_abi_version` |
+
+## Conventions
+
+- **Pointers** are `i32` offsets into the plugin's own memory. The server never allocates inside the module and only writes
+  into buffers the plugin passes.
+- **Text** is UTF-8, passed as a pointer and a byte length. Text for players is
+  [MiniMessage](/docs/server/wasm-text), and a text that starts with `@` is a language key.
+- **Integers** are little-endian, `i32` or `i64`, and floating point is `f32` or `f64`.
+- **Handles** are positive `i32`, and `0` is never valid. See [Execution model](/docs/server/wasm-execution-model#handles).
+- **Buffer-returning calls** take `out` and `cap` and return the length the full answer needs. They write only when it fits,
+  so a caller that gets a length above `cap` calls again with a larger buffer.
+- **Structured data** is one encoded [value](/docs/server/wasm-values#the-encoding), passed as a pointer and a length going
+  in and as `out` and `cap` coming out.
+- **A pointer and a length of zero** stand for "no value" wherever an argument list or a value is optional.
+
+### Result codes
+
+A negative result is an error. Zero or a positive result is success, and is often a length or a handle.
+
+| Constant | Value | Meaning |
+|---|---:|---|
+| `BASALT_OK` | 0 | Success |
+| `BASALT_ERR_ABSENT` | -1 | The key, argument or field does not exist |
+| `BASALT_ERR_STALE` | -2 | The handle no longer refers to anything |
+| `BASALT_ERR_INVALID` | -3 | A bad argument: an unknown name, malformed text, a value out of range |
+| `BASALT_ERR_DENIED` | -4 | The plugin lacks the capability |
+
+### Named arguments
+
+Text templates take their `{key}` arguments as one packed list: a `u32` count, then per entry a `u32` key length, the key
+bytes, a `u32` value length and the value bytes, all little-endian. A list of zero length is no arguments.
+
+### Constants
+
+| Log levels | | Event priorities, lowest runs first | |
+|---|---:|---|---:|
+| `BASALT_LOG_DEBUG` | 0 | `BASALT_PRIORITY_LOWEST` | 0 |
+| `BASALT_LOG_INFO` | 1 | `BASALT_PRIORITY_LOW` | 1 |
+| `BASALT_LOG_WARN` | 2 | `BASALT_PRIORITY_NORMAL` | 2 |
+| `BASALT_LOG_ERROR` | 3 | `BASALT_PRIORITY_HIGH` | 3 |
+| | | `BASALT_PRIORITY_HIGHEST` | 4 |
+
+### Completions
+
+A call that takes a `token` and returns a request handle finishes later: the server calls `basalt_callback(token, ctx)`,
+and during that callback `value_result` returns the answer as a value. A request handle is stale once it completed or was
+cancelled, and `request_cancel` drops a pending one so its callback never runs. See
+[Tasks and time](/docs/server/wasm-tasks#waits-and-requests).
+
+## Where each import is documented
+
+Imports are named `<area>_<verb>`, and an area keeps one prefix. This table maps a prefix to the page that explains it.
+
+| Imports | Page |
+|---|---|
+| `log` | [The SDK](/docs/server/wasm-sdk#logging) |
+| `config_*`, `data_*`, `store_*`, `files_*` | [Configuration and storage](/docs/server/wasm-storage) |
+| `translate`, `placeholder_*` | [Text](/docs/server/wasm-text) |
+| `player_*`, `players_online`, `form_*`, `dialog_*` | [Players](/docs/server/wasm-players), [Menus](/docs/server/wasm-menus) |
+| `event_*` | [Events](/docs/server/wasm-events) |
+| `command_*` | [Commands](/docs/server/wasm-commands) |
+| `task_*`, `value_result`, `request_cancel` | [Tasks and time](/docs/server/wasm-tasks) |
+| `permission_*` | [Permissions](/docs/server/wasm-permissions) |
+| `service_*` | [Services between plugins](/docs/server/wasm-services) |
+| `server_*`, `profile_*` | [Server control](/docs/server/wasm-server-control) |
+| `menu_*`, `container_*`, `window_*`, `merchant_*` | [Menus, forms and dialogs](/docs/server/wasm-menus) |
+| `world_*`, `worlds_*`, `block_*` | [Worlds and blocks](/docs/server/wasm-worlds) |
+| `structure_*`, `noise_*`, `datafix_*` | [Structures, noise and data fixing](/docs/server/wasm-structures) |
+| `entity_*` | [Entities](/docs/server/wasm-entities) |
+| `inventory_*`, `item_*`, `registry_*`, `enchantment_*` | [Items and inventories](/docs/server/wasm-items) |
+| `recipe_*`, `loot_*`, `trades_*` | [Recipes, loot and trades](/docs/server/wasm-recipes) |
+| `hud_*` | [Scoreboards, boss bars, holograms and NPCs](/docs/server/wasm-hud) |
+| `channel_*`, `packet_*` | [Packets and plugin channels](/docs/server/wasm-packets) |
+
+The proxy has its own table on [its ABI reference](/docs/proxy/wasm-abi).

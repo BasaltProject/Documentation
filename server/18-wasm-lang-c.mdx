@@ -1,0 +1,188 @@
+---
+title: C
+description: Write a Basalt plugin in C: the smallest and fastest modules, with buffers and handlers written by hand.
+group: Languages
+---
+
+Choose C when you want the smallest module and the most predictable speed, and you are comfortable with fixed buffers.
+Nothing runs besides your code: there is no runtime, no garbage collector and no heap, so a plugin is a few kilobytes and
+its speed is the speed of the compiled code (the [measurements](/docs/server/wasm-performance) were made with C). The cost
+is that you do the work other languages do for you: strings are `char` arrays you size yourself, there is no `malloc`,
+and a handler cannot carry state except in globals.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `clang` on your `PATH` when it can link WebAssembly with `lld`, and otherwise downloads Zig
+(about 55 MB, 407 MB unpacked) and compiles with `zig cc`. The download happens on the first build, into a per-user cache,
+on Linux, macOS and Windows. See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang c
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/main.c
+```
+
+Every `.c` file under `src/` is compiled, and `src/` is on the include path, so you can split the plugin into several
+files and headers. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and
+is rebuilt each time.
+
+## The entry point
+
+Define `void plugin_init(void)` in any file under `src/`. The SDK calls it once, after the module loads, and it is where
+you register listeners, commands and tasks. Nothing else needs to be exported or listed anywhere.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/main.c`.
+
+```c
+#include <basalt/server.h>
+
+static void on_join(bs_ctx ctx) {
+    const bs_player player = bs_event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    char name[64] = {0};
+    bs_player_name(player, name, sizeof name);
+    bs_args args;
+    bs_args_init(&args);
+    bs_args_add(&args, "name", name);
+    bs_send(player, "<green>Welcome, {name}!", &args);
+}
+
+static void hello(bs_ctx ctx) {
+    int64_t times = 1;
+    bs_command_arg_i64(ctx, "times", &times);
+    for (int64_t i = 0; i < times; ++i) {
+        bs_command_reply(ctx, "<yellow>Hello from greeter!", 0);
+    }
+}
+
+void plugin_init(void) {
+    bs_info("greeter loaded");
+    bs_on("player.join", BASALT_PRIORITY_NORMAL, on_join);
+    bs_command("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`bs_on` listens to an event, see [Events](/docs/server/wasm-events); `bs_command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Calls are spelled in the C++ form on the other pages of this section (`players::send`) and are described in
+[The SDK](/docs/server/wasm-sdk). In C they are plain functions with the prefix `bs_` and the same name:
+`players::send` is `bs_send`, `players::player_name` is `bs_player_name`, `worlds::world_fill` is `bs_world_fill`. The log
+calls are `bs_debug`, `bs_info`, `bs_warn` and `bs_error`. `#include <basalt/server.h>` brings in every area, or include
+one at a time as `<basalt/server/players.h>`.
+
+- **Strings in** are `const char *`, NUL-terminated. Pass `0` where text is optional.
+- **Strings out** are written into a `char` buffer and a capacity you pass. The call returns the length, or a negative
+  code. The buffer is **not** NUL-terminated, so start it zeroed (`char name[64] = {0}`) or end it yourself at the
+  returned length. If the answer does not fit in the capacity nothing is written and the return value is the length
+  needed.
+- **Handles** are `bs_player` and `bs_ctx`, both `int32_t`. `0` is never a valid handle.
+- **`Args`** is the `bs_args` struct: `bs_args_init`, then `bs_args_add(&args, key, value)` for each pair. It holds 1024
+  bytes in total and `bs_args_add` returns `BASALT_ERR_INVALID` when a pair does not fit. Pass `0` instead of a pointer
+  for no arguments.
+- **Numbers to text**: there is no `printf`. `bs_format_i64(value, out)` writes a decimal into a buffer of 24 bytes.
+- **Handlers** are `void (*)(bs_ctx ctx)`. A handler gets no user data, so keep state in `static` variables.
+- **Constants** keep the names of the ABI: `BASALT_PRIORITY_NORMAL`, `BASALT_ERR_ABSENT` and the like.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). The writer `bs_vw` fills a buffer you provide,
+and a call that returns a value fills your buffer and gives you a `bs_val` that reads it in place. This keeps a count of
+joins in a JSON document (it needs the `storage` [capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```c
+static void record_join(const char *who) {
+    char reply[1024];
+    bs_val doc;
+    int64_t total = 0;
+    if (bs_data_read("joins", reply, sizeof reply, &doc) == 0) {
+        bs_value_as_i64(bs_value_find(doc, "total"), &total);
+    }
+
+    unsigned char out[256];
+    bs_vw w;
+    bs_vw_init(&w, out, sizeof out);
+    bs_vw_map(&w);
+    bs_vw_key(&w, "total");
+    bs_vw_i64(&w, total + 1);
+    bs_vw_key(&w, "last");
+    bs_vw_str(&w, who);
+    bs_vw_end(&w);
+    const int32_t length = bs_vw_finish(&w);
+    if (length > 0) {
+        bs_data_write("joins", out, length);
+    }
+}
+```
+
+The writer has `bs_vw_null`, `bs_vw_bool`, `bs_vw_i64`, `bs_vw_f64`, `bs_vw_str`, `bs_vw_bytes`, `bs_vw_list`,
+`bs_vw_map`, `bs_vw_end` and `bs_vw_key` before each map value. A mistake or a full buffer is remembered, and
+`bs_vw_finish` returns the document length or a negative code. For reading, `bs_value_find` (a map), `bs_value_at` (a
+list), `bs_value_count` and `bs_value_iter` with `bs_iter_next` walk a document, and the getters `bs_value_as_i64`,
+`bs_value_as_f64`, `bs_value_as_bool` and `bs_value_as_str` return 1 and fill their output when the value has that kind,
+otherwise 0. Reading never traps on a malformed document, and `bs_val` points into your buffer, so keep the buffer alive
+while you read.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles with `-O2` for `wasm32`, without a libc, and writes `build/plugin.wasm`, then checks it. The plugin above is
+about 2.4 KB and builds in well under a second once the toolchain is in place. `kiln pack` writes
+`build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang c --target proxy`, and `#include <basalt/proxy.h>` in place
+of `<basalt/server.h>` (or `<basalt/proxy/events.h>` per area). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **No libc, no heap.** The SDK provides `memcpy`, `memmove`, `memset` and `memcmp`, and nothing else from the C library:
+  no `strlen`, `printf` or `malloc`. `bs_length(text)` measures a string. Use fixed arrays, on the stack or `static`.
+- **The stack is 128 KiB.** Big buffers are fine, but not arrays of hundreds of kilobytes on the stack. Put those in
+  `static` storage.
+- **At most 1024 callbacks.** Each listener, command, task and menu slot you register takes one entry for the life of the
+  module. Registering beyond that returns `BASALT_ERR_INVALID`.
+- **Answers must fit your buffer.** A call that returns a value (`bs_data_read`, `bs_event_get`, ...) fails with
+  `BASALT_ERR_INVALID` when the answer is larger than the buffer you gave it, so size buffers for the biggest answer you
+  expect. Documents can be up to 1 MiB.
+- **`bs_players_online` fills nothing when the array is too small.** It then returns how many players are online, so
+  check the result against your array size and call again with a bigger array.
+- **Integers are explicit.** `int` is 32 bits and `long` is 32 bits on `wasm32`. Use `int64_t` for anything a call
+  returns as `i64`, such as coins and timestamps.
+- **A trap disables the plugin, not the server.** Integer division by zero or an access outside the module's memory stops
+  the callback and counts as a failure, see [Execution model](/docs/server/wasm-execution-model).
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The [ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository holds a complete plugin that
+exercises every area, with one branch per language. It has no C branch; the `cpp` branch is the closest, and its SDK calls
+map to the C ones by the rule above.

@@ -1,0 +1,197 @@
+---
+title: Players and backends
+description: Find and talk to the players connected to the proxy, move them between backends, and list the backends and who is on them.
+group: Plugins
+---
+
+A proxy plugin sees every player connected to the network and every backend behind it. This page covers the player
+handle, what you can read about a player, how to talk to a player, how to move one to another backend, and how to list
+the backends and the players on them.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+using namespace basalt::proxy;
+
+static void lobby(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player == 0) {
+        commands::command_reply(ctx, "<red>Only players can use this command.");
+        return;
+    }
+    if (players::player_connect(player, "lobby") != BASALT_OK) {
+        commands::command_reply(ctx, "<red>The lobby is not available right now.");
+    }
+}
+
+void plugin_init() {
+    commands::command("lobby", "", lobby);
+}
+```
+
+The examples use the C++ spelling `area::function`; other languages use the same names with their own casing, see
+[The SDK](/docs/server/wasm-sdk).
+
+## Player handles
+
+Every call that is about a player takes a **player handle**: a positive number the proxy gives you. You get one from:
+
+| Call | Gives |
+|---|---|
+| `events::event_player(ctx)` | The player an event or a command is about, or 0 when there is none |
+| `players::player_by_name(name)` | The connected player with that name (exact spelling first, then ignoring case), or 0 |
+| `players::players_online(out, capacity)` | Writes the handles of every player in play, returns how many there are |
+| `players::players_on(server, out, capacity)` | The same for the players on one backend |
+| `interaction::players_by_uuid(uuid)` | The connected player with that UUID, or 0 (see [Interaction](/docs/proxy/wasm-interaction)) |
+
+`players_online` and `players_on` always return the number of players, and fill `out` only when `capacity` is at least
+that number. Pass `nullptr` and `0` to count first, then call again with a buffer of that size.
+
+A handle is valid while the player is connected to the proxy, including while they change backend. When they leave, every
+call that takes it answers `ERR_STALE`. A player who reconnects gets a new handle. A handle works inside the `player.quit`
+callback and is gone right after, so keep the name or UUID if you need to find the player again. Players are listed from
+their `player.join`; a player who is still logging in has no handle yet, see
+[Execution model](/docs/proxy/wasm-execution-model#handles).
+
+## Reading a player
+
+| Call | Returns |
+|---|---|
+| `players::player_name(player)` | The player's name, as a `core::Text<256>` |
+| `players::player_uuid(player)` | The UUID as text, as a `core::Text<64>` |
+| `players::player_server(player)` | The name of the backend the player is on now, as a `core::Text<256>` |
+| `players::player_ping(player)` | The latency in milliseconds, or `ERR_ABSENT` when it is not known yet |
+| `players::player_has_permission(player, node)` | `true` when the proxy's permission system grants the node to the player |
+| `players::player_setting_str(player, field)` | A text setting of the client, as a `core::Text<256>` |
+| `players::player_setting_i64(player, field, &out)` | A number setting of the client, status in the return value |
+
+A `core::Text` tells you whether the call worked with `ok()` and exposes the text with `c_str()`; `length` is negative
+when the call failed (`ERR_STALE` for a handle that left).
+
+`player_has_permission` asks the proxy's own permission system (groups, overrides and the proxy's providers); it is also
+false for a stale handle. To check a player by name, whether they are connected or not, or to add your own permission
+source, see [Administration](/docs/proxy/wasm-admin).
+
+### Client settings
+
+These answer `ERR_ABSENT` until the client has sent its settings. An unknown field name is
+`ERR_INVALID`.
+
+| Field | Call | Values |
+|---|---|---|
+| `locale` | `player_setting_str` | The client language, for example `en_us` |
+| `chat_mode` | `player_setting_str` | `full`, `system` or `hidden` |
+| `main_hand` | `player_setting_str` | `left` or `right` |
+| `particles` | `player_setting_str` | `all`, `decreased` or `minimal` |
+| `view_distance` | `player_setting_i64` | Chunks |
+| `chat_colors`, `text_filtering`, `server_listing` | `player_setting_i64` | 0 or 1 |
+| `skin_parts` | `player_setting_i64` | The skin parts bit mask |
+
+A plugin's text is in the plugin's language, not the player's. To answer in the player's language, read `locale` and
+choose the language key yourself (for example `@welcome` or `@welcome-es`).
+
+The whole settings as one map, the client's address and port, and the `player.settings` event are on
+[Interaction](/docs/proxy/wasm-interaction).
+
+## Talking to a player
+
+| Call | Does |
+|---|---|
+| `players::send(player, text, &args)` | Sends a chat line |
+| `players::action_bar(player, text, &args)` | Shows text above the hotbar |
+| `players::player_title(player, title, subtitle, fade_in, stay, fade_out)` | Shows a title and a subtitle |
+| `players::player_kick(player, reason, &args)` | Disconnects the player with a reason |
+
+`text` and `reason` are [MiniMessage](https://docs.advntr.dev/minimessage/), cut at 4096 bytes, and a text that starts with
+`@` is a key of the plugin's language file. The optional `core::Args` (pass `nullptr` or leave it out for none) fills `{name}` fields, see
+[Text](/docs/server/wasm-text). Each call returns 0, `ERR_STALE` for a handle that left, or `ERR_INVALID` when the text
+cannot be resolved or the player's connection cannot take it.
+
+`player_title` takes an empty text for the part you do not want to change. The three times are in ticks of the client (20
+per second); a negative value means the client default (fade in 10, stay 70, fade out 20), and when all three are
+negative none are sent. The default arguments of the SDK call are all negative.
+
+```cpp
+static void on_join(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player != 0 && players::player_has_permission(player, "network.staff")) {
+        players::player_title(player, "<gold>Staff", "<gray>Welcome back", 10, 60, 10);
+    }
+}
+```
+
+A kick is carried out a moment later: the player is still connected, and still has a handle, until their `player.quit`.
+For chat that skips the formatting rules, JSON text, boss bars, the tab list and dialogs, see [HUD](/docs/proxy/wasm-hud),
+[Interaction](/docs/proxy/wasm-interaction) and [Administration](/docs/proxy/wasm-admin).
+
+## Moving a player
+
+`players::player_connect(player, server)` moves the player to the backend named `server`, with the proxy's own routing.
+It returns 0 once the request is handed over and `ERR_INVALID` when the backend does not exist or refuses. The move
+itself happens afterwards: `player_server` still answers the old backend until the `player.server_change` event arrives.
+
+To decide where a player goes before they connect, set `server` in the `player.server_pre_connect` event instead, see
+[Events and decisions](/docs/proxy/wasm-events#choose-or-redirect-the-backend). To send a client to another address
+altogether, see `interaction::player_transfer` on [Interaction](/docs/proxy/wasm-interaction).
+
+## Backends
+
+| Call | Returns |
+|---|---|
+| `players::servers_list()` | The names of the backends, one per line, as a `core::Text<1024>` |
+| `players::server_address(name)` | The address of a backend as `host:port`, as a `core::Text<256>`; `length` is `ERR_ABSENT` when there is no such backend |
+| `players::players_on(server, out, capacity)` | The handles of the players on a backend, and their number |
+
+The list contains the backends of `servers.toml` and the ones plugins registered with
+[Administration](/docs/proxy/wasm-admin), which also covers registering, removing and pinging a backend.
+
+```cpp
+static void census(core::Ctx ctx) {
+    const core::Text<1024> servers = players::servers_list();
+    char name[64];
+    int length = 0;
+    for (int i = 0; i <= servers.length && i <= 1024; ++i) {
+        const char c = servers.data[i];
+        if (c != '\n' && c != '\0' && length < 63) {
+            name[length++] = c;
+            continue;
+        }
+        name[length] = '\0';
+        if (length > 0) {
+            char count[24];
+            core::format_i64(players::players_on(name, nullptr, 0), count);
+            core::Args args;
+            args.add("server", name).add("count", count);
+            commands::command_reply(ctx, "<gray>{server}: <white>{count}", &args);
+        }
+        length = 0;
+        if (c == '\0') {
+            break;
+        }
+    }
+}
+
+void plugin_init() {
+    commands::command("census", "network.census", census);
+}
+```
+
+## Things that catch people out
+
+- Do not keep a handle for later. Keep the name or UUID and look the player up again with `players::player_by_name`.
+- `events::event_player(ctx)` is 0 during `player.login` and the first `player.server_pre_connect`, and for a command run
+  from the console. Check for 0 before you use it.
+- After a `reload` the proxy forgets which players were online. A player is listed again when they next join or change
+  backend.
+- `player_connect` and `player_kick` return when the request is handed over, not when it is done.
+- A `core::Text<N>` keeps at most N bytes. `servers_list` holds 1024, so a very long list is cut and `length` is larger
+  than 1024.
+
+## Where to go next
+
+| To do this | Read |
+|---|---|
+| Change or refuse what a player is doing | [Events and decisions](/docs/proxy/wasm-events) |
+| Show titles over time, boss bars, the tab list | [HUD](/docs/proxy/wasm-hud) |
+| Dialogs, resource packs, the address and settings of a client | [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) |
+| Register a backend, check permissions, run a command as the console | [Backends, permissions and administration](/docs/proxy/wasm-admin) |

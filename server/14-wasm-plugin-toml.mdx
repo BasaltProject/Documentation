@@ -1,0 +1,146 @@
+---
+title: Manifest and layout
+description: plugin.toml, the capabilities a plugin asks for, dependencies, the layout of a package and where its files live.
+group: Plugin basics
+---
+
+Every plugin has a `plugin.toml` at its root. It names the plugin, points at the module and lists what the plugin needs
+from the server. Kiln writes one for you with `kiln new` and reads it on every `kiln check`.
+
+```toml
+id = "arena"
+name = "Arena"
+version = "1.2.0"
+authors = ["Steve"]
+api = 1
+abi = 1
+lang = "rust"
+main = "plugin.wasm"
+
+[depends]
+economy = ">=2.0"
+
+[soft-depends]
+holograms = "*"
+
+[capabilities]
+players_data = true
+storage = true
+files = ["maps"]
+network = ["arena:lobby"]
+
+[exports]
+services = ["arena.status"]
+
+[resources]
+private = ["secrets.toml"]
+```
+
+## Keys
+
+| Key | Meaning |
+|---|---|
+| `id` | Lowercase letters, digits and underscores, starting with a letter. It names the plugin in logs, in `/plugins`, in its data folder, in storage and in command permissions |
+| `name` | Display name. Defaults to the id |
+| `version` | The plugin's version, written as numbers separated by dots, for example `1.2.0`. Dependencies compare it |
+| `authors` | A list of names. Optional |
+| `api` | The plugin API the plugin was written for. This server speaks `1`, and a plugin that asks for another is refused |
+| `abi` | The module contract the plugin was built against. It must be `1`, the value the module reports |
+| `lang` | The language Kiln builds the plugin in. Kiln writes it and the server ignores it |
+| `main` | The module file, which must end in `.wasm`. Kiln writes it to `build/` and packs it under this name |
+
+## Dependencies
+
+`[depends]` and `[soft-depends]` map a plugin id to the version it needs. A requirement is `*` for any version, a
+version for exactly that one, or a comparison: `>=2.0`, `>1.4`, `<=3`, `<2.1`.
+
+- A **hard dependency** that is missing or has the wrong version means the plugin does not load, and the log says which
+  one. A plugin whose dependency itself did not load is refused too.
+- A **soft dependency** only affects order: the server loads the other plugin first when it is there and does not mind
+  when it is not.
+- Plugins load in dependency order, then alphabetically by id. A cycle refuses every plugin in it.
+
+## Capabilities
+
+A plugin asks for what reaches beyond its sandbox under `[capabilities]`. The set is closed, so a name the server does not
+know makes the manifest invalid. A call that needs a capability the plugin lacks answers `ERR_DENIED` (-4).
+
+| Name | Form | Opens |
+|---|---|---|
+| `players_data` | `true` | [Per-player data](/docs/server/wasm-storage#per-player-data) |
+| `storage` | `true` | The plugin [key-value store and JSON data files](/docs/server/wasm-storage#the-plugin-store) |
+| `files` | list of folders | [File access](/docs/server/wasm-storage#files) in the listed folders of the plugin folder, `"."` for all of it |
+| `commands` | `true` | [Running commands as the console](/docs/server/wasm-commands#running-commands-from-a-plugin) |
+| `packets` | `true` | [Raw packet listeners](/docs/server/wasm-packets) |
+| `network` | list of channels | [Plugin message channels](/docs/server/wasm-packets#plugin-channels) with those names |
+| `worldgen` | `true` | Creating, unloading and deleting [worlds](/docs/server/wasm-worlds#creating-and-removing-worlds) |
+| `datapacks` | `true` | The `datapacks.*` operations of [Server control](/docs/server/wasm-server-control) |
+
+### The operator grant
+
+`commands`, `packets` and `network` are powers over the whole server, so asking is not enough. The operator lists them for
+the plugin in `config/server.toml`:
+
+```toml
+[plugins.allow]
+arena = ["packets"]
+lobby = ["network", "commands"]
+```
+
+A plugin that asks for one it was not granted still loads, without it, and the log says so. See
+[Server settings](/docs/server/server-settings#plugins). The other capabilities need no grant: the manifest is enough.
+
+## Services
+
+`[exports] services` lists the names of the functions this plugin offers to others, see
+[Services between plugins](/docs/server/wasm-services). A service that is not listed here cannot be registered.
+
+## Layout of a package
+
+A package, a `.bspkg`, is a zip with a fixed shape. `kiln pack` writes it:
+
+```
+plugin.toml
+plugin.wasm
+resources/
+  config.toml
+  lang/
+    en_us.toml
+    es_es.toml
+```
+
+Everything under `resources/` is read by the **server**, not by the plugin's own code: `config.toml` through the
+[configuration calls](/docs/server/wasm-storage#configuration) and `lang/*.toml` through
+[translation](/docs/server/wasm-text#language-files). The module is the only code in the package. A resource is
+addressed by its file name, so two files in `resources/` cannot share one even in different folders.
+
+### Private resources
+
+`[resources] private` lists files or folders (a trailing `/` means a folder) that stay inside the package: they are not
+copied to the data folder, so the operator never sees them.
+
+## Data folder
+
+When a package loads, its `resources/` is copied to `plugins/<id>/`, and a file that is already there is never
+overwritten. That folder is the plugin's data folder: it holds the files the operator edits and the files the plugin
+writes with the [file calls](/docs/server/wasm-storage#files). Updating the package therefore never loses an edited
+config, and a new key added to your default `config.toml` shows up only for fresh installs, so read settings with a
+default.
+
+## Where plugins live
+
+The server looks in `plugins/` when it starts, and `/plugins load` looks again:
+
+```
+plugins/
+  arena-1.2.0.bspkg     a package
+  greeter/              a folder with plugin.toml and plugin.wasm at its root
+  WorldEdit.jar         a Bukkit plugin, see Bukkit plugins
+```
+
+What is inside decides the kind, not the name. A plugin folder uses its own `resources/` folder as the data folder, which
+makes it convenient while you develop. `/plugins` lists each plugin with its state, and
+[Bukkit plugins](/docs/server/bukkit-plugins) covers the jars.
+
+Command permissions follow the id: a command a plugin registers without naming a permission is
+`basalt.plugin.<id>.<command>`, see [Groups and permissions](/docs/server/groups-and-permissions).

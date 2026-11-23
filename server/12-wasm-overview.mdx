@@ -1,0 +1,135 @@
+---
+title: WebAssembly plugins
+description: What a Basalt Server plugin is, why it is WebAssembly, what it can do and which language to write it in.
+group: Plugin basics
+---
+
+A Basalt Server plugin is a **WebAssembly module**: a small `.wasm` file the server loads into its own sandbox and calls
+when something happens. You write it in the language you like, [Kiln](/docs/server/wasm-kiln) compiles and checks it, and
+the result is a single package, a `.bspkg`, that you drop into the `plugins/` folder.
+
+Nothing about this needs a Java installation, a build tool of your own or a second process. The server runs the plugin
+in the same process as the tick loop, so a call between the two costs nanoseconds, and the sandbox means a plugin can
+only touch what the server hands it.
+
+## A plugin at a glance
+
+A plugin registers what it cares about when it starts, and the server calls back when that happens. This is a complete
+plugin in C++ that greets players who join and answers `/hello`:
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    bs::core::Args args;
+    args.add("name", bs::players::player_name(player).c_str());
+    bs::players::send(player, "@welcome", &args);
+}
+
+static void hello(bs::core::Ctx ctx) {
+    bs::core::Args args;
+    args.add("name", bs::commands::command_source_name(ctx).c_str());
+    bs::commands::command_reply(ctx, "@hello", &args);
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+    bs::commands::command("hello", "", hello);
+}
+```
+
+```toml
+# resources/lang/en_us.toml
+welcome = "<green>Welcome, <yellow>{name}</yellow>!"
+hello = "<gray>Hello, <white>{name}</white>."
+```
+
+Texts live in language files and are written in [MiniMessage](/docs/server/wasm-text), so the operator can change them
+without touching the code. The [Quickstart](/docs/server/wasm-quickstart) builds exactly this plugin and runs it.
+
+## Why WebAssembly
+
+Plugin code runs on the tick, so its speed is the server's speed. WebAssembly was chosen because it is the one sandboxed
+format that is also fast.
+
+```chart
+title: Compute time against Java HotSpot
+note: Less is better. Eight compute kernels, release builds, one machine. The WebAssembly was compiled from C.
+unit: x
+---
+Native C: 0.79
+Wasmtime Cranelift: 0.85
+Java HotSpot: 1
+Wasmtime Winch (baseline): 1.57
+```
+
+Basalt runs plugins with Wasmtime and its Cranelift compiler, which measured 0.85 times HotSpot's time. A call from the
+server into a plugin costs about 15 ns and a call from the plugin into the server about 5 ns. The numbers and how they
+were measured are on [Performance](/docs/server/wasm-performance).
+
+- **Isolation.** A module can only read and write its own memory and call the functions the server gives it. A bug in a
+  plugin cannot corrupt the server, and a plugin that crashes, loops or runs out of memory is switched off alone.
+  See [Execution model](/docs/server/wasm-execution-model).
+- **Your language.** Anything that compiles to WebAssembly works, and the SDK is the same in all of them.
+- **One file.** The module is portable: the same `.wasm` runs on every platform the server supports, and each server
+  compiles and caches it for itself.
+
+## What a plugin can do
+
+The API is split into areas. Each page covers one and is written to be read on its own.
+
+| You want to | Read |
+|---|---|
+| Send text, translate it, add `%placeholders%` | [Text, language files and placeholders](/docs/server/wasm-text) |
+| Read settings, keep data per player or per plugin, read and write files | [Configuration and storage](/docs/server/wasm-storage) |
+| React to anything that happens, change or cancel it | [Events](/docs/server/wasm-events) |
+| Add commands with typed arguments | [Commands](/docs/server/wasm-commands) |
+| Do something later or on a timer | [Tasks and time](/docs/server/wasm-tasks) |
+| Work with players: health, teleporting, titles, effects | [Players](/docs/server/wasm-players) |
+| Decide who may do what | [Permissions](/docs/server/wasm-permissions) |
+| Open chests, forms, dialogs and trade windows | [Menus, forms and dialogs](/docs/server/wasm-menus) |
+| Read and change blocks, chunks, light, biomes and world settings | [Worlds and blocks](/docs/server/wasm-worlds) |
+| Capture and place structures, sample noise, upgrade saved data | [Structures, noise and data fixing](/docs/server/wasm-structures) |
+| Spawn, move and control entities and their AI | [Entities](/docs/server/wasm-entities) |
+| Work with items and inventories | [Items and inventories](/docs/server/wasm-items) |
+| Add recipes, roll loot, offer trades | [Recipes, loot and trades](/docs/server/wasm-recipes) |
+| Draw scoreboards, boss bars, holograms and NPCs | [Scoreboards, boss bars, holograms and NPCs](/docs/server/wasm-hud) |
+| Listen to packets and plugin channels | [Packets and plugin channels](/docs/server/wasm-packets) |
+| Offer functions to other plugins | [Services between plugins](/docs/server/wasm-services) |
+| Control ticks, settings, access lists and datapacks | [Server control](/docs/server/wasm-server-control) |
+
+## Choosing a language
+
+Every language below produces the same kind of module and uses the same API. The difference is what the module carries
+inside it.
+
+| Language | Choose it when |
+|---|---|
+| [C++](/docs/server/wasm-lang-cpp), [C](/docs/server/wasm-lang-c), [Zig](/docs/server/wasm-lang-zig), [Rust](/docs/server/wasm-lang-rust) | You want the smallest modules and the fastest code. These are the recommended languages |
+| [AssemblyScript](/docs/server/wasm-lang-assemblyscript) | You know TypeScript |
+| [Go](/docs/server/wasm-lang-go) (TinyGo) | You know Go |
+| [Kotlin](/docs/server/wasm-lang-kotlin), [C#](/docs/server/wasm-lang-csharp), [Java](/docs/server/wasm-lang-java) | You want your usual language and accept a larger module that carries its own runtime and garbage collector |
+
+You do not install any compiler by hand: Kiln finds one on the machine or downloads a pinned one the first time you
+build.
+
+<x-docs.callout type="note" title="Existing Bukkit and Paper plugins">
+Jars written for Bukkit, Spigot or Paper run beside WebAssembly plugins, see [Bukkit plugins](/docs/server/bukkit-plugins).
+A WebAssembly plugin is the fast path and the one this section documents.
+</x-docs.callout>
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| To build and run a first plugin | [Quickstart](/docs/server/wasm-quickstart) |
+| To know what goes in `plugin.toml` | [Manifest and layout](/docs/server/wasm-plugin-toml) |
+| To understand how and when your code runs | [Execution model](/docs/server/wasm-execution-model) |
+| To see how the API is spelled in your language | [The SDK](/docs/server/wasm-sdk) |
+| Compiler setup, checking and packaging | [Kiln](/docs/server/wasm-kiln) |

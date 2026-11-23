@@ -1,0 +1,224 @@
+---
+title: Services between plugins
+description: Offer a function to other plugins and call one that another plugin offers, with values in and out and an answer that arrives later.
+group: Plugin API
+---
+
+A plugin is a separate module with its own memory. It cannot link against another plugin's code, read its variables or call
+its functions, and there is no shared source to include. When two plugins have to work together, one of them offers a
+**service**: a named function that takes one [value](/docs/server/wasm-values) and answers with one. The other plugin calls it
+by name and gets the answer in a callback a moment later. A bank plugin offers `bank.balance`, a shop plugin asks it, and
+neither needs to know how the other is built.
+
+Function names are written as in C++ (`server::service_call`). Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk).
+
+## A provider and a consumer
+
+The provider lists the services it offers in `plugin.toml` and registers a handler for each:
+
+```toml
+# bank/plugin.toml
+id = "bank"
+name = "Bank"
+version = "1.0.0"
+api = 1
+abi = 1
+main = "plugin.wasm"
+
+[capabilities]
+players_data = true
+
+[exports]
+services = ["bank.balance"]
+```
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void balance_service(bs::core::Ctx ctx) {
+    bs::server::Reply<> call;
+    if (bs::server::result(ctx, call) < 0) {
+        return;
+    }
+    const char* text = nullptr;
+    int length = 0;
+    char name[48] = {};
+    if (call.value.find("args").find("player").as_str(text, length)) {
+        for (int i = 0; i < length && i < 47; ++i) {
+            name[i] = text[i];
+        }
+    }
+    const bs::core::Player player = bs::players::player_by_name(name);
+    bs::values::ValueBuffer<128> answer;
+    answer.map().key("player").string(name).key("online").boolean(player != 0);
+    answer.key("coins").integer(player == 0 ? 0 : bs::data::data_get_i64(player, "coins", 0)).end();
+    bs::server::service_reply(ctx, answer);
+}
+
+void plugin_init() {
+    bs::server::service_register("bank.balance", balance_service);
+}
+```
+
+The consumer calls it and handles the answer in a second callback. It lists the provider in `[depends]` so the bank is
+loaded first:
+
+```toml
+# shop/plugin.toml
+id = "shop"
+name = "Shop"
+version = "1.0.0"
+api = 1
+abi = 1
+main = "plugin.wasm"
+
+[depends]
+bank = "*"
+```
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void answered(bs::core::Ctx ctx) {
+    bs::server::Reply<> reply;
+    if (bs::server::result(ctx, reply) < 0) {
+        return;
+    }
+    if (!reply.value.find("ok").bool_or(false)) {
+        bs::server::broadcast("<red>The bank is not answering.", nullptr, bs::server::kBroadcastConsole);
+        return;
+    }
+    const bs::values::Value answer = reply.value.find("value");
+    const char* text = nullptr;
+    int length = 0;
+    char name[48] = {};
+    if (answer.find("player").as_str(text, length)) {
+        for (int i = 0; i < length && i < 47; ++i) {
+            name[i] = text[i];
+        }
+    }
+    const bs::core::Player player = bs::players::player_by_name(name);
+    if (player == 0) {
+        return;
+    }
+    char coins[24];
+    bs::core::format_i64(answer.find("coins").i64_or(0), coins);
+    bs::core::Args args;
+    args.add("amount", coins);
+    bs::players::send(player, "<gray>Balance: <gold>{amount}</gold>", &args);
+}
+
+static void ask(bs::core::Ctx ctx) {
+    bs::values::ValueBuffer<64> args;
+    args.map().key("player").string(bs::commands::command_source_name(ctx).c_str()).end();
+    const int request = bs::server::service_call("bank.balance", args, 40, answered);
+    if (request < 0) {
+        bs::commands::command_reply(ctx, "<red>There is no bank on this server.");
+    }
+}
+
+void plugin_init() {
+    bs::commands::command("balance", "", ask);
+}
+```
+
+When a player runs `/balance`, the shop asks the bank for that player's coins. The bank's handler runs on a later tick and
+replies, and then the shop's `answered` callback runs with the result. The answer carries the player's name back so the
+shop knows whom to tell, since a callback has no memory of the command that started it.
+
+## Offering a service
+
+1. Add the name to `[exports] services` in `plugin.toml`. A plugin can only register names it lists, so the manifest says
+   up front what a plugin offers.
+2. Call `server::service_register(name, handler)` from `plugin_init`. It returns a handle, or an error.
+3. In the handler, read the call with `server::result(ctx, reply)`. It is a map with three fields: `name` (the service),
+   `caller` (the id of the plugin that called) and `args` (the value it sent).
+4. Answer with `server::service_reply(ctx, value)`, or `server::service_reply_null(ctx)` when there is nothing to say. A
+   second reply in the same call replaces the first. A handler that does not reply answers `null`.
+
+The handler has to reply **inside the call** and it cannot wait for anything: there is no way to answer later, so read what
+you need from memory or from [storage](/docs/server/wasm-storage). Like any callback it has to return quickly, see the
+gotchas below.
+
+`caller` lets a service decide who is asking, for example to answer only plugins you know.
+
+A service is offered until the plugin unloads or the service is removed. A name is unique across the server: the first
+plugin to register it keeps it, and a later `service_register` of the same name is `ERR_INVALID`. A name is any non-empty
+text; `<plugin id>.<what>` keeps names from colliding.
+
+| Call | Does |
+|---|---|
+| `server::service_register(name, handler)` | Offers a service and returns its handle. `ERR_DENIED` when the name is not in `[exports] services` (the log says so), `ERR_INVALID` for an empty or taken name |
+| `server::result(ctx, reply)` | Inside the handler: reads the call `{name, caller, args}` into `reply` |
+| `server::service_reply(ctx, value)` | Sets the answer. `ERR_INVALID` for a value that is malformed or too large |
+| `server::service_reply_null(ctx)` | Answers `null` |
+| `service_remove(handle)` | Stops offering a service. `ERR_ABSENT` for a handle that is unknown or already removed |
+
+## Calling a service
+
+`server::service_call(name, args, timeout, handler)` starts a call and returns a request handle straight away. The answer
+arrives later, in `handler`, as a [value](/docs/server/wasm-values) you read with `server::result`:
+
+| Field | Meaning |
+|---|---|
+| `ok` | `true` when the provider answered |
+| `value` | The provider's answer, present when `ok` is true. `null` when the provider replied nothing |
+| `error` | Present when `ok` is false: `unavailable`, `timeout` or `failed` |
+
+The three errors:
+
+- `unavailable`: nobody offers that service, or the plugin that did was switched off before the call ran.
+- `timeout`: the provider did not answer within `timeout` ticks (20 per second). `0` means 100 ticks, five seconds. An
+  answer that arrives after the timeout is dropped.
+- `failed`: the provider's handler failed (it trapped or ran out of time).
+
+The call itself can be refused at once: `ERR_ABSENT` when nobody offers the service right now, `ERR_INVALID` for an empty
+name, a value that is malformed or too many calls waiting. In those cases `handler` is never called, so check the return
+value before relying on an answer.
+
+`args` is any value; build it with `ValueBuffer` as above. To send nothing, build a `null` value.
+
+| Call | Does |
+|---|---|
+| `server::service_call(name, args, timeout, handler)` | Starts a call and returns a request handle |
+| `server::service_has(name)` | Whether some loaded plugin offers the service. Use it before calling an optional dependency |
+| `service_list(reply)` | A list of every service offered by a loaded plugin, sorted |
+
+## When things run
+
+Calls between plugins cross plugin threads, so the server keeps them apart from the caller's own code:
+
+- The handler **never runs inside the caller's callback**. `service_call` returns at once and the handler runs on the
+  provider's own thread on the next tick, after the caller's current callback has returned.
+- Calls to one service run **in the order** `service_call` was made.
+- The caller's completion callback runs **right after** the handler returned.
+- So an answer is never available in the callback that asked: put what you do with the answer in the completion callback.
+
+## Things that catch people out
+
+- Plugins load in dependency order. If the consumer might load first, list the provider in `[depends]` (or `[soft-depends]`
+  when it is optional and you test with `service_has`), or `service_call` returns `ERR_ABSENT` at startup.
+- The call carries one value and the answer is one value. To send several things, put them in a map.
+- A handler has to answer before it returns. A handler that waits, or leaves the work for a later callback, has already
+  answered `null`.
+- A callback has to return quickly: a plugin that stays busy for about a quarter of a second is interrupted, and three
+  failures in a row switch it off until `/plugins reload`. A handler that traps makes the caller see `failed`.
+- A completion is a callback like any other: it has no memory of the code that started it. Keep what it needs in the
+  request itself (send it as `args` and have the provider echo it back, as the bank does) or in a variable of your module.
+- In C++ the SDK reads an answer into about 1 KiB. A larger reply is `ERR_INVALID`: keep service values small, and send
+  bigger data through a file or [storage](/docs/server/wasm-storage).
+- `service_remove` and `service_list` are not in the C and C++ SDKs.
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| To build and read values | [Values](/docs/server/wasm-values) |
+| What goes in `plugin.toml`, `[exports]` and `[depends]` included | [Manifest and layout](/docs/server/wasm-plugin-toml) |
+| How callbacks and ticks are scheduled | [Execution model](/docs/server/wasm-execution-model) |
+| To keep data a service answers from | [Configuration and storage](/docs/server/wasm-storage) |

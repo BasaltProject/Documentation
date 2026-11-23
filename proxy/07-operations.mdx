@@ -65,7 +65,7 @@ The server list the proxy answers is its own: the description is `Basalt Proxy` 
 - **Keep `accept-transfers = false`** unless another server legitimately sends players here with a transfer. Transfers still authenticate, but the setting widens what the proxy accepts.
 - **Tune `[admission]`** (below).
 - **Keep timeouts at defaults or lower.** Every stage of a connection has a deadline (`handshake-timeout-ms`, `login-timeout-ms`, `read-timeout-ms`, `write-timeout-ms`), so a connection that stalls is closed.
-- **Plugins**: grant `commands`, `network` and `packets` in `plugins.toml` only to plugins you trust. A plugin cannot run longer than `instructions-per-turn` or use more than `memory-mib`.
+- **Plugins**: grant `commands`, `network` and `packets` under `[plugins.allow]` in `proxy.toml` only to plugins you trust. A plugin that stays in a callback longer than its budget, or runs out of memory, is switched off until the next reload.
 
 ### Rate limits
 

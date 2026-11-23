@@ -86,7 +86,7 @@ A player changes backend while staying connected. From Minecraft 1.20.2 the clie
 A move is requested by:
 
 - the `send` console command;
-- a plugin, with `player:connect(server)`;
+- a plugin, see [Players and backends](/docs/proxy/wasm-players);
 - a backend that has `bungee-messages = true` and sends the BungeeCord `Connect` message, which is how a lobby's server-selector plugin works.
 
 A request is refused when the target backend is unknown, when the player is not yet in game, when the target is the backend they are already on, or when another change is in progress. If the client and the target backend have no usable version route, the change is refused and the player stays where they are. The proxy never changes the contents of a backend's registries to fit another version.
@@ -123,6 +123,6 @@ These names cannot be replaced by a plugin. Any other line is offered to plugin 
 
 ## Commands and permissions for players
 
-The proxy itself offers no commands to players. Every in-game command comes from a Lua plugin, which can restrict it with a `permission`. Permissions on the proxy are deliberately simple: the names listed in `operators` in `plugins.toml` (case-insensitive) may run a command that declares a permission, and the console always may. Commands without a permission are open to everyone. The permission model of each backend is separate: see [Access and permissions](/docs/server/groups-and-permissions) for Basalt Server.
+The proxy itself offers no commands to players. Every in-game command comes from a plugin, which can restrict it with a `permission`. A command that declares a permission runs for the players the proxy's permission chain grants it to, and always for the console, see [Backends, permissions and administration](/docs/proxy/wasm-admin#permissions). Commands without a permission are open to everyone. The permission model of each backend is separate: see [Access and permissions](/docs/server/groups-and-permissions) for Basalt Server.
 
 Clients from 1.13 offer plugin commands in tab completion; Bedrock clients see them in their command list.

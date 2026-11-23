@@ -1,0 +1,167 @@
+---
+title: plugin.toml
+description: The manifest of a proxy plugin, the capabilities it can ask for, and the configuration and language files that travel with it.
+group: Plugins
+---
+
+Every plugin has a `plugin.toml` that says who it is, which module to run and what it needs. `kiln new` writes one for
+you, and `kiln pack` puts it at the root of the package. The manifest of a proxy plugin has the same shape as a server
+one, with `target = "proxy"` so that Kiln builds and checks it against the proxy.
+
+```toml
+id = "greeter"
+name = "Greeter"
+version = "1.0.0"
+authors = ["Steve"]
+api = 1
+abi = 1
+lang = "cpp"
+target = "proxy"
+main = "plugin.wasm"
+
+[capabilities]
+players_data = true
+
+[depends]
+lobby_tools = ">=1.0"
+```
+
+## Keys
+
+| Key | Required | Meaning |
+|---|---|---|
+| `id` | yes | Lowercase letters, digits and `_`, starting with a letter. It names the plugin in the log, in its folder under `plugins/` and in the `[plugins.allow]` table. |
+| `version` | yes | A free-form string such as `1.2.0`. Dependencies compare it number by number, splitting on `.` and `-`. |
+| `api` | yes | The plugin API version. It must be `1`. |
+| `abi` | yes | The version of the module contract the module was built for. It must be `1`. |
+| `main` | yes | The module file, ending in `.wasm`. The module may be up to 16 MiB. |
+| `name` | no | The display name shown by `plugins`. It defaults to the `id`. |
+| `authors` | no | A list of strings. |
+| `lang`, `target` | no | Written by Kiln. `lang` is the language `kiln build` uses and `target = "proxy"` makes Kiln check and pack for the proxy. The proxy ignores them. |
+| `[capabilities]` | no | What the plugin asks for, see [Capabilities](#capabilities). |
+| `[depends]`, `[soft-depends]` | no | Other plugins, see [Dependencies](#dependencies). |
+| `[resources]` | no | `private`, see [Resources and language files](#resources-and-language-files). |
+
+`kiln check` validates the manifest before the plugin ever reaches a proxy: the keys above, the capability names and
+the module's imports.
+
+## Dependencies
+
+`[depends]` lists plugins that must be installed, `[soft-depends]` plugins that only matter for ordering when they are
+present. Each entry is `plugin_id = "requirement"`:
+
+```toml
+[depends]
+lobby_tools = ">=1.0"
+
+[soft-depends]
+stats = "*"
+```
+
+A requirement is `*` for any version, a bare version for exactly that one, or `>=`, `>`, `<=` or `<` followed by a
+version. A plugin whose hard dependency is missing, too old or itself not loaded does not load, and the log says which.
+Plugins load after the plugins they depend on and otherwise in alphabetical order of `id`; a dependency cycle keeps
+every plugin in it from loading. Load order is also the order in which plugins see the same event.
+
+## Capabilities
+
+A capability is a permission a plugin asks for in `[capabilities]`. The set of names is closed: a name the proxy does
+not know makes the manifest invalid. A call that needs a capability the plugin did not declare answers `ERR_DENIED`.
+
+| Capability | Form | Unlocks |
+|---|---|---|
+| `storage` | `storage = true` | The plugin's own key-value store, see [Administration](/docs/proxy/wasm-admin) |
+| `players_data` | `players_data = true` | Per-player data, see [Commands, tasks, config and player data](/docs/proxy/wasm-events#commands-tasks-config-and-player-data) |
+| `commands` | `commands = true` | Running commands as the console. Also needs the operator grant below. |
+| `network` | `network = ["my:channel"]` | Plugin message channels and the anti-bot checks, see [Network](/docs/proxy/wasm-network) |
+| `packets` | `packets = true` | Packet listeners and senders, see [Network](/docs/proxy/wasm-network) |
+
+The manifest also accepts `files`, `worldgen` and `datapacks`, which exist for server plugins and give a proxy plugin
+nothing.
+
+### What the operator grants
+
+The operator of the proxy decides what a plugin may do beyond the sandbox, in `config/proxy.toml`:
+
+```toml
+[plugins.allow]
+greeter = ["commands"]
+lobby = ["network", "commands"]
+```
+
+Each key is a plugin `id` and each value a list of `commands`, `network` and `packets` (any other name makes the file
+invalid). Running console commands needs both the `commands` capability in the manifest and `commands` in the grant for
+that `id`; without either, the call answers `ERR_DENIED`. The `network` and `packets` capabilities enable their calls as
+soon as the plugin declares them. Plugin data and the store need only their capability in the manifest.
+
+A plugin author should ask for as little as possible, and say in the plugin's own documentation which grant it needs.
+`[plugins.allow]` is read when the proxy starts, so changing it needs a restart.
+
+## Resources and language files
+
+Everything the plugin ships besides the module lives under `resources/`:
+
+```
+greeter.bppkg
+  plugin.toml
+  plugin.wasm
+  resources/
+    config.toml
+    lang/en_us.toml
+```
+
+The first time the package loads, the proxy copies `resources/` into `plugins/<id>/` and skips any file that is already
+there. The server owner edits those copies; updating the package never overwrites them, and deleting a copy brings the
+packaged one back on the next load. Paths listed in `private` stay in the package and are not copied (a trailing `/`
+means a whole folder):
+
+```toml
+[resources]
+private = ["secrets.toml", "internal/"]
+```
+
+### Configuration
+
+`config.toml` holds the values the server owner can change. The plugin reads them by key, with a default for when the
+key is missing, and nested tables are reached with dots:
+
+```toml
+announce-period = 1200
+
+[shop]
+price = 25
+```
+
+```cpp
+const long long period = config::config_i64("announce-period", 1200);
+const long long price = config::config_i64("shop.price", 25);
+```
+
+`config::config_i64`, `config::config_f64` and `config::config_bool` take the default as the second argument, and
+`config::config_str` returns the text (or a negative result when the key is missing). To read lists and whole tables,
+use `events::config_value`, described in [Events and decisions](/docs/proxy/wasm-events#commands-tasks-config-and-player-data).
+A `limits.toml` next to `config.toml` is readable under the key `limits`.
+
+The configuration is read when the plugin loads, so a change takes a `reload`. A `config.toml` that is not valid TOML
+keeps the plugin from loading, and the log names the file.
+
+### Language files
+
+`resources/lang/<code>.toml` holds the plugin's text. Nested tables flatten with dots, and `en_us` is the language the
+proxy looks in first, then any other file that has the key:
+
+```toml
+welcome = "<green>Welcome, <yellow>{name}</yellow>!"
+
+[shop]
+bought = "You bought {item}."
+```
+
+A text that starts with `@` is one of these keys (`"@welcome"`, `"@shop.bought"`), and `{name}` is replaced by the
+argument of that name. A key no file defines is shown as the key itself, without the `@`. The language is the plugin's,
+not the player's: to answer in the player's language, read their `locale` (see
+[Players and backends](/docs/proxy/wasm-players#reading-a-player)) and choose the key yourself. How text is written and
+translated is covered in [Text](/docs/server/wasm-text).
+
+Two `.toml` or `.json` files with the same name in different folders of one plugin keep it from loading, because a name
+has to mean one file.

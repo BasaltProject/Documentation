@@ -38,8 +38,11 @@ group: Configuration
 ---
 ```
 
+The sidebar groups pages that sit next to each other and share a `group`, so keep the pages of a group together in file
+order: the same group name in two separate places shows up as two categories.
+
 The body is markdown, with callouts (`<x-docs.callout type="note|tip|warning" title="...">`) and fenced code blocks
-tagged with a language (`lua`, `bash`, `toml`).
+tagged with a language (`cpp`, `rust`, `bash`, `toml`).
 
 ### Charts
 

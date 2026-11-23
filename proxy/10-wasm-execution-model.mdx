@@ -1,0 +1,155 @@
+---
+title: Execution model
+description: How the proxy runs plugins, when your code is called, how long it may take, and what happens when a plugin is slow or fails.
+group: Plugins
+---
+
+Knowing how the proxy calls your plugin explains most of its rules: why handlers must be short, why a player handle can
+go stale, why some events can be changed and others only watched. This page is the model; the calls themselves are on
+the pages for [events](/docs/proxy/wasm-events) and [players](/docs/proxy/wasm-players).
+
+## One plugin thread
+
+Every callback of every plugin runs on a single thread, one at a time, and a callback never runs inside another one.
+Two plugins therefore never run at the same moment, and you need no locks. The cost is that a slow handler holds up all
+the plugins behind it, which is why the time budget below is tight.
+
+The proxy's network threads never wait for a plugin to forward traffic. Relaying packets does not enter WebAssembly,
+and with no plugin loaded the proxy does no extra work on any path. Only two things make the proxy wait for your code,
+and both are bounded: a decision that you registered for (see [Observed and decided events](#observed-and-decided-events))
+and a packet listener (see [Packet listeners](#packet-listeners)).
+
+## Starting up and shutting down
+
+When a plugin loads, the proxy compiles the module (once, then it is cached), creates the instance and calls, in order:
+
+1. `_initialize`, if the module exports it. Toolchains that need a libc runtime use it; you do not call it.
+2. `basalt_abi_version`, which must match the proxy's, and then `basalt_init`. The SDK turns `basalt_init` into your
+   `plugin_init`. Register events, commands and tasks here. It has a budget of 2 seconds; a plugin that fails or runs
+   out of time here does not load, and its commands and tasks are removed.
+
+Once every plugin has loaded, the plugin thread starts and delivers `plugin.enable` to each plugin. From then on it
+serves events, commands typed by players and the console, completions and tasks. A plugin can register more handlers
+and tasks at any time, not only in `plugin_init`.
+
+On `reload` and on shutdown, each healthy plugin gets `plugin.disable` before it is dropped: use it to save what you
+keep in memory. Commands, tasks and listeners are removed with the plugin.
+
+## Callbacks
+
+Everything you registered comes back through one entry point, `basalt_callback(token, ctx)`. The token is whatever you
+passed when you registered; the SDK keeps the table and calls your function. `ctx` is the handle of that one call: the
+event, the command being run or the task. It answers the calls that read it (`events::event_get_str`,
+`commands::command_arg_i64`...) and is valid only until your function returns. Using it afterwards gives `ERR_STALE`.
+
+Tasks and the `plugin.enable` and `plugin.disable` callbacks get a `ctx` too, but it has nothing to answer.
+
+## Handles
+
+A handle is a positive 32-bit number the proxy gives you for something it owns; 0 is never valid.
+
+- **Player handles** are bound to a player's name on this proxy. You get one the first time you see the player, it is
+  never reused, and a player who reconnects gets a new one. It stays valid while the player is connected to the proxy,
+  including while they change backend, and goes stale (`ERR_STALE`) when they leave. In a `player.quit` callback it still
+  works, and it is gone right after.
+- A player has no handle before `player.join`: `events::event_player(ctx)` answers 0 during `player.login` and during the
+  first `player.server_pre_connect`. Use `player_name` and `player_uuid` from the event instead.
+- **Task handles** come from `tasks::after` and `tasks::every`, and stay valid until the task finishes or you cancel it.
+
+`players::players_online` lists the players the plugin host has seen join. After a `reload` the host starts with an empty
+list and learns about a player again when they next join or change backend, so a plugin that needs the full list right
+after a reload should expect a short gap.
+
+## Observed and decided events
+
+Events come in two kinds, and the difference decides what your handler can do.
+
+**Observed** events report something that already happened: `player.join`, `player.server_change`, `player.quit`, and
+the finished `player.chat` and `player.kick` when you watch them. The proxy puts them in a queue and your handler runs
+later; nothing it does changes the outcome.
+
+**Decided** events are questions the proxy asks before acting: `player.login`, `player.server_pre_connect`,
+`player.chat`, `player.command`, `player.kick` and `server.ping`. Registering for one with `events::on` makes your handler
+a decider. When the event happens, the proxy holds the player's connection (or the server list answer), puts the question
+in the same queue, and waits for the answer. The handlers run by priority, lowest first, and each one sees what the
+previous ones set. Cancelling does not stop the later handlers: they see `cancelled` as true and may undo it. When they
+are all done, the proxy applies the result.
+
+The wait has a deadline of about three seconds. An answer that arrives later is ignored, and the log says so (`a decision
+for Steve took 3012 ms; the proxy already went on`). The proxy also goes on at once, without asking, when no plugin
+registered for that event or when the queue is full.
+
+So a decision that is slow is a decision that does not happen, and a player waits for every decider in the meantime.
+Do the work for a decision in advance (in a task, or at `player.join`), and keep the handler to a lookup.
+
+## Time budgets and failures
+
+| Budget | Value |
+|---|---|
+| A callback (event, command, task, `plugin.enable`, `plugin.disable`) | 50 ms of wall-clock time |
+| `plugin_init` | 2 s |
+| A packet listener | `packet-timeout-ms` (default 25 ms), see below |
+
+The proxy enforces the budget from outside by interrupting the module, whatever it is doing:
+
+- A callback that goes over its budget is interrupted and the plugin is switched off until the next `reload`.
+- A callback that fails some other way (a trap, such as an out-of-bounds access or an `unreachable`) counts as a strike.
+  Five strikes in a row switch the plugin off; a callback that finishes normally resets the count.
+- The log lines carry the plugin's name and the reason, for example `command greeter failed: the call was interrupted`
+  or, for a trap, the same start followed by the trap's description. When the plugin is switched off the log adds
+  `disabled until the next reload after repeated failures`.
+
+A switched-off plugin is skipped everywhere: its handlers do not run, its commands do nothing and its tasks are removed.
+Decisions go on without it, so a broken plugin never blocks logins or chat (the proxy fails open). The other plugins and
+the proxy keep running. Fix the plugin, replace the package and `reload` to bring it back.
+
+## Packet listeners
+
+A packet listener (the `packets` capability, see [Network](/docs/proxy/wasm-network)) is the one place where your code
+runs on a network thread, because the proxy needs the answer before it relays the packet. Two settings in the
+`[plugins]` table of `proxy.toml` bound it:
+
+| Key | Default | Effect |
+|---|---|---|
+| `packet-timeout-ms` | `25` | The listener first waits at most this long for the plugin thread to be free, then runs with this same budget |
+| `packet-max-kib` | `256` | A packet larger than this goes past every listener untouched |
+
+A listener that does not get to run leaves the packet untouched, or cancels it when it was registered as fail-closed. A
+listener that traps or runs out of time counts as a failure of the plugin like any callback, and the packet goes on
+untouched. A packet that the plugin sends while one of its callbacks runs is not shown to listeners.
+
+## The queue
+
+Observed events, decisions, commands typed by players or the console and the answers to requests all wait in one queue
+for the plugin thread. Its size is `queue-size` in the `[plugins]` table (default 256). When it is full the newest item
+is dropped: an observed event is lost, a command typed in the console does nothing, and a decision is skipped so the
+proxy goes on without asking. A queue that fills up means the plugin thread is busy for too long, so look for a slow
+handler before you raise the size.
+
+## Time
+
+Tasks count steps of 50 ms, the proxy has no world tick. A task runs on the plugin thread when it is due and the thread
+is free, so a busy plugin delays every task. A repeating task is scheduled a full period after it last ran, so a late run
+pushes the following ones back instead of running twice to catch up.
+
+## Things that catch people out
+
+- Handlers are plain functions and cannot block. There is no sleep and no waiting for an answer: calls return at once, and
+  anything slow becomes a task that continues in a later callback.
+- Do not keep a `ctx` for later, and do not keep a player handle across a long time. Keep the player's name or UUID and
+  ask again with `players::player_by_name`.
+- One slow plugin slows all the others. Measure your handlers with the proxy under load before you ship.
+- A decision has two clocks: your 50 ms budget and the proxy's three seconds. Spending the budget in a login handler
+  delays that player's join by that much.
+- `reload` forgets everything the plugin kept in memory. Data saved with the data calls survives.
+- An error code returned by a call (`ERR_STALE`, `ERR_INVALID`...) is not a failure. Only a trap or running out of time
+  counts, so check the codes you care about and let the rest go.
+
+## Where to go next
+
+| To do this | Read |
+|---|---|
+| React to or change an event | [Events and decisions](/docs/proxy/wasm-events) |
+| Work with players and backends | [Players and backends](/docs/proxy/wasm-players) |
+| Listen to packets | [Plugin messages, packets and antibot](/docs/proxy/wasm-network) |
+| Raise the limits or grant a permission | [Plugins](/docs/proxy/wasm-plugins#the-plugins-table) |

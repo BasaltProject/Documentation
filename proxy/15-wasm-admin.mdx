@@ -1,0 +1,316 @@
+---
+title: Backends, permissions and administration
+description: Register and ping backends at run time, run console commands, check and provide permissions, and keep plugin data from a proxy plugin.
+group: Plugins
+---
+
+This page is for plugins that look after the network itself: they open a backend for an event and close it again, ask whether a player may do something, decide that themselves, keep a counter in the proxy's own database, or run a console command on a schedule. Each part stands alone, so read the section you need.
+
+In tables the functions are written as `admin::servers_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+
+## Capabilities and the operator grant
+
+Most of the calls here need nothing. Three need a capability, which a plugin asks for in its `plugin.toml` (see [plugin.toml](/docs/proxy/wasm-plugin-toml)). One of them also needs the operator's agreement.
+
+| Capability | Needed by |
+|---|---|
+| `storage` | The plugin store: `admin::data_value`, the `data_set` calls and `data_remove` with no holder, and `admin::store_top`. |
+| `players_data` | Data of a player by holder, including players who are offline: the same calls with a holder. |
+| `commands` | `admin::console_run`. Also needs the operator grant below. |
+
+```toml
+[capabilities]
+storage = true
+players_data = true
+commands = true
+```
+
+Running commands as the console is a power, so the proxy owner has to allow it for that plugin, under `[plugins.allow]` in `config/proxy.toml`:
+
+```toml
+[plugins.allow]
+myplugin = ["commands"]
+```
+
+A call without its capability, or `console_run` without the grant, answers `ERR_DENIED`.
+
+## A first example
+
+An event backend that staff open and close from the console or in game. Opening it registers the backend with the same settings as `lobby` and pings it so the staff member sees whether it answers.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static void on_ping(proxy::core::Ctx ctx) {
+    char buffer[1024];
+    proxy::values::Value answer;
+    if (proxy::admin::completion_value(ctx, buffer, sizeof buffer, answer) != 0) {
+        return;
+    }
+    if (answer.is_null()) {
+        proxy::log::log_warn("the event backend did not answer");
+        return;
+    }
+    char line[64];
+    proxy::core::format_i64(answer.find("online").i64_or(0), line);
+    proxy::log::log_info(line);
+}
+
+static void open_event(proxy::core::Ctx ctx) {
+    char reason[128] = {};
+    const int status = proxy::admin::servers_register("event", "10.0.0.7", 25570, "lobby", reason, sizeof reason - 1);
+    if (status != 0) {
+        proxy::core::Args args;
+        args.add("reason", reason);
+        proxy::commands::command_reply(ctx, "<red>Could not register: {reason}", &args);
+        return;
+    }
+    proxy::admin::servers_ping("event", on_ping);
+    proxy::commands::command_reply(ctx, "<green>The event backend is registered.");
+}
+
+static void close_event(proxy::core::Ctx ctx) {
+    const int status = proxy::admin::servers_unregister("event");
+    proxy::commands::command_reply(ctx, status == 0 ? "<green>Closed." : "<red>There is no such backend.");
+}
+
+void plugin_init() {
+    proxy::commands::command("event open", "events.manage", open_event);
+    proxy::commands::command("event close", "events.manage", close_event);
+}
+```
+
+## What a call answers
+
+Calls that give back a value write it into a buffer you provide and return the length the full answer needs, as everywhere else in the API (see [Values](/docs/server/wasm-values)). The errors:
+
+| Result | Meaning here |
+|---|---|
+| `ERR_ABSENT` | No such backend, key or group, or nobody decided a permission. |
+| `ERR_STALE` | A player who left, or a permission answer that came too late. |
+| `ERR_INVALID` | A bad argument, an oversized value, a text that is not a valid component. |
+| `ERR_DENIED` | The capability or the operator grant is missing, or a backend you may not remove. |
+
+## Backends at run time
+
+A plugin can add a backend while the proxy runs, and remove it again. A registered backend behaves like one from the proxy's configuration: a plugin can send players to it, and it is listed with the others (see [Backends and routing](/docs/proxy/backends-and-routing) for what a backend is). It exists until the proxy stops.
+
+| Function | What it does |
+|---|---|
+| `admin::servers_register` | Adds the backend `name` at `host` and `port`. |
+| `admin::servers_unregister` | Removes a backend a plugin added. |
+| `admin::servers_ping` | Asks a backend for its server list status and calls you back. |
+
+`servers_register` takes the name, the host, the port, the name of a backend whose settings to copy (`like`: forwarding, timeouts and the protocol range), and a buffer for an error message.
+
+- The name is 1 to 64 letters, digits, `_`, `-` or `.`, and must not be a backend that already exists.
+- The host is at most 255 bytes and the port 1 to 65535.
+- Name an existing backend in `like` to give the new one the same settings. Leave it empty when there is no backend to copy.
+- When it fails the call answers `ERR_INVALID` and writes the reason (UTF-8, cut to the buffer size, **not** NUL-terminated) into the buffer. Zero the buffer first and pass its size minus one, as the example does.
+
+`servers_unregister` answers `ERR_ABSENT` when no backend has that name and `ERR_DENIED` for a backend from the proxy's configuration, which a plugin may not remove. If the configuration later gains a backend with the same name, the one a plugin registered is dropped.
+
+### Pinging a backend
+
+`servers_ping` returns a request handle at once, and your callback runs when the answer is in. Inside it, `admin::completion_value` reads a map:
+
+| Key | Meaning |
+|---|---|
+| `motd` | The description as plain text. |
+| `motd_json` | The description as component JSON. |
+| `online`, `max_players` | The player counts. |
+| `version`, `protocol` | The version name and protocol number the backend reported. |
+| `latency` | Round trip in milliseconds. |
+
+The value is null when the backend did not answer, so check `is_null()` before reading. The call itself answers `ERR_ABSENT` when the backend does not exist or the ping cannot start, `ERR_INVALID` for a bad name or when too many requests are pending. Drop a ping you no longer want with `interaction::request_cancel`.
+
+## Waiting
+
+`admin::wait` calls you back after a number of ticks of 50 ms (0 is one tick). It returns a request handle that `interaction::request_cancel` can drop. A negative number of ticks, or too many pending requests, is `ERR_INVALID`.
+
+A plugin cannot pause in the middle of a callback, so `wait` is how you continue later: do the first half, call `wait`, and do the second half in the callback it names. Its callback has no value to read. For work that repeats, use `tasks::every`.
+
+## Console and chat
+
+| Function | What it does |
+|---|---|
+| `admin::console_run` | Runs a command line as the console would. |
+| `admin::player_chat` | Makes a player say something, or run a command. |
+| `admin::player_send_json` | Sends a chat line given as component JSON. |
+| `admin::player_kick_json` | Disconnects a player with a reason given as component JSON. |
+
+`console_run` takes the line without a slash, up to 4096 bytes. It answers 1 when the line named a command and 0 when it did not. It reaches commands that plugins registered and the proxy's own. The command's output goes to the log, not back to you, and every call is logged as `ran /<line>` under the plugin's name. It needs the `commands` capability and the grant.
+
+`player_chat` makes the player say the text (cut at 256 bytes), or run it as a command when it starts with `/`. The message is not signed: the proxy and the backend see a message the client did not sign. It answers `ERR_INVALID` for an empty text or a connection that cannot take it, and `ERR_STALE` for a player who left.
+
+The JSON calls are for text that already exists as a chat component. It must be valid and at most 65536 bytes, or the call is `ERR_INVALID`. For ordinary text, MiniMessage in [`players::send`](/docs/proxy/wasm-players) is shorter.
+
+## Permissions
+
+The proxy decides permissions through a chain of providers: its own groups first, then whatever plugins add. These calls ask the chain, change what it says, and let a plugin join it.
+
+### Asking
+
+| Function | What it does |
+|---|---|
+| `admin::permission_check` | Does this player (or the console) have this node? |
+| `admin::permission_meta` | The text option `key` of a player, such as `prefix` or `suffix`. |
+| `admin::permission_list` | Every node a player has right now, sorted, as a list of text. |
+
+`permission_check(who, node, server)` answers 1 (granted), 0 (denied) or `ERR_ABSENT` when nothing in the chain decided, which the proxy counts as denied. `who` is a player name, matched by exact spelling first and then ignoring case, or an empty string for the console. A player who is not connected is asked by name alone. `server` names a backend to ask about and defaults to the player's own; pass `nullptr` for the default.
+
+`permission_meta` returns the text, or a negative code when nothing provides it.
+
+### Changing
+
+| Function | What it does |
+|---|---|
+| `admin::permission_override` | Grants (1), denies (0) or removes (-1) a node for a player until the proxy stops. |
+| `admin::group_get` | The name of the player's group, empty when none. |
+| `admin::group_set` | Puts the player in a group. An empty group clears it. |
+
+An override is asked before the groups, works for players who are offline, and is gone when the proxy restarts. `group_set` answers `ERR_INVALID` when the player never joined the proxy or when the group is not defined in `groups.toml`. Groups are made there; plugins only move players between them.
+
+### Joining the chain
+
+A plugin can answer permission questions itself, for instance from its own database or a rank it keeps in player data.
+
+| Function | What it does |
+|---|---|
+| `admin::permission_provide` | Puts the plugin in the chain with a check callback, a meta callback or both. Returns a provider handle. |
+| `admin::permission_unprovide` | Takes it out again. |
+| `admin::permission_request` | Inside a callback: what is being asked. |
+| `admin::permission_answer` | Answers a check question: 1 grants, 0 denies, a negative value leaves it undefined. |
+| `admin::permission_answer_text` | Answers a meta question with text, up to 4096 bytes. |
+| `admin::permission_changed` | Tells the proxy that what the providers say has changed, so it rebuilds what it keeps from them. |
+
+`permission_provide(check, meta, priority)` takes either callback as `nullptr`, but not both. The priority puts the plugin above the proxy's own provider and sorts plugins among themselves, highest first. 0 means the plugin default, 100, and a negative priority is `ERR_INVALID`. The provider goes away with `permission_unprovide`, or when the plugin is switched off.
+
+In a callback, `permission_request` writes a map describing the question:
+
+| Key | Meaning |
+|---|---|
+| `kind` | `check` or `meta`. |
+| `name`, `uuid` | Who is asked about. `uuid` is empty when unknown. |
+| `console` | True when the question is about the console. |
+| `text` | The node of a check, or the key of a meta question. |
+| `context` | A map with `server`, `world` and any extra text entries the asker passed. |
+
+Here is a provider that grants every `perks.*` node to players who have a `vip` flag in the plugin's player data, and stays silent for everything else, so the next provider decides:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool starts_with(const char* text, int length, const char* prefix) {
+    int i = 0;
+    for (; prefix[i] != 0; ++i) {
+        if (i >= length || text[i] != prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void on_check(proxy::core::Ctx ctx) {
+    char buffer[512];
+    proxy::values::Value question;
+    if (proxy::admin::permission_request(ctx, buffer, sizeof buffer, question) != 0) {
+        return;
+    }
+    const char* node = nullptr;
+    int node_length = 0;
+    if (!question.find("text").as_str(node, node_length) || !starts_with(node, node_length, "perks.")) {
+        return;
+    }
+    const char* uuid = nullptr;
+    int uuid_length = 0;
+    if (!question.find("uuid").as_str(uuid, uuid_length) || uuid_length == 0 || uuid_length > 63) {
+        return;
+    }
+    char holder[64];
+    for (int i = 0; i < uuid_length; ++i) {
+        holder[i] = uuid[i];
+    }
+    holder[uuid_length] = 0;
+
+    char stored[64];
+    proxy::values::Value vip;
+    if (proxy::admin::data_value(holder, "vip", stored, sizeof stored, vip) == 0 && vip.bool_or(false)) {
+        proxy::admin::permission_answer(ctx, 1);
+    }
+}
+
+void plugin_init() { proxy::admin::permission_provide(on_check, nullptr, 0); }
+```
+
+This plugin needs `players_data = true`, because it reads player data.
+
+How providers are asked is different from every other callback, and it shapes what you can do:
+
+- The proxy asks from any thread: a player's connection, the console, a command. The question is queued to the plugin's thread ahead of other work, and the asker **waits at most 25 ms**. An answer that comes later is ignored, `permission_answer` returns `ERR_STALE`, and the chain moves to the next provider, exactly as when a callback sets nothing.
+- Keep a provider fast and free of slow calls. Read from memory or a small stored value, as above.
+- A check made from inside any plugin callback (`admin::permission_check`, `players::player_has_permission`, the permission test of a plugin command) is answered by the proxy's own providers only, never by a plugin's. Callbacks do not nest.
+- `permission_answer` answers `ERR_INVALID` for a meta question, and `permission_answer_text` for a check question. The last answer set before the callback returns is the one that counts.
+
+## The plugin store and player data
+
+A plugin can keep values in the proxy's own plugin database. There are two places, and both use the same calls.
+
+| Place | Holder you pass | Capability |
+|---|---|---|
+| The plugin's store, shared by every player | `nullptr` | `storage` |
+| The data of one player | The player's UUID text | `players_data` |
+
+| Function | What it does |
+|---|---|
+| `admin::data_value` | Reads a key as a value. `ERR_ABSENT` when it is not set. |
+| `admin::data_set_i64`, `data_set_f64`, `data_set_bool`, `data_set_str` | Writes a key. |
+| `admin::data_remove` | Deletes a key. |
+| `admin::store_top` | The best values of a numeric key across the store and every player. |
+
+```cpp
+proxy::admin::data_set_i64(nullptr, "restarts", 5);
+
+char buffer[64];
+proxy::values::Value restarts;
+if (proxy::admin::data_value(nullptr, "restarts", buffer, sizeof buffer, restarts) == 0) {
+    long long count = restarts.i64_or(0);
+}
+```
+
+A key is 1 to 128 bytes. A value is a boolean, integer, float or text of at most 65536 bytes (the C++ SDK's text setter takes texts up to about 4 KiB). A plugin can hold 1000 keys in its store and 1000 per player. Anything past that is `ERR_INVALID`. A float with no fraction reads back as an integer.
+
+**Players who are offline.** The holder of a player's data is their UUID text, as `players::player_uuid` gives it, whether the player is connected or not. A player the proxy has never seen a UUID for is held by name. This is the same data the player calls in [Players and backends](/docs/proxy/wasm-players) read and write, and it works for players who are not online. A holder is at most 64 bytes, and `server` is reserved for the store.
+
+`store_top` takes a key and a limit (1 to 1000; below 1 means 10) and gives a list of maps, highest first, taken from the store and from every player's data. Rows whose value is not a number are skipped. Each map holds:
+
+| Key | Meaning |
+|---|---|
+| `uuid` | The player's UUID text, or `server` for the plugin store. |
+| `name` | The player's name when connected, else the UUID. |
+| `value` | The number, as an integer or a float. |
+
+A leaderboard command reads this directly: `store_top("kills", 10, ...)`, then walk the list.
+
+## Things that catch people out
+
+- **Registered backends are temporary.** They last until the proxy stops and are not saved. Register them again at startup if they should always exist, and expect `ERR_INVALID` for a name that is already there.
+- **`like` copies settings.** The new backend is used when a plugin sends a player to it by name.
+- **A check callback has 25 ms.** A slow provider is skipped, and nothing says so.
+- **`ERR_ABSENT` from `permission_check` is a no.** Nothing decided, and the proxy counts that as denied.
+- **Holders are UUIDs.** A player's data written under their name is a different holder from the one under their UUID.
+- **`console_run` needs two yeses.** The plugin has to ask for `commands`, and the operator has to allow it.
+- **JSON text must be valid.** There is no repair: a component that does not parse is `ERR_INVALID`.
+
+## Where to go next
+
+| Page | What is in it |
+|---|---|
+| [Players and backends](/docs/proxy/wasm-players) | Listing players and backends, moving and kicking players. |
+| [Plugin messages, packets and antibot](/docs/proxy/wasm-network) | The other powers that need an operator grant. |
+| [plugin.toml](/docs/proxy/wasm-plugin-toml) | Capabilities in the manifest. |
+| [Configuration](/docs/proxy/configuration) | `proxy.toml`, including `[plugins.allow]`. |

@@ -111,16 +111,14 @@ The management protocol of vanilla's dedicated server: JSON-RPC 2.0 over a WebSo
 
 ### `[plugins]`
 
-Lua plugins and their sandbox. The API itself is in [Plugins](/docs/server/plugins).
+The plugin host. Writing plugins is covered in [WebAssembly plugins](/docs/server/wasm-overview).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Look at the plugins folder. Off loads and compiles nothing |
-| `instructions-per-turn` | integer | `250000` | Lua instructions one plugin may run in a single turn, refilled on every entry, so it caps one handler and not the whole tick. About 13 ms on the measured machine. Values below 1000 are raised to 1000 |
 | `memory-mb` | integer | `32` | Most memory one plugin's own objects may use, in megabytes. Minimum 1 |
 | `test-lanes` | integer | `1` | Copies of each plugin running at once. One is what a server wants; more is a development switch that exposes plugins assuming there is only one of them. Minimum 1 |
 | `orphan-data` | string | `"warn"` | What to do about data of a plugin that is no longer installed: `warn` names it at every start, `quiet` stops asking. Nothing is deleted on its own; `/plugins purge` does that |
-| `trusted-keys` | list of strings | `[]` | Hex public keys whose signature lets a plugin's compiled Lua (`.luac`) load. Bytecode without a signature from one of them is refused |
 
 `[plugins.allow]` grants plugins capabilities beyond their sandbox, one list per plugin id. A plugin that asks for a capability it is not granted loads without it and says so.
 

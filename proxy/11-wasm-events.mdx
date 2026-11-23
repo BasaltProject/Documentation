@@ -1,0 +1,392 @@
+---
+title: Events and decisions
+description: Listen to what players do on the proxy, change or refuse it before it happens, and use commands, tasks, config and player data from a proxy plugin.
+group: Plugins
+---
+
+Events are how a proxy plugin finds out that something happened: a player is about to log in, joined, said something,
+moved to another backend, or asked for the server list. For some of them the proxy asks you before it acts, and what you
+answer changes the outcome: you can turn a login away, send a player to another backend, hide a chat line or dress up the
+server list entry. This page covers registering for events, every event with its fields, and how to read, change, cancel
+and redirect them. At the end it covers commands, tasks, config and player data, which are the same calls as on the
+server.
+
+A first decision, which sets the entry in the server list:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+using namespace basalt::proxy;
+
+static void on_ping(core::Ctx ctx) {
+    events::event_set_text(ctx, "motd", "<gold>My Network</gold><newline><gray>Survival, creative and minigames");
+    events::event_set_int(ctx, "max_players", 500);
+}
+
+void plugin_init() {
+    events::on("server.ping", core::kNormal, on_ping);
+}
+```
+
+The examples use the C++ spelling `area::function`; other languages use the same names with their own casing, see
+[The SDK](/docs/server/wasm-sdk). How the proxy calls your handler and how long it may take is in
+[Execution model](/docs/proxy/wasm-execution-model).
+
+## Registering
+
+| Function | Does |
+|---|---|
+| `events::on(event, priority, handler)` | Listens to an event. On a decided event the handler is a decider and may change the outcome. Returns 0, or a negative code for an unknown event name or priority. |
+| `events::watch(event, handler)` | Observes a finished event: the handler runs after the proxy acted, its `ctx` is read only and nothing it does changes the outcome. |
+
+`event` is the name from the table below. `priority` is `core::kLowest`, `core::kLow`, `core::kNormal`, `core::kHigh` or
+`core::kHighest`. Handlers of one event run lowest first, so a handler at `core::kHighest` runs last and has the final say;
+equal priorities run in the order the plugins loaded and the handlers were registered. A handler is a plain function that
+takes a `core::Ctx`.
+
+`watch` accepts `player.join`, `player.quit`, `player.server_change`, `player.chat` and `player.kick`; any other name
+returns `ERR_INVALID`. For the first three, `on` and `watch` behave the same, because those events are only ever
+observed. For `player.chat` and `player.kick` the two differ: `on` decides, `watch` sees the result.
+
+## The events
+
+| Event | Kind | When it happens | Player handle |
+|---|---|---|---|
+| `plugin.enable` | observed | Once, after every plugin loaded | no |
+| `plugin.disable` | observed | Before the plugins stop on a `reload` or shutdown | no |
+| `player.login` | decided | A player authenticated, before they are let in | no |
+| `player.server_pre_connect` | decided | Before the proxy connects a player to a backend, on login and on every move | after the first connection |
+| `player.join` | observed | The player entered the network (first backend connected) | yes |
+| `player.server_change` | observed | The player moved to another backend | yes |
+| `player.chat` | decided, or observed with `watch` | A chat message of a player in play, before it is relayed | yes |
+| `player.command` | decided | A slash command typed by a player, before it is dispatched | yes |
+| `player.kick` | decided, or observed with `watch` | A backend kicked a player in play, before the proxy disconnects them | yes |
+| `player.quit` | observed | The player left; the handle still works inside the callback | yes |
+| `server.ping` | decided | A server list ping, before the answer is sent | no, there is no player |
+
+A command the proxy runs itself (its own commands and the ones plugins register) does not raise `player.command`. Use
+`events::event_player(ctx)` to get the player handle, which is 0 where the table says no. In those events read the
+player's name and UUID from the fields instead.
+
+### Fields
+
+Every event carries fields you read by name. A field is a string, an int, a bool or a list, and some fields can be written
+on a decided event.
+
+| Field | Type | Events | Writable |
+|---|---|---|---|
+| `player_name`, `player_uuid` | string | every player event | no |
+| `address` | string | every player event: the client's address | no |
+| `port` | int | the same events: the client's port | no |
+| `host` | string | decided events: the name the client typed to connect | no |
+| `server` | string | `join`, `quit`, `server_change`, `chat`, `command` and an observed `kick`: the backend the player is on now | no |
+| `server` | string | `server_pre_connect`: the backend about to be connected. `kick`: the backend to send the player to, empty until you set it | yes, the name of a backend that exists |
+| `from_server` | string | `server_change`, `server_pre_connect`, `kick`: the backend the player is leaving (empty on the first connection) | no |
+| `message` | string | `chat`: the line | yes, on a decider |
+| `command` | string | `command`: the line without the slash | yes, on a decider |
+| `signed` | bool | `chat`, `command`: the client signed the content | no |
+| `cancelled` | bool | `login`, `server_pre_connect`, `chat`, `command`: true once an earlier handler cancelled | yes |
+| `reason` | string | `login`, `server_pre_connect`, `chat`, `command`: the text shown to the player when cancelled. `kick`: the kick text, writable to replace it. Observed `kick`: the plain text of the kick | yes, on a decider |
+| `reason_json` | string | the same events as `reason`: the same text as component JSON | write only |
+| `protocol` | int | `ping`: the client's protocol version | no |
+| `motd`, `version`, `favicon` | string | `ping`: what earlier handlers set, empty when untouched | yes |
+| `motd_json` | string | `ping`: the description as component JSON | write only |
+| `sample` | list of strings | `ping`: the hover lines | yes |
+| `max_players`, `online`, `version_protocol` | int | `ping`: `-1` when no handler set it | yes |
+
+Observed events carry only what the table lists for them: `join`, `quit` and `server_change` have the player fields,
+`server`, `address`, `port` and (for a change) `from_server`; an observed `chat` adds `message` and an observed `kick`
+adds `reason`.
+
+## Reading an event
+
+| Function | Does |
+|---|---|
+| `events::event_get_str(ctx, field)` | Returns a string field as a `core::Text<256>`: `ok()` tells whether the field was there, `length` is the full length (larger than 256 means it was cut), `c_str()` the text |
+| `events::event_get_i64(ctx, field, &out)` | Reads an int field into `out` and returns the status |
+| `events::event_get_bool(ctx, field, &out)` | Reads a bool field into `out` and returns the status |
+| `events::event_get_value(ctx, field, out, capacity)` | Writes the field as an encoded [value](/docs/server/wasm-values) (needed for the `sample` list) and returns the length it needs. An empty field name gives a map of every readable field. |
+| `events::event_fields(ctx, out, capacity)` | Writes a list of maps, one per field of this event, with `name`, `type`, `readable` and `writable` |
+| `events::event_player(ctx)` | The player handle, or 0 |
+
+The status of a read is 0 on success, `ERR_ABSENT` when this event does not have the field, `ERR_STALE` once your
+callback returned, and `ERR_INVALID` when the `ctx` belongs to a command. `event_get_bool` and
+`command_arg_bool` set their output to false when they fail, so check the status before you trust the value.
+
+`event_fields` is the table that `event_get_value` and `event_set_*` check against, so it is always complete. The shared
+`events::event_field_str` and `events::event_field_i64` read some of these fields but not `message`, `command` or
+`signed`; prefer the `event_get_*` calls on the proxy.
+
+## Changing an event
+
+| Function | Does |
+|---|---|
+| `events::event_set_text(ctx, field, text)` | Sets a string field. `reason` also accepts an `@key` of the language file |
+| `events::event_set_int(ctx, field, value)` | Sets an int field |
+| `events::event_set_flag(ctx, field, flag)` | Sets a bool field (`cancelled`) |
+| `events::event_set_value(ctx, field, value, length)` | Sets any field from an encoded value (needed for the `sample` list) |
+| `events::event_deny(ctx, reason)` | Cancels the event and sets `reason`, in one call |
+| `events::event_cancel(ctx, cancelled)` | Sets `cancelled` |
+
+A write returns 0 on success. It returns `ERR_STALE` for a dead `ctx`, `ERR_ABSENT` for a field the event does not have and
+`ERR_INVALID` when:
+
+- the event is observed, or the field is read only;
+- the value has another type than the field (`cancelled` takes true or false, ints take integers, `sample` a list of
+  strings);
+- a text is over 4096 bytes;
+- `server` is not the name of an existing backend (the exception is `kick`, where an empty name clears the redirect);
+- a number of the server list entry is negative.
+
+`reason` and `reason_json` replace each other, so the last one set wins. `events::event_cancel` and `event_deny` work on
+`login`, `server_pre_connect`, `chat` and `command`. A kick and a ping cannot be cancelled: a kick cannot be undone, so
+answer it with a `server` redirect instead.
+
+## What you can do with each event
+
+### Refuse a login
+
+Deny in `player.login`. The player is disconnected with the `reason`:
+
+```cpp
+static void on_login(core::Ctx ctx) {
+    if (config::config_bool("maintenance", false)) {
+        events::event_deny(ctx, "<red>The network is closed for maintenance.");
+    }
+}
+
+void plugin_init() {
+    events::on("player.login", core::kNormal, on_login);
+}
+```
+
+Nobody has a handle yet at this point, so a permission check by handle is not possible. Decide on the name, UUID or
+address, or use the permission calls by name on the [Administration](/docs/proxy/wasm-admin) page.
+
+### Choose or redirect the backend
+
+`player.server_pre_connect` fires before every connection to a backend: on login and whenever a player is moved.
+`server` is the backend about to be connected and you may replace it:
+
+```cpp
+static void first_connection(core::Ctx ctx) {
+    if (events::event_get_str(ctx, "from_server").length == 0) {
+        events::event_set_text(ctx, "server", "lobby");
+    }
+}
+
+void plugin_init() {
+    events::on("player.server_pre_connect", core::kNormal, first_connection);
+}
+```
+
+Cancelling it refuses the connection: on login the player is disconnected with the `reason`, and when the player was
+moving between backends they stay where they are and are told the `reason` (or "You cannot connect to that server.").
+
+### Filter chat and commands
+
+Cancel a chat line or a command to stop it from reaching the backend. The `reason`, when you set one, is shown to the
+player:
+
+```cpp
+static bool is(const core::Text<256>& text, const char* word) {
+    int i = 0;
+    for (; word[i] != '\0'; ++i) {
+        if (text.data[i] != word[i]) {
+            return false;
+        }
+    }
+    return text.data[i] == '\0';
+}
+
+static void hide_version(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player != 0 && players::player_has_permission(player, "network.staff")) {
+        return;
+    }
+    const core::Text<256> command = events::event_get_str(ctx, "command");
+    if (is(command, "version") || is(command, "ver")) {
+        events::event_deny(ctx, "<red>Unknown command.");
+    }
+}
+
+void plugin_init() {
+    events::on("player.command", core::kNormal, hide_version);
+}
+```
+
+You can also rewrite the text: set `message` on `player.chat` or `command` on `player.command`, and the proxy relays your
+version. A rewritten command goes to the backend as it is; it is not offered to the proxy's own commands again.
+
+<x-docs.callout type="warning" title="Signed content cannot be rewritten">
+When `signed` is true, the client signed the message or the arguments of the command, and a rewrite makes the content
+differ from its signature, so the proxy disconnects the player. Check `signed` first and rewrite only unsigned content.
+Reading and cancelling are fine.
+</x-docs.callout>
+
+### React to a kick
+
+When a backend kicks a player, `player.kick` lets you decide where they go next. Set `server` to a backend and the proxy
+moves the player there instead of disconnecting them, or set `reason` to change the kick text. The kick itself cannot be
+cancelled. This example (with the `is` helper from the previous section) sends a kicked player to the lobby, unless the
+lobby is the backend that kicked them:
+
+```cpp
+static void on_kick(core::Ctx ctx) {
+    if (!is(events::event_get_str(ctx, "from_server"), "lobby")) {
+        events::event_set_text(ctx, "server", "lobby");
+    }
+}
+
+void plugin_init() {
+    events::on("player.kick", core::kNormal, on_kick);
+}
+```
+
+### Dress up the server list
+
+`server.ping` runs for every server list request. Fields you leave alone keep what the proxy would have sent.
+
+| Field | What to set |
+|---|---|
+| `motd` | The description, MiniMessage (`motd_json` takes component JSON instead; the last of the two wins) |
+| `version` | The version name shown in the list, plain text, up to 256 bytes |
+| `sample` | The hover lines, plain text (no MiniMessage): up to 32 strings of at most 256 bytes, none containing a newline |
+| `favicon` | A `data:image/png;base64,...` URI of at most 64 KiB; an empty text removes the icon |
+| `max_players`, `online`, `version_protocol` | Numbers shown in the list; negative values are rejected |
+
+```cpp
+static void on_ping(core::Ctx ctx) {
+    events::event_set_text(ctx, "version", "My Network 1.21+");
+    values::ValueBuffer<512> lines;
+    lines.list().string("Survival: 120 online").string("Creative: 14 online").end();
+    events::event_set_value(ctx, "sample", lines.data(), lines.finish());
+}
+```
+
+The ping has no player, so `player_name` and the other player fields are absent. The client's protocol is in `protocol`
+and the name it typed in `host`.
+
+## Observing
+
+Use `events::watch` when you only need to know. The handler runs after the proxy acted and cannot change anything, so it
+is the right place to log, count or send a message to a player who just arrived:
+
+```cpp
+static void on_quit(core::Ctx ctx) {
+    log::log_info(events::event_get_str(ctx, "player_name").c_str());
+}
+
+void plugin_init() {
+    events::watch("player.quit", on_quit);
+}
+```
+
+Observers run in registration order. They are queued like every observed event, so a full queue drops them.
+
+## Plugin identity and manifest
+
+| Function | Does |
+|---|---|
+| `events::plugin_info(field)` | Returns `"id"`, `"name"` (the id when the manifest has none) or `"version"` of this plugin as a `core::Text<64>` |
+| `events::plugin_manifest(out, capacity)` | Writes a map with `id`, `name`, `version`, `authors`, `capabilities` (the names declared) and `depends` (a list of maps with `id`, `requirement` and `hard`), and returns the length it needs |
+
+## Commands, tasks, config and player data
+
+These are the same calls as on the server, described on [Commands](/docs/server/wasm-commands),
+[Tasks](/docs/server/wasm-tasks) and [Storage](/docs/server/wasm-storage). Only what differs on the proxy is listed here.
+
+### Commands
+
+`commands::command(spec, permission, handler)` registers a command with the same grammar as the server:
+`"coins top [limit: int 1..25]"`, with the types `word`, `text`, `int`, `float` and `bool`. A player runs it with `/`, the
+console without; the proxy handles it itself and does not forward it to the backend. What differs:
+
+- `commands::command_source_name(ctx)` is the player's name, or `CONSOLE`. `commands::command_is_console(ctx)` tells them
+  apart, and `events::event_player(ctx)` gives the player handle (0 for the console).
+- `commands::command_reply(ctx, text, args)` sends a chat line to the player. For the console it goes to the proxy log
+  under the plugin's name.
+- A permission is checked through the proxy's own permission system (groups and overrides, see
+  [Administration](/docs/proxy/wasm-admin)); the console always passes. A player without it is told so and the handler
+  does not run.
+- A command whose words do not fit its spec answers the sender with a usage line and the handler does not run.
+- A name the proxy already uses, or the same words registered twice, is refused with `ERR_INVALID`. Several commands may
+  share a first word when their other words differ (`coins` and `coins top`).
+
+Typed arguments are read by name inside the handler:
+
+| Function | Does |
+|---|---|
+| `commands::command_arg_str(ctx, name)` | Any argument as text |
+| `commands::command_arg_i64(ctx, name, &out)` | An `int` argument |
+| `events::command_arg_f64(ctx, name, &out)` | A `float` argument; an `int` converts |
+| `events::command_arg_bool(ctx, name, &out)` | A `bool` argument |
+| `events::command_args(ctx, out, capacity)` | A map of every declared argument, with `null` for an optional one that was not given |
+
+Each returns 0 on success, `ERR_ABSENT` for an optional argument that was left out or a name that is not declared,
+`ERR_INVALID` when the argument has another type, and `ERR_STALE` outside a command callback.
+
+```cpp
+static void repeat(core::Ctx ctx) {
+    long long times = 1;
+    double scale = 1.0;
+    bool loud = false;
+    commands::command_arg_i64(ctx, "times", &times);
+    events::command_arg_f64(ctx, "scale", &scale);
+    if (events::command_arg_bool(ctx, "loud", &loud) != BASALT_OK) {
+        loud = false;
+    }
+}
+
+void plugin_init() {
+    commands::command("repeat <times: int 1..5> [scale: float] [loud: bool]", "", repeat);
+}
+```
+
+### Tasks
+
+`tasks::after(delay, handler)`, `tasks::every(delay, period, handler)` and `tasks::task_cancel(task)` work as on the server,
+except that the unit is a step of 50 ms and not a world tick: a `delay` of 20 is one second. A negative delay or a period
+below 1 is `ERR_INVALID`. A task runs on the plugin thread once it is due and the thread is free. `tasks::task_cancel`
+answers `ERR_ABSENT` for a task that already ran or was cancelled. To wait for something that is not a fixed delay, see
+`admin::wait` on the [Administration](/docs/proxy/wasm-admin) page.
+
+### Config
+
+`config::config_i64`, `config_f64`, `config_bool` and `config_str` read `config.toml` of the plugin with dotted keys, as
+on the server. `events::config_value(key, out, capacity)` writes any value, including lists (TOML arrays) and maps
+(tables), as an encoded [value](/docs/server/wasm-values), and returns the length it needs. An empty key gives the whole
+file. A dashed key is also found with underscores, the file `limits.toml` is readable under the key `limits`, and a key
+that does not exist answers `ERR_ABSENT`.
+
+### Player data
+
+`data::data_get_i64`, `data_set_i64`, `data_get_bool`, `data_set_bool`, `data_get_str`, `data_set_str` and `data_remove`
+keep values per player for this plugin, and need `players_data = true` in the manifest. On the proxy the key space is the
+player's UUID, kept in the proxy's database, so the values survive restarts and follow the player to any backend. A plugin
+may keep 1000 keys per player; the 1001st is refused with `ERR_INVALID`. The getters return your default when the key is
+missing, holds another type or the capability is missing. To read or write the data of a player who is offline, or to
+use the plugin's global store, see [Administration](/docs/proxy/wasm-admin); for float values see
+[Interaction](/docs/proxy/wasm-interaction).
+
+## Things that catch people out
+
+- A `ctx` is only valid inside its callback. Read what you need (and copy it) before you return.
+- Writing to an observed event, to a read-only field or with the wrong type returns `ERR_INVALID`. Check the code when it
+  matters.
+- A cancel does not stop the handlers after yours, and they may undo it. Register at `core::kHighest` to answer last.
+- `server` means different things per event: the backend the player is on in `chat`, `command` and the observed events,
+  the backend about to be connected in `server_pre_connect`, and the redirect you choose in `kick`.
+- Rewriting a signed chat message or command disconnects the player. Check `signed`.
+- `core::Text<256>` keeps at most 256 bytes. A longer value has `length` above 256 and the text is cut.
+- Decisions are slow for the player when your handler is slow. Keep them to a lookup and see
+  [Execution model](/docs/proxy/wasm-execution-model#observed-and-decided-events).
+
+## Where to go next
+
+| To do this | Read |
+|---|---|
+| Work with the player of an event | [Players and backends](/docs/proxy/wasm-players) |
+| Show boss bars, a sidebar or the tab list | [HUD](/docs/proxy/wasm-hud) |
+| Check permissions by name, register backends | [Backends, permissions and administration](/docs/proxy/wasm-admin) |
+| Encode and decode values | [Values](/docs/server/wasm-values) |

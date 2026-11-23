@@ -1,10 +1,10 @@
 ---
 title: Configuration
-description: Complete reference for proxy.toml and plugins.toml, with validation and reload behaviour.
+description: Complete reference for proxy.toml, with validation and reload behaviour.
 group: Configuration
 ---
 
-The proxy reads three files from its configuration directory (`./config` unless `--config` says otherwise): `proxy.toml` and `plugins.toml`, described here, and `backends.toml`, described in [Backends and routing](/docs/proxy/backends-and-routing). Missing files are created with commented defaults on startup. A key you leave out takes the default listed below.
+The proxy reads its configuration from the directory `./config` (unless `--config` says otherwise): `proxy.toml`, described here, and `backends.toml`, described in [Backends and routing](/docs/proxy/backends-and-routing). Missing files are created with commented defaults on startup. A key you leave out takes the default listed below.
 
 ## Validation
 
@@ -21,7 +21,7 @@ A key with the wrong type reports `has the wrong type`, a table where a value be
 
 ## Hot reload
 
-The console command `reload`, the `SIGHUP` signal (Linux and macOS) and, if enabled, [file watching](#reload) re-read the configuration directory. Only the contents of `backends.toml` (backends, default route, forced hosts) and the plugins are applied. If anything in `proxy.toml` or `plugins.toml` differs from what is running, the reload is refused as a whole and nothing changes:
+The console command `reload`, the `SIGHUP` signal (Linux and macOS) and, if enabled, [file watching](#reload) re-read the configuration directory. Only the contents of `backends.toml` (backends, default route, forced hosts) and the plugins are applied. If anything in `proxy.toml` differs from what is running, the reload is refused as a whole and nothing changes:
 
 ```
 Reload rejected, nothing changed: changing [network], [logging] requires a restart
@@ -129,31 +129,28 @@ A watched change that does not validate is reported in the log and the running c
 |---|---|---|---|
 | `mode` | string | `"auto"` | `auto`: a capable Basalt Server translates for older clients itself, otherwise the proxy translates where it has a verified route. `proxy`: the proxy always translates. `off`: client and backend must speak the same protocol. |
 
-## plugins.toml
+### `[plugins]`
 
-Controls the Lua plugin host. [Plugins](/docs/proxy/plugins) covers writing them; this file only decides whether they run and what they may do.
+Controls the plugin host. [Plugins](/docs/proxy/wasm-plugins) explains how to write them; this table only decides whether they run and what they may do. Plugins are read from the `plugins/` folder and keep their data in `.basalt/players.db`; neither is configurable.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | boolean | `false` | Load plugins at all. |
-| `directory` | string | `"plugins"` | Folder with plugin packages (`.bppkg`) or unpacked plugins, each with a `plugin.toml`. |
-| `database` | string | `".basalt/proxy.db"` | The proxy's own SQLite file for plugin data. It is state, not configuration. |
-| `instructions-per-turn` | integer | `250000` | Lua instruction budget for one run of a handler, 1000 to 1000000000. |
-| `memory-mib` | integer | `32` | Ceiling for one plugin's Lua memory, 1 to 1024. |
+| `enabled` | boolean | `true` | Look at the plugins folder. Off loads no plugin package (`.bppkg`). |
 | `queue-size` | integer | `256` | Events waiting for the plugin thread, 1 to 65536. When full, the newest event is dropped and counted. |
-| `operators` | array of strings | none | Player names allowed to run plugin commands that declare a permission. Matching ignores case. |
-| `[allow]` | table | empty | Per plugin id, the powers granted beyond logging, listening, registering commands and reading the server list. |
+| `packet-max-kib` | integer | `256` | Largest packet, 1 to 2048 KiB, that packet listeners see. A bigger packet goes past them untouched. |
+| `packet-timeout-ms` | integer | `25` | Longest, 1 to 1000 ms, a packet waits for the plugin thread. A late one goes on untouched. |
+| `[plugins.allow]` | table | empty | Per plugin id, the powers granted beyond its own sandbox. |
 
-`[allow]` maps a plugin id to a list drawn from `commands` (run console commands), `network` and `packets`. Any other name is a validation error. A plugin whose `plugin.toml` asks for more than is granted here does not load. Plugin data needs `storage = true` or `players_data = true` in the plugin's own manifest and no grant.
+`[plugins.allow]` maps a plugin id to a list drawn from `commands` (run console commands), `network` and `packets`. Any other name is a validation error. A plugin that needs a power it was not granted gets `ERR_DENIED` when it uses it. Plugin data needs `storage = true` or `players_data = true` in the plugin's own manifest and no grant.
 
 ```toml
+[plugins]
 enabled = true
-operators = ["Steve"]
 
-[allow]
+[plugins.allow]
 my_plugin = ["commands"]
 ```
 
 <x-docs.callout type="note" title="Plugin failures stay contained">
-A handler that exhausts its instruction budget or memory ceiling disables its plugin until the next reload. The proxy and other plugins keep running.
+A plugin that exceeds its time budget or its memory is switched off until the next reload. The proxy and other plugins keep running.
 </x-docs.callout>

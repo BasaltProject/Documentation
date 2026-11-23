@@ -1,0 +1,190 @@
+---
+title: ABI reference
+description: The exact contract between a proxy plugin module and the proxy, for plugins built without an SDK and for anyone who wants to know what a call really does.
+group: Plugins
+---
+
+Most plugins never read this page: the SDK of your language wraps every call below in a function with a name, a type and
+a default. The contract matters when you build a module by hand, bind a language Kiln has no SDK for, or want to know
+what travels across the boundary. It is version 1 of the plugin ABI, and the proxy checks it when the module loads.
+
+A plugin is a `wasm32` WebAssembly module in little-endian linear memory. It imports functions from the proxy, exports a
+few of its own, and every pointer it passes is an offset into its own memory. The proxy never allocates inside the
+plugin: it writes only into buffers the plugin hands it.
+
+## Modules and imports
+
+A plugin imports from two modules. In WebAssembly an import is a pair of a module and a name, for example
+`("basalt", "player_send")` or `("basalt_proxy", "player_uuid")`.
+
+| Module | What it holds |
+|---|---|
+| `basalt` | The calls whose meaning is the same on the proxy and on the server: logging, config, text, players by name, player data, events, commands, tasks, completions |
+| `basalt_proxy` | What only a proxy has: backends, moving players, decisions, the hud, interaction, administration and networking |
+
+The proxy validates the module against its profile when it loads. A module that imports a server-only call (menus,
+placeholders, particles, sounds, `store_top`, or anything about worlds, entities and items) is refused, and the log names
+the import. The other way round, a server rejects a module that imports from `basalt_proxy`. Because the `basalt` names
+mean the same on both, a helper library for greetings, commands and tasks can be compiled for either.
+
+For toolchains that insist on a libc, a module may also import a small subset of `wasi_snapshot_preview1`: `fd_write`
+(text written to stdout and stderr goes to the plugin's log), `clock_time_get`, `random_get`, `environ_get`,
+`environ_sizes_get`, `args_get`, `args_sizes_get` (the environment and the arguments are empty) and `proc_exit`, which
+traps. A plugin that needs no libc imports nothing from WASI.
+
+## Exports
+
+| Export | Signature | Purpose |
+|---|---|---|
+| `memory` | linear memory | The plugin's memory, exported under this name |
+| `basalt_abi_version` | `() -> i32` | Returns `1`. A module built for another version is refused |
+| `basalt_init` | `()` | Called once; register events, commands and tasks here |
+| `basalt_callback` | `(token: i32, ctx: i32)` | The single way back into the plugin |
+| `_initialize` | `()` | Optional, the WASI reactor initializer. Called once, before `basalt_abi_version` and `basalt_init` |
+
+`token` is any integer the plugin picked when it registered an event, a command or a task, and the plugin maps it back to
+its own function. `ctx` is the handle of that call (the event, the command being run, the task, a completion) and is
+valid only until the callback returns. Callbacks run one at a time on the single plugin thread and must not block, see
+[Execution model](/docs/proxy/wasm-execution-model). A module may be up to 16 MiB.
+
+## Conventions
+
+**Arguments.** Integers and pointers are `i32`, with `i64`, `f32` and `f64` where the signature says so. A string is UTF-8
+passed as a pointer and a byte length. A list of arguments (a pointer and a length) with length 0 is empty, whatever the
+pointer.
+
+**Output buffers.** A call that returns bytes takes `(out, cap)`. It returns the length the whole answer needs and writes it
+only when it fits in `cap`, so the plugin calls again with a bigger buffer when the result is larger than `cap`. A negative
+result is an error code.
+
+**Results.** Success is 0, or a positive length, handle or count. Errors are negative:
+
+| Code | Value | Meaning |
+|---|---|---|
+| `ERR_ABSENT` | -1 | The key, argument, field or backend does not exist |
+| `ERR_STALE` | -2 | The handle refers to nothing any more: the player left, the context ended |
+| `ERR_INVALID` | -3 | A bad argument: an unknown name, malformed text, a value out of range |
+| `ERR_DENIED` | -4 | The plugin lacks the capability in `plugin.toml`, or the operator's grant |
+
+**Handles.** Player handles, task handles and request handles are positive `i32`. 0 is never valid.
+
+**Text.** Text is MiniMessage. A text argument that starts with `@` is a key of the plugin's language file, anything
+else is literal. A text is cut at 4096 bytes. Named arguments for `{name}` fields travel as a packed list of little-endian
+`u32` values: the count, then for each entry the key length, the key bytes, the value length and the value bytes. A
+list with pointer 0 and length 0 means none. See [Text](/docs/server/wasm-text).
+
+**Values.** Anything richer than a few scalars crosses as one encoded value: null, bool, int, float, string, bytes, list or
+map, nested. Going in it is `(ptr, len)`, coming out it is `(out, cap)` with the result above. The format and its limits are
+on [Values](/docs/server/wasm-values).
+
+**Constants.** Log levels are 0 debug, 1 info, 2 warn and 3 error. Event priorities are 0 lowest, 1 low, 2 normal, 3 high
+and 4 highest, and lower runs first.
+
+**Time.** A delay or period of a task is a number of steps of 50 ms.
+
+## Shared imports (module `basalt`)
+
+Arguments are `i32` unless marked. `(p, n)` is a pointer and a byte length, `(out, cap)` an output buffer, `args` a packed
+argument list as a pointer and a length (`a, alen`).
+
+```
+log(level, msg, len)
+config_i64(key, klen, def: i64) -> i64
+config_f64(key, klen, def: f64) -> f64
+config_bool(key, klen, def) -> i32
+config_str(key, klen, out, cap) -> i32
+translate(key, klen, a, alen, out, cap) -> i32
+
+player_by_name(name, len) -> handle
+players_online(out: *i32, cap) -> count
+player_name(player, out, cap) -> i32
+player_send(player, text, tlen, a, alen) -> i32
+player_action_bar(player, text, tlen, a, alen) -> i32
+
+data_get_i64(player, key, klen, def: i64) -> i64
+data_set_i64(player, key, klen, value: i64) -> i32
+data_get_bool(player, key, klen, def) -> i32
+data_set_bool(player, key, klen, value) -> i32
+data_get_str(player, key, klen, out, cap) -> i32
+data_set_str(player, key, klen, value, vlen) -> i32
+data_remove(player, key, klen) -> i32
+
+event_on(name, nlen, priority, token) -> i32
+event_player(ctx) -> handle
+event_field_str(ctx, field, flen, out, cap) -> i32
+event_field_i64(ctx, field, flen, out: *i64) -> i32
+event_cancel(ctx, cancelled) -> i32
+
+command_register(spec, slen, permission, plen, token) -> i32
+command_source_name(ctx, out, cap) -> i32
+command_is_console(ctx) -> i32
+command_reply(ctx, text, tlen, a, alen) -> i32
+command_arg_str(ctx, name, nlen, out, cap) -> i32
+command_arg_i64(ctx, name, nlen, out: *i64) -> i32
+
+task_after(delay, token) -> task
+task_every(delay, period, token) -> task
+task_cancel(task) -> i32
+
+value_result(ctx, out, cap) -> i32
+request_cancel(request) -> i32
+```
+
+What differs from the server for these calls: a player handle is a player connected to the proxy and goes stale when
+they leave the proxy, not when they change backend; the event names are the proxy ones; `event_player` answers 0 for an
+event about someone who is not connected yet and for a console command; a player who ran a command also answers
+`event_player(ctx)` in the command callback; delays and periods count 50 ms.
+`value_result` and `request_cancel` serve the calls that finish later (a backend ping, a cookie, a wait).
+
+## Proxy imports for events and players (module `basalt_proxy`)
+
+```
+event_get(ctx, field, flen, out, cap) -> i32
+event_set(ctx, field, flen, value, vlen) -> i32
+event_fields(ctx, out, cap) -> i32
+event_watch(name, nlen, token) -> i32
+event_set_str(ctx, field, flen, value, vlen) -> i32
+event_set_i64(ctx, field, flen, value: i64) -> i32
+
+plugin_info(field, flen, out, cap) -> i32
+plugin_manifest(out, cap) -> i32
+config_value(key, klen, out, cap) -> i32
+command_arg_f64(ctx, name, nlen, out: *f64) -> i32
+command_arg_bool(ctx, name, nlen, out: *i32) -> i32
+command_args(ctx, out, cap) -> i32
+
+player_uuid(player, out, cap) -> i32
+player_server(player, out, cap) -> i32
+player_ping(player) -> i32
+player_setting_str(player, field, flen, out, cap) -> i32
+player_setting_i64(player, field, flen, out: *i64) -> i32
+player_has_permission(player, node, nlen) -> i32
+player_title(player, title, tlen, subtitle, slen, fade_in, stay, fade_out) -> i32
+player_connect(player, server, slen) -> i32
+player_kick(player, reason, rlen, a, alen) -> i32
+servers_list(out, cap) -> i32
+server_address(name, nlen, out, cap) -> i32
+players_on(server, slen, out: *i32, cap) -> count
+```
+
+`event_get`, `event_set` and `event_fields` work on encoded values (the field table is on
+[Events and decisions](/docs/proxy/wasm-events#fields)). `event_set_str` and `event_set_i64` set a text or a number field of
+a decided event directly. The status of every call is in the guides for that area: events in
+[Events and decisions](/docs/proxy/wasm-events), players and backends in [Players and backends](/docs/proxy/wasm-players).
+
+## Which page covers which imports
+
+| Area | Imports | Page |
+|---|---|---|
+| Events and decisions | `event_*`, `plugin_info`, `plugin_manifest` | [Events and decisions](/docs/proxy/wasm-events) |
+| Commands, tasks, config, player data | `command_*`, `task_*`, `config_*`, `data_*` | [Events and decisions](/docs/proxy/wasm-events#commands-tasks-config-and-player-data) |
+| Logging and text | `log`, `translate` | [Text](/docs/server/wasm-text) |
+| Players and backends | `player_by_name`, `players_online`, `player_name`, `player_send`, `player_action_bar`, `player_uuid`, `player_server`, `player_ping`, `player_setting_*`, `player_has_permission`, `player_title`, `player_connect`, `player_kick`, `servers_list`, `server_address`, `players_on` | [Players and backends](/docs/proxy/wasm-players) |
+| HUD | `hud_*` | [HUD](/docs/proxy/wasm-hud) |
+| Interaction | `interaction_watch`, `dialog_*`, `resource_pack_*`, `cookie_*`, `player_transfer`, `players_by_uuid`, `players_count`, `players_broadcast`, `player_address`, `player_port`, `player_settings`, `player_data_get_f64`, `player_data_set_f64` | [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) |
+| Administration | `servers_register`, `servers_unregister`, `servers_ping`, `console_run`, `player_chat`, `permission_*`, `group_*`, `player_send_json`, `player_kick_json`, `store_*`, `player_data_get`, `player_data_set`, `wait` | [Backends, permissions and administration](/docs/proxy/wasm-admin) |
+| Network | `network_*`, `packet_*`, `antibot_*` | [Plugin messages, packets and antibot](/docs/proxy/wasm-network) |
+| Completions | `value_result`, `request_cancel` | The page of the call that returns a request |
+
+The capabilities that gate calls, and the grant the operator adds, are on [plugin.toml](/docs/proxy/wasm-plugin-toml#capabilities).
+The server profile has its own list of imports, see the [server ABI reference](/docs/server/wasm-abi).

@@ -1,0 +1,182 @@
+---
+title: Quickstart
+description: Create, build, package and run a first plugin, from an empty folder to a message in game.
+group: Plugin basics
+---
+
+This page takes a plugin from nothing to a running server in six steps. It uses C++, but nothing here depends on it:
+`kiln new` has the same options for every [language](/docs/server/wasm-overview#choosing-a-language) and the commands
+after it are identical.
+
+## Get Kiln
+
+Kiln is the plugin command line. [Download it](https://github.com/BasaltProject/Kiln/releases) for your platform, make it
+executable and put it on your `PATH` as `kiln`.
+
+```bash
+kiln --version
+```
+
+You do not install a compiler. For each language Kiln uses one it finds on the machine and otherwise downloads a pinned
+toolchain into a per-user cache the first time you build, see [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Create the project
+
+```bash
+kiln new greeter --lang cpp
+```
+
+```
+Created greeter/ (C++)
+```
+
+`--lang` is one of `c`, `cpp`, `zig`, `rust`, `assemblyscript`, `go`, `kotlin`, `csharp` or `java`. The project holds the
+files every plugin has, plus the sources in the layout of the language:
+
+```
+greeter/
+  plugin.toml
+  src/main.cpp
+  resources/
+    config.toml
+    lang/en_us.toml
+  .gitignore
+```
+
+`plugin.toml` is the manifest, see [Manifest and layout](/docs/server/wasm-plugin-toml):
+
+```toml
+id = "greeter"
+name = "greeter"
+version = "0.1.0"
+authors = []
+api = 1
+abi = 1
+lang = "cpp"
+main = "plugin.wasm"
+
+[capabilities]
+players_data = true
+```
+
+`main` is the module Kiln produces, and `[capabilities]` lists what the plugin asks for beyond the sandbox. The starter
+plugin is a small coin shop that uses per-player data, which is why it asks for `players_data`. The plugin below does not
+need it, so you can delete that line.
+
+## Write the plugin
+
+Replace `src/main.cpp` with a greeting on join and a `/hello` command:
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    bs::core::Args args;
+    args.add("name", bs::players::player_name(player).c_str());
+    bs::players::send(player, "@welcome", &args);
+}
+
+static void hello(bs::core::Ctx ctx) {
+    bs::core::Args args;
+    args.add("name", bs::commands::command_source_name(ctx).c_str());
+    bs::commands::command_reply(ctx, "@hello", &args);
+}
+
+void plugin_init() {
+    bs::log::log_info("greeter loaded");
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+    bs::commands::command("hello", "", hello);
+}
+```
+
+And replace `resources/lang/en_us.toml` with the two messages it uses:
+
+```toml
+welcome = "<green>Welcome, <yellow>{name}</yellow>!"
+hello = "<gray>Hello, <white>{name}</white>."
+```
+
+- `plugin_init` runs once when the plugin loads. It only registers what the plugin wants to hear about.
+- `events::on("player.join", ...)` asks for a callback whenever a player joins. The callback receives a `ctx` that
+  answers questions about that event, here which player it is.
+- `commands::command("hello", "", hello)` adds `/hello`. The second argument is the permission, and an empty one means
+  everybody may run it, see [Commands](/docs/server/wasm-commands).
+- `"@welcome"` is not text to show: a text that starts with `@` is the key of a line in the plugin's language file, and
+  `{name}` is filled in from the arguments, see [Text](/docs/server/wasm-text).
+
+## Build and check
+
+```bash
+cd greeter
+kiln build
+kiln check
+```
+
+```
+kiln: built build/plugin.wasm (2430 bytes, C++, 0.2 s)
+ok
+```
+
+`build` compiles the sources to `build/plugin.wasm`. `check` reads the manifest and the module without running it and
+reports what the server would refuse: a missing field, an unknown capability, a call to something that does not exist.
+`build` already runs the same checks, so run `check` on its own when you only changed the manifest.
+
+## Package it
+
+```bash
+kiln pack
+```
+
+```
+Packed ./build/greeter-0.1.0.bspkg
+```
+
+The package is a zip with `plugin.toml`, the module and everything under `resources/`. It is the only file you need to
+give to someone else.
+
+## Run it
+
+Put the package in the `plugins/` folder of the server and start the server, or run `/plugins load` on a server that is
+already up:
+
+```
+plugins/
+  greeter-0.1.0.bspkg
+```
+
+`/plugins` lists what is loaded:
+
+```
+1 plugin(s):
+  greeter 0.1.0 [WASM] 2 registration(s) ok
+```
+
+Join the server and the welcome line appears. Run `/hello` and the plugin answers.
+
+<x-docs.callout type="tip" title="Changing a plugin while the server runs">
+After you build again, replace the package in `plugins/` and run `/plugins reload greeter`. The plugin is unloaded, which
+releases every listener, command and task it registered, and loaded again from disk. If it fails to start, the command
+says why and leaves it unloaded.
+</x-docs.callout>
+
+## Where the files end up
+
+A package copies its `resources/` folder to `plugins/greeter/` the first time it loads, and never overwrites a file that
+is already there. That copy is what the plugin reads and what the operator edits, so a server owner can change a message
+without a new build. See [Manifest and layout](/docs/server/wasm-plugin-toml#data-folder).
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| To know how and when your code runs | [Execution model](/docs/server/wasm-execution-model) |
+| To see the API in your language | [The SDK](/docs/server/wasm-sdk) and the [language pages](/docs/server/wasm-lang-cpp) |
+| To react to more than joins | [Events](/docs/server/wasm-events) |
+| To give a command arguments | [Commands](/docs/server/wasm-commands) |
+| To run code on a timer | [Tasks and time](/docs/server/wasm-tasks) |

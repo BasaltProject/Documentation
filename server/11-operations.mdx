@@ -162,7 +162,7 @@ In order of how much each usually matters:
 | `player-autosave-seconds` | `[server]` | Saves players alone this often, on top of the world save interval. `0` saves them with the world only |
 | `save-interval-seconds` | `worlds.toml` | How often changes are written to the region files: a crash costs at most this much |
 | `tcp-no-delay` | `[network.java]` | Sends each packet at once, as vanilla does |
-| `instructions-per-turn`, `memory-mb` | `[plugins]` | The budget of one plugin: Lua instructions per turn and megabytes of its own objects. A plugin over budget fails alone and cannot stall the tick |
+| `memory-mb` | `[plugins]` | The megabytes of memory one plugin may use. A plugin over budget fails alone and cannot stall the tick |
 
 `generation-metrics` in `[performance]` counts noise evaluations and per-phase timings while generating chunks and logs a report once the startup chunks are ready. It also forces startup generation onto one thread, so leave it off unless you are measuring.
 

@@ -1,0 +1,370 @@
+---
+title: Plugin messages, packets and antibot
+description: Talk to backends and clients over plugin messaging channels, see and change raw packets as the proxy relays them, and control the antibot from a proxy plugin.
+group: Plugins
+---
+
+A proxy sits in the middle of every connection, and this page is about the parts of that middle a plugin can reach. **Plugin messages** are the channel Minecraft offers for custom data between a server and a client, which a plugin can listen to and answer. **Raw packets** go one level lower: a plugin can see each packet the proxy relays, change it, drop it, or send one of its own. The **antibot** is the proxy's defence against floods of fake players, which a plugin can read and steer.
+
+These are strong tools, so a plugin has to ask for them in its manifest and the proxy owner can list them under `[plugins.allow]`. Read [Capabilities](#capabilities) first.
+
+In tables the functions are written as `network::channel_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+
+## Capabilities
+
+| Capability | Needed by |
+|---|---|
+| `network` | The channel calls and the antibot calls. |
+| `packets` | Every packet call that listens, sends, receives or injects. Looking up packet names (`network::packet_resolve`, `network::packet_names`) needs nothing. |
+
+A plugin asks for them in its `plugin.toml` (see [plugin.toml](/docs/proxy/wasm-plugin-toml)). `network` is a list, so it is written with a value:
+
+```toml
+[capabilities]
+network = ["proxy"]
+packets = true
+```
+
+A plugin that did not declare the capability gets `ERR_DENIED` from the call. The proxy owner lists what each trusted plugin may use under `[plugins.allow]` in `config/proxy.toml`, and should grant only what a plugin needs:
+
+```toml
+[plugins.allow]
+myplugin = ["network", "packets"]
+```
+
+The proxy checks the operator grant for `commands` (see [Backends, permissions and administration](/docs/proxy/wasm-admin#capabilities-and-the-operator-grant)), and `network` and `packets` take effect as soon as the manifest declares them.
+
+## What a call answers
+
+| Result | Meaning here |
+|---|---|
+| `0` or a positive number | Done, or the handle or length you asked for. |
+| `ERR_ABSENT` | An unknown packet name, nothing to remove, or the proxy could not hand the data over. |
+| `ERR_STALE` | A player who left, or a context from a callback that already returned. |
+| `ERR_INVALID` | A bad name, channel or address, a payload over the limit, an observer that tried to edit, or a context of another kind. |
+| `ERR_DENIED` | The capability is missing. |
+
+## Plugin messages
+
+A plugin message is a block of bytes sent on a named channel. Mods and server plugins use it to talk to each other through the connection that already exists. A proxy plugin can listen to the channels it cares about and send messages itself.
+
+### Channels
+
+A channel is `namespace:name`, 1 to 128 printable ASCII characters. A plugin can register at most 64.
+
+| Function | What it does |
+|---|---|
+| `network::channel_register` | Wants messages on a channel, and announces it to backends. Registering twice is fine. |
+| `network::channel_unregister` | Stops wanting it. The channel stays announced while another plugin wants it. `ERR_ABSENT` if this plugin never registered it. |
+| `network::message_on` | Calls you back for every message on your channels. |
+| `network::message_get` | Inside that callback: reads the message. |
+| `network::message_send` | Sends a message to a player's backend or to their client. |
+
+`message_on` takes a filter: the name of one channel, compared exactly, or an empty text for every channel the plugin registered. A plugin can add up to 64 listeners. The callback is an observer: the message was already relayed, and you cannot change it. Inside it, `events::event_player` gives the player the message belongs to.
+
+`message_get` writes a map:
+
+| Key | Meaning |
+|---|---|
+| `player_name`, `player_uuid` | Who the message belongs to. |
+| `channel` | The channel. |
+| `data` | The whole payload, as bytes. |
+| `source` | `backend` when a backend sent it toward the client, `client` when the client sent it toward the backend. |
+| `server` | The player's backend. |
+
+`message_send(player, channel, data, length, toward_client)` sends up to 32768 bytes. With `toward_client` false it goes to the player's current backend as if the proxy had written it; with true, to the player's client. The bytes are not interpreted. It answers `ERR_ABSENT` when the player is not in the play state, `ERR_STALE` for a player who left, and `ERR_INVALID` for a bad channel or an oversized payload.
+
+This plugin answers every message the client sends on `mynet:hello`:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool same(const char* text, int length, const char* word) {
+    int i = 0;
+    for (; word[i] != 0 && i < length; ++i) {
+        if (text[i] != word[i]) {
+            return false;
+        }
+    }
+    return i == length && word[i] == 0;
+}
+
+static void on_message(proxy::core::Ctx ctx) {
+    char buffer[1024];
+    const int length = proxy::network::message_get(ctx, buffer, sizeof buffer);
+    proxy::values::Value message;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !message.open(buffer, length)) {
+        return;
+    }
+    const char* source = nullptr;
+    int source_length = 0;
+    if (!message.find("source").as_str(source, source_length) || !same(source, source_length, "client")) {
+        return;
+    }
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player != 0) {
+        proxy::network::message_send(player, "mynet:hello", "welcome", 7, true);
+    }
+}
+
+static void on_enable(proxy::core::Ctx) {
+    proxy::network::channel_register("mynet:hello");
+    proxy::network::message_on("mynet:hello", on_message);
+}
+
+void plugin_init() { proxy::events::on("plugin.enable", proxy::core::kNormal, on_enable); }
+```
+
+### The BungeeCord channel belongs to the proxy
+
+`BungeeCord` and `bungeecord:main` cannot be registered by a plugin: `channel_register` answers `ERR_INVALID`, and `message_send` refuses them too. The proxy answers those channels from backends itself, for these sub-channels:
+
+`Connect`, `ConnectOther`, `IP`, `IPOther`, `PlayerCount`, `PlayerList`, `GetServers`, `GetServer`, `Message`, `MessageRaw`, `Forward`, `ForwardToPlayer`, `UUID`, `UUIDOther`, `ServerIP`, `KickPlayer`, `KickPlayerRaw`
+
+A backend plugin that talks the BungeeCord protocol works against the proxy with no plugin of yours, and your plugin never sees those messages. For anything else, pick your own channel name.
+
+Messages arrive on the plugin's thread, one at a time, like events, so a callback for a message never runs inside another callback.
+
+## Raw packets
+
+Every packet the proxy relays between a client and a backend can be shown to a plugin first. Use it for things no other call can do: hiding a packet, rewriting a field, or making the proxy send or accept one that nobody else produced.
+
+### Packet names
+
+Packets are named by side, phase and name:
+
+- `clientbound.system_chat`, `serverbound.play.chat_command`: the canonical spelling leaves out the phase unless the same name exists in more than one phase (`serverbound.play.custom_payload`).
+- The long form with the phase is always accepted: `clientbound.play.system_chat`.
+- A hexadecimal id is accepted for any packet: `clientbound.configuration.0x07`.
+- A listener can also use a pattern: `*` for every packet, `serverbound.*` for everything a client sends, `clientbound.play.*` for everything a client receives in the play phase.
+
+The phases are `handshake`, `status`, `login`, `configuration` and `play`. Bodies are raw bytes and never include the packet id.
+
+| Function | What it does |
+|---|---|
+| `network::packet_resolve` | Writes a map for one name (not a pattern): `name` (canonical), `serverbound`, `phase` and `id`. `ERR_ABSENT` when there is no such packet. |
+| `network::packet_names` | Writes a list of every packet name the proxy knows. |
+
+A body is the layout of one game version. The packet map tells you the client's `protocol` and the backend's `backend_protocol`, and says `translated` when the client is older than the proxy speaks natively and the bytes already have the proxy's own shape.
+
+### Listening
+
+There are two kinds of listener.
+
+- A **decider** (`network::packet_on`) is called before the packet is relayed. It can read it, replace its body, cancel it, and inject others. Deciders run in priority order, across plugins, and each sees what the ones before it did. Once a decider cancels a packet, later deciders are not called for it.
+- An **observer** (`network::packet_watch`) is called with the final packet, after the deciders. It can read but not change: `packet_cancel` and `packet_set_body` answer `ERR_INVALID`. It sees `cancelled` true for a packet a decider dropped.
+
+| Function | What it does |
+|---|---|
+| `network::packet_on` | Registers a decider for a name or pattern. Returns a positive listener handle. |
+| `network::packet_watch` | The same for an observer. The handles share one number space. |
+| `network::packet_remove` | Stops a listener. `ERR_ABSENT` if it was already removed. |
+
+Both take an options value: a map, or `nullptr` with length 0 for the defaults. It holds:
+
+| Key | Values | Default |
+|---|---|---|
+| `priority` | `first`, `early`, `normal`, `late`, `last`, or a number 0 to 4 where 0 runs first | `normal` |
+| `fail` | `open` or `closed` | `open` |
+
+Unknown keys are ignored. The registration answers `ERR_INVALID` for an unknown packet name, a malformed options value or a wrong value, `ERR_DENIED` without the capability, and `ERR_ABSENT` on a proxy that does not relay packets to plugins. After `packet_remove` returns, the callback is not called for packets that arrive later, though a call already running on another thread may still finish.
+
+In C++ the options are built with a value writer:
+
+```cpp
+proxy::values::ValueBuffer<64> options;
+options.map().key("priority").string("early").key("fail").string("open").end();
+const int length = options.finish();
+proxy::network::packet_on("clientbound.set_title_text", options.data(), length, on_title);
+```
+
+### Inside a listener
+
+| Function | What it does |
+|---|---|
+| `network::packet_get` | Describes the packet as a map (below). |
+| `network::packet_body` | Writes the body, as raw bytes (the replaced body once `packet_set_body` ran). |
+| `network::packet_set_body` | Replaces the body that is relayed, up to the size limit. |
+| `network::packet_cancel` | Drops the packet instead of relaying it. |
+| `network::packet_inject` | Sends another packet on the same connection, in the same phase. |
+
+`packet_get` writes:
+
+| Key | Meaning |
+|---|---|
+| `name`, `id`, `phase`, `serverbound` | The packet's identity. |
+| `connection` | The proxy's number for the connection. |
+| `protocol` | The client's protocol version. |
+| `backend_protocol` | The backend's protocol version, 0 when unknown. |
+| `translated` | True when the client is older than the proxy speaks natively, so the bytes have the proxy's shape. |
+| `size` | Body size in bytes. |
+| `backend` | The backend carrying the packet, empty before one is chosen. |
+| `player_name`, `player_uuid` | Empty before login. |
+| `editable` | False for packets the proxy answers itself and for login packets. |
+| `observer` | True for a listener registered with `packet_watch`. |
+| `cancelled` | True when a decider cancelled it. Only observers see true. |
+
+`events::event_player` gives the player handle inside a listener, and 0 before login. `packet_set_body` and `packet_cancel` answer `ERR_INVALID` for an observer, for a packet that is not editable, and for a body over the size limit.
+
+`packet_inject(ctx, name, body, length, intercept)` sends another packet in the same phase as the packet you are looking at. A clientbound name goes to the client; a serverbound name is handled as if the client had sent it. With `intercept` true the injected packet is shown to listeners too. A callback can inject at most 64 packets. It answers `ERR_INVALID` for a name that is not a packet, a different phase, a body over the limit or the 65th injection, and `ERR_ABSENT` when the connection cannot take it.
+
+This decider cancels every title packet that a player on the `lobby` backend would receive:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool same(const char* text, int length, const char* word) {
+    int i = 0;
+    for (; word[i] != 0 && i < length; ++i) {
+        if (text[i] != word[i]) {
+            return false;
+        }
+    }
+    return i == length && word[i] == 0;
+}
+
+static void on_title(proxy::core::Ctx ctx) {
+    char buffer[512];
+    const int length = proxy::network::packet_get(ctx, buffer, sizeof buffer);
+    proxy::values::Value packet;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !packet.open(buffer, length)) {
+        return;
+    }
+    const char* backend = nullptr;
+    int backend_length = 0;
+    if (packet.find("backend").as_str(backend, backend_length) && same(backend, backend_length, "lobby")) {
+        proxy::network::packet_cancel(ctx);
+    }
+}
+
+static void on_enable(proxy::core::Ctx) {
+    proxy::values::ValueBuffer<64> options;
+    options.map().key("priority").string("early").key("fail").string("open").end();
+    const int length = options.finish();
+    if (proxy::network::packet_on("clientbound.set_title_text", options.data(), length, on_title) < 0) {
+        proxy::log::log_warn("the title listener was not registered");
+    }
+}
+
+void plugin_init() { proxy::events::on("plugin.enable", proxy::core::kNormal, on_enable); }
+```
+
+### Sending and receiving outside a listener
+
+| Function | What it does |
+|---|---|
+| `network::packet_send` | Sends a clientbound packet to a player's client. |
+| `network::packet_receive` | Makes the proxy handle a serverbound packet as if the player's client had sent it. |
+
+Both take a player handle, a name and a body. They answer `ERR_ABSENT` when the player cannot take it right now, `ERR_STALE` for a player who left, and `ERR_INVALID` for a name that is the wrong way round (a serverbound name to `packet_send`, say) or a body over the limit. They need the `packets` capability.
+
+### Time, size and failure
+
+Packet listeners are different from every other callback. The proxy has to wait for them before it can relay the packet, so they run **at that moment, on the thread that carries the packet**, not queued behind the plugin's other work.
+
+- A listener first waits up to the packet timeout for the plugin to be free, then runs with that same time budget. The timeout is `packet-timeout-ms` under `[plugins]` in `proxy.toml`, 25 ms by default.
+- A listener that did not get to run leaves the packet untouched, or **cancels** it when it was registered with `fail` set to `closed`. Use `closed` for a packet that must not pass unchecked.
+- A listener that traps or runs out of its budget counts as a failure of the plugin like any callback, and the packet goes on untouched.
+- A packet bigger than `packet-max-kib` (256 KiB by default) goes past listeners untouched. The same limit applies to the bodies you set, inject or send.
+- A packet sent while a plugin callback is running, on the same thread, is not shown to listeners.
+
+Keep a packet listener short: read what you need, decide and return. A listener runs while the packet waits, so a slow one holds up the packets behind it.
+
+## Antibot
+
+The proxy runs an antibot that judges new connections, puts suspicious ones through a check in a waiting area, and switches to a stricter mode during an attack. A plugin can read that, mark players as trusted, ban addresses and watch what it does. These calls need the `network` capability.
+
+They take player names and addresses, not handles, because a bot is rarely a connected player.
+
+| Function | What it does |
+|---|---|
+| `network::antibot_verify` | Marks a name as verified, so it passes the antibot's checks. This is the same list the waiting area fills. |
+| `network::antibot_unverify` | Removes it. |
+| `network::antibot_is_verified` | 1 when the name is on the list, 0 when not. |
+| `network::antibot_ban` | Bans an address. |
+| `network::antibot_unban` | Lifts the ban. |
+| `network::antibot_under_attack` | 1 while the antibot is in attack mode, else 0. |
+| `network::antibot_on` | Calls you back for every antibot event. |
+| `network::antibot_event_get` | Inside that callback: reads the event. |
+
+A name must be a valid login name, or the call answers `ERR_INVALID`. An address is text in IPv4 or IPv6 form, with no port. The antibot judges an **origin**, which is a whole IPv4 address or the `/64` network of an IPv6 address, so a ban or an unban applies to that origin. `antibot_ban` answers 0 when the origin was banned; `antibot_unban` answers 0 when it was cleared and `ERR_ABSENT` when nothing was tracked for it. Text that is not an address is `ERR_INVALID`.
+
+`antibot_on` registers an observer that runs on the plugin's thread, for up to 64 listeners per plugin. `antibot_event_get` writes a map:
+
+| Key | Meaning |
+|---|---|
+| `kind` | What happened: `verdict`, `attack_started`, `attack_ended`, `verified`, `banned` or `limbo_failed`. |
+| `player_name` | The name involved, if any. |
+| `action` | What the antibot decided: `allow`, `limbo`, `captcha`, `deny` or `chat-check`. |
+| `reason` | Why, as a short word such as `banned`, `attack`, `score`, `limbo-full`, `captcha-failed`, `timeout` or `exploit`. |
+| `skipped` | How many connections the event stands for. 0 when it is about one. |
+| `origin` | The address or network the event came from. |
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool same(const char* text, int length, const char* word) {
+    int i = 0;
+    for (; word[i] != 0 && i < length; ++i) {
+        if (text[i] != word[i]) {
+            return false;
+        }
+    }
+    return i == length && word[i] == 0;
+}
+
+static void on_antibot(proxy::core::Ctx ctx) {
+    char buffer[512];
+    const int length = proxy::network::antibot_event_get(ctx, buffer, sizeof buffer);
+    proxy::values::Value event;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !event.open(buffer, length)) {
+        return;
+    }
+    const char* kind = nullptr;
+    int kind_length = 0;
+    if (event.find("kind").as_str(kind, kind_length) && same(kind, kind_length, "attack_started")) {
+        proxy::log::log_warn("the antibot switched to attack mode");
+    }
+}
+
+static void ban(proxy::core::Ctx ctx) {
+    const auto address = proxy::commands::command_arg_str(ctx, "address");
+    if (!address.ok()) {
+        return;
+    }
+    const int status = proxy::network::antibot_ban(address.c_str());
+    proxy::commands::command_reply(ctx, status == 0 ? "<green>Banned." : "<red>That is not an address.");
+}
+
+void plugin_init() {
+    proxy::network::antibot_on(on_antibot);
+    proxy::commands::command("netban <address: word>", "net.ban", ban);
+}
+```
+
+## Things that catch people out
+
+- **Declare what you use.** A plugin that uses a call without declaring `network` or `packets` in its manifest gets `ERR_DENIED`.
+- **You cannot take over BungeeCord.** Use a channel of your own. The proxy keeps answering `BungeeCord` and `bungeecord:main`, and your plugin never sees them.
+- **Message listeners only see registered channels.** `message_on` delivers a message only if the plugin registered that channel with `channel_register`.
+- **Observers cannot edit.** Use `packet_on` to change or cancel a packet and `packet_watch` to look at the result.
+- **Failing open lets packets through.** A listener that cannot get the plugin's thread in time leaves the packet alone, or cancels it when it was registered with `fail` set to `closed`. One that traps or runs out of budget always lets the packet through.
+- **A decider can be skipped for size.** A packet over `packet-max-kib` is never shown to listeners.
+- **Your own packets are not shown to you.** A packet you send from a callback is not shown to listeners, unless you inject it with `intercept` set.
+- **Bodies depend on versions.** Check `translated` and `protocol` in the packet map before you parse a body.
+- **Antibot calls take names and addresses.** There is no handle for a bot that never joined.
+
+## Where to go next
+
+| Page | What is in it |
+|---|---|
+| [Execution model](/docs/proxy/wasm-execution-model) | How callbacks are scheduled, and what counts as a failure. |
+| [Backends, permissions and administration](/docs/proxy/wasm-admin) | The `commands` power and the rest of the administration calls. |
+| [Players and backends](/docs/proxy/wasm-players) | Player handles, which the send and receive calls take. |
+| [plugin.toml](/docs/proxy/wasm-plugin-toml) | Declaring capabilities in the manifest. |

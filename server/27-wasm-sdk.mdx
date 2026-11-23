@@ -1,0 +1,162 @@
+---
+title: The SDK
+description: How the plugin API is laid out and spelled in every language, and the types and conventions every area shares.
+group: Plugin API
+---
+
+A plugin talks to the server through the **SDK**, a small library that ships inside Kiln and exists in the same shape in
+all nine languages. Kiln unpacks it into `build/.kiln/` on every build, so there is nothing to install, nothing to pin and
+nothing in your project to keep up to date.
+
+The API is the same everywhere. A page of this section describes what a call does, and the call has the same arguments
+whatever language you use; only the spelling follows the habits of the language. This page explains that spelling and the
+few types that appear on every page.
+
+## Areas
+
+The SDK is split into **areas**, one module, package, namespace or header each, and you import the ones you use. The names
+below are the same in every language.
+
+| Area | For | Page |
+|---|---|---|
+| `core` | Shared types: `Ctx`, `Player`, `Args`, priorities | This page |
+| `values` | Building and reading structured data | [Values](/docs/server/wasm-values) |
+| `log` | Writing to the server log | This page |
+| `config` | Reading `resources/config.toml` | [Configuration and storage](/docs/server/wasm-storage) |
+| `data` | Per-player data and rankings | [Configuration and storage](/docs/server/wasm-storage) |
+| `text` | Translating lang keys | [Text](/docs/server/wasm-text) |
+| `players` | Finding players, sending them text, particles and sounds | [Players](/docs/server/wasm-players) |
+| `events` | Listening to events | [Events](/docs/server/wasm-events) |
+| `commands` | Registering commands and answering them | [Commands](/docs/server/wasm-commands) |
+| `tasks` | Running code later or on a timer | [Tasks and time](/docs/server/wasm-tasks) |
+| `menus` | Chest menus and placeholders | [Menus](/docs/server/wasm-menus), [Text](/docs/server/wasm-text#placeholders) |
+| `worlds` | Worlds, blocks, chunks, structures | [Worlds and blocks](/docs/server/wasm-worlds) |
+| `entities` | Entities | [Entities](/docs/server/wasm-entities) |
+| `items` | Items, inventories, recipes, loot | [Items and inventories](/docs/server/wasm-items) |
+| `hud` | Scoreboards, boss bars, holograms, NPCs | [Scoreboards, boss bars, holograms and NPCs](/docs/server/wasm-hud) |
+| `packets` | Packets and plugin channels | [Packets and plugin channels](/docs/server/wasm-packets) |
+| `server` | Permissions, services, files, server information and control | [Permissions](/docs/server/wasm-permissions), [Services](/docs/server/wasm-services), [Server control](/docs/server/wasm-server-control) |
+
+A proxy plugin uses a different root with the shared areas plus `hud`, `interaction`, `admin` and `network`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## How to import an area
+
+| Language | Server root | Example |
+|---|---|---|
+| C | `<basalt/server.h>` or `<basalt/server/<area>.h>` | `#include <basalt/server/events.h>` |
+| C++ | `<basalt/server.hpp>` or `<basalt/server/<area>.hpp>` | `basalt::server::events::on` |
+| Zig | `@import("basalt_server")` | `basalt.events.on` |
+| Rust | the `basalt_server` crate | `basalt_server::events::on` |
+| AssemblyScript | `basalt-server/<area>` | `import * as events from "basalt-server/events"` |
+| Go | `basaltmc.org/sdk/server/<area>` | `events.On` |
+| Kotlin | `org.basaltmc.server.<area>` | `import org.basaltmc.server.events.on` |
+| C# | `Basalt.Server.<Area>` | `EventBus.On` |
+| Java | `org.basaltmc.server.<area>` | `EventBus.on` |
+
+The umbrella header of C and C++ and the `basalt_server` module of Zig bring in every area at once. The other languages
+import one area at a time.
+
+## How a call is spelled
+
+The same call changes case with the language. These are four calls spelled in each:
+
+| | Listen to an event | Send text to a player | Read an integer setting | Read an integer argument of a command |
+|---|---|---|---|---|
+| C | `bs_on` | `bs_send` | `bs_config_i64` | `bs_command_arg_i64` |
+| C++ | `events::on` | `players::send` | `config::config_i64` | `commands::command_arg_i64` |
+| Zig | `events.on` | `players.send` | `config.getI64` | `commands.argI64` |
+| Rust | `events::on` | `players::send` | `config::i64` | `commands::arg_i64` |
+| AssemblyScript | `events.on` | `players.send` | `config.configI64` | `commands.commandArgI64` |
+| Go | `events.On` | `players.Send` | `config.ConfigI64` | `commands.CommandArgI64` |
+| Kotlin | `on` | `send` | `configI64` | `commandArgI64` |
+| C# | `EventBus.On` | `Directory.Send` | `Settings.ConfigI64` | `Arguments.I64` |
+| Java | `EventBus.on` | `Directory.send` | `Settings.configI64` | `Arguments.i64` |
+
+Most calls are the same name in every language apart from the case: `world_fill`, `worldFill`, `WorldFill`. A few
+everyday ones have a shorter, friendlier name in some languages (`events::on` for registering a listener, `players::send`
+for sending text), and the page for your language lists them.
+
+**In this documentation** calls are written in the C++ spelling, `area::function`, as in `players::send` or
+`worlds::world_fill`. That is the spelling to search for in your editor's autocomplete too: take the area name and the
+function and apply the case of your language.
+
+## Types every page uses
+
+| Type | What it is |
+|---|---|
+| `Player` | A handle to an online player. A plain integer in every language, `0` meaning none. See [Execution model](/docs/server/wasm-execution-model#handles) |
+| `Ctx` | The context of a callback: it answers questions about the event, command, task or click that called you, and is valid only until your function returns |
+| `Args` | The named arguments of a text, `{name}` in the template and `args.add("name", "Steve")` in the code |
+| `Priority` | Where a listener runs among the others: `Lowest`, `Low`, `Normal`, `High`, `Highest`, the lowest first |
+| `Text` | A string you get back. In C and C++ it is a fixed buffer you can ask whether the call worked |
+
+Other handles (a world, an entity, a menu, a task) are integers too and are named after what they hold.
+
+### Callbacks
+
+A handler is a plain function that takes the `Ctx`. You pass it to the registering call and the SDK keeps track of it:
+`events::on("player.join", Normal, on_join)`. C and C++ take a function pointer, so a handler cannot capture variables:
+keep state in a global or ask for it through the `Ctx`. Kotlin, Go, Rust, C# and Java take function values or method references. AssemblyScript takes
+named functions only, because it has no closures.
+
+### Entry point
+
+Your code starts in one function the SDK calls after the module is loaded, and nowhere else. This is where you register
+everything:
+
+| Language | Entry point |
+|---|---|
+| C, C++ | `void plugin_init()` |
+| Zig | `pub fn init() void` in `src/main.zig` |
+| Rust | `pub fn init()` in `src/lib.rs` |
+| AssemblyScript | `export function init()` in `src/main.ts` |
+| Go | `core.Init(setup)` called from `init()` |
+| Kotlin | the top-level `fun init()` of the package |
+| C# | `Plugin.Init()` |
+| Java | `public static void init()` of `Main` |
+
+## Calls without a helper in C and C++
+
+Most calls have a helper in every language. A few areas (recipes, loot and trades, container menus, windows and
+merchants, and some rarely used calls such as `service_list`) are thinner in the C and C++ SDKs, which stop at the plain
+call. In those two languages you call the plain function: `basalt_` followed by the name, with every text argument
+followed by its length (`bs_text_len(text)` measures a string) and every value as a pointer and a length. The pages that
+need this show it in their examples.
+
+## Errors
+
+A call that can fail reports it with one of the [result codes](/docs/server/wasm-execution-model#result-codes). How it
+reaches you depends on the language:
+
+- **C and C++** return the integer, negative on failure, and a `Text` carries its own length with a negative one on
+  failure (`text.ok()`).
+- **Zig, Kotlin, C#, Java, AssemblyScript and Go** return an optional, a nullable or a `(value, ok)` pair for calls that
+  give a value back, and the integer status for calls that only do something.
+- **Rust** returns an `Option` or the status integer.
+
+A call you do not check cannot hurt you: sending text to a player who left returns `ERR_STALE` and does nothing. Check
+the result when what happens next depends on it, and always check a handle before you trust it. The page of each area says
+which results it can give.
+
+## Text, handles and buffers
+
+Text crosses to the server as UTF-8. Texts for players are [MiniMessage](/docs/server/wasm-text), and a text that starts
+with `@` is the key of a line in your language file. Calls that give text back fill a buffer: C, C++ and Zig use a size you pick (and report an answer that does not fit),
+and the other languages grow one for you, for an answer of up to 1 MiB. Where an answer can be long, its page says so.
+
+## Logging
+
+`log` writes a line to the server log under your plugin's name. It has one function per level: `log_debug`, `log_info`,
+`log_warn` and `log_error` in C++, with the same case rule everywhere. The levels are the ones of the server log.
+
+```cpp
+bs::log::log_info("loaded 3 arenas");
+bs::log::log_warn("config.toml has no arena-size, using 16");
+```
+
+## Structured data
+
+Anything bigger than a few numbers and strings (an item, a recipe, a menu definition, the answer to a query) crosses as a
+**value**, a compact encoding of null, booleans, numbers, strings, bytes, lists and maps. Every SDK has a writer and a
+reader for it, and you never see the bytes. See [Values](/docs/server/wasm-values).

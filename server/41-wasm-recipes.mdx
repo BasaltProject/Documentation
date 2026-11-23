@@ -1,0 +1,343 @@
+---
+title: Recipes, loot and trades
+description: Add and inspect recipes, ask what a crafting station makes, manage the recipe book, open merchants with your own trades, and roll loot tables and villager trades.
+group: Plugin API
+---
+
+This page covers the parts of the game that turn items into other items: crafting, smelting, brewing and smithing
+recipes, the recipe book that shows them to a player, the trade list of a merchant window, and loot tables. You would use
+it to add a custom recipe, remove a vanilla one, build a shop out of trades, or draw the same drops a chest or a mob would
+give.
+
+The calls live in the `items` area. Other languages use their own casing for the same names, see
+[The SDK](/docs/server/wasm-sdk). In C++, the SDK wraps inventories and a few helpers (`items::recipe_known`), and the
+calls on this page are made with their plain C name, which is the area name with a `basalt_` prefix. Functions that take
+text also take its length, and `bs_text_len(text)` gives it. None of these calls needs a capability in `plugin.toml`.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static const char* kWool = R"json({
+  "type": "minecraft:crafting_shaped",
+  "pattern": ["##", "##"],
+  "key": {"#": "minecraft:string"},
+  "result": {"id": "minecraft:white_wool", "count": 1}
+})json";
+
+void plugin_init() {
+    if (!items::recipe_known("example:string_wool")) {
+        basalt_recipe_add("example:string_wool", bs_text_len("example:string_wool"), kWool, bs_text_len(kWool));
+    }
+}
+```
+
+## Recipes
+
+### Adding a recipe
+
+`items::recipe_add(id, json)` registers a recipe written in the datapack's own recipe JSON, the same text you would put
+in a datapack file. It answers 0 on success and `ERR_INVALID` when the id is already taken, the id is malformed, the JSON
+is not a recipe, or the recipe type is not one the server reads. A recipe id without a namespace gets `minecraft:`, so
+give your own ids a namespace (`example:string_wool`).
+
+The server reads these recipe types: `minecraft:crafting_shaped`, `crafting_shapeless`, `crafting_transmute`,
+`smelting`, `blasting`, `smoking`, `campfire_cooking`, `stonecutting`, `smithing_transform`, `smithing_trim`, `brewing`,
+and the special crafting recipes (`crafting_dye`, `crafting_imbue`, `crafting_decorated_pot` and the
+`crafting_special_*` ones: `bookcloning`, `bannerduplicate`, `shielddecoration`, `mapextending`, `firework_rocket`,
+`firework_star`, `firework_star_fade` and `repairitem`).
+
+An **ingredient** is an item id, an item tag written with a leading `#` (`#minecraft:planks`), or a list of those. A
+**result** is a map with `id` and `count` (1 by default).
+
+| Type | Keys |
+|---|---|
+| `crafting_shaped` | `pattern` (a list of rows, a space is an empty cell), `key` (one character to an ingredient), `result`, `group` (optional). The pattern is trimmed, so blank edges do not matter |
+| `crafting_shapeless` | `ingredients` (a list), `result` |
+| `crafting_transmute` | `input`, `material`, `result`, `material_count` (a number, or `{min, max}`), `add_material_count_to_result` |
+| `smelting`, `blasting`, `smoking`, `campfire_cooking` | `ingredient`, `result`, `experience`, `cookingtime` (ticks, required) |
+| `stonecutting` | `ingredient`, `result` |
+| `smithing_transform` | `template`, `base`, `addition`, `result` |
+| `smithing_trim` | `template`, `base`, `addition`, `pattern` (a trim pattern id) |
+| `brewing` | `input` (`item`, and optionally `potion_contents` with `potions`), `reagent` (`item`), `output` (`id`, `count`, `components`) |
+
+A shaped recipe:
+
+```json
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": ["###", " | ", " | "],
+  "key": {"#": "#minecraft:planks", "|": "minecraft:stick"},
+  "result": {"id": "minecraft:iron_pickaxe", "count": 1}
+}
+```
+
+A furnace recipe (the cooking time is required, there is no per-type default):
+
+```json
+{
+  "type": "minecraft:smelting",
+  "ingredient": "minecraft:cobblestone",
+  "result": {"id": "minecraft:stone", "count": 1},
+  "experience": 0.1,
+  "cookingtime": 200
+}
+```
+
+A brewing recipe that turns water bottles into a potion with sugar:
+
+```json
+{
+  "type": "minecraft:brewing",
+  "input": {"item": "minecraft:potion", "potion_contents": {"potions": "minecraft:water"}},
+  "reagent": {"item": "minecraft:sugar"},
+  "output": {"id": "minecraft:potion", "count": 1}
+}
+```
+
+A shapeless one:
+
+```json
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": ["minecraft:dirt"],
+  "result": {"id": "minecraft:diamond", "count": 2}
+}
+```
+
+### Removing and inspecting
+
+| Call | What it does |
+|---|---|
+| `items::recipe_remove(id)` | Takes a recipe out of every lookup, the server's own included. 0, or `ERR_ABSENT` when there is none |
+| `items::recipe_has(id)` | 1 when a recipe has that id, else 0 (`items::recipe_known(id)` is the C++ shortcut that answers a boolean) |
+| `items::recipe_ids(out, capacity)` | Every recipe id as a list of strings: the datapack's first, then the added ones |
+| `items::recipe_get(id, out, capacity)` | A map that describes the recipe (its `id`, `group`, `result` and the fields of its type). `ERR_ABSENT` when there is none |
+| `items::recipe_clear()` | Empties the recipe list |
+| `items::recipe_reset()` | Puts back the datapack's recipes and drops the added ones |
+| `items::recipe_reset_brewing()` | Drops the brewing recipes plugins added and brings back the ones the game ships |
+
+Adding the same id twice answers `ERR_INVALID`, so a plugin that adds recipes while starting should check
+`recipe_known` first, or remove the id before adding it.
+
+### What a station makes
+
+`items::recipe_station(kind, input, length, out, capacity)` asks what a crafting station would produce for some
+ingredients, without anyone standing at it. The answer is a value. `ERR_ABSENT` means no recipe fits, `ERR_INVALID` an
+unknown kind or a bad input. Item values use the [item stack](/docs/server/wasm-items#the-item-stack) form, and an empty
+cell is null.
+
+| `kind` | Input | Answer |
+|---|---|---|
+| `crafting` | `{width, height, items}` where `items` is a list of item values or null, row by row | `{recipe, result, remaining}` where `remaining` is a list of item values or null |
+| `anvil` | `{left, right, name}` where `left` and `right` are item values or null and `name` is an optional rename | `{result, cost, materials}` where `result` is an item value or null |
+| `smithing` | `{template, base, addition}`, each an item value or null | `{recipe, result}` |
+
+```cpp
+values::ValueBuffer<128> grid;
+grid.map().key("width").integer(1).key("height").integer(1).key("items").list();
+grid.map().key("id").string("minecraft:oak_log").key("count").integer(1).end();
+grid.end().end();
+
+char buffer[512];
+char spare[2048];
+values::Value answer;
+const int status = values::call_value(
+    [&](char* out, int capacity) {
+        return basalt_recipe_station("crafting", 8, grid.data(), grid.finish(), out, capacity);
+    },
+    buffer, sizeof buffer, spare, sizeof spare, answer);
+if (status == 0) {
+    const long long planks = answer.find("result").find("count").i64_or(0);   // 4
+}
+```
+
+## The recipe book
+
+The recipe book is the list of recipes a player has discovered, the ones the game shows them in the crafting screen.
+
+| Call | What it does |
+|---|---|
+| `items::recipe_book_get(player, out, capacity)` | The recipe ids the player has discovered, as a list of strings |
+| `items::recipe_book_set(player, ids, length, learn)` | `ids` is a list of recipe ids. With `learn` 1 they are discovered, with 0 forgotten. Answers how many actually changed |
+| `items::recipe_book_has(player, id)` | 1 when the player knows the recipe, else 0 |
+| `items::recipe_book_resend(player)` | Sends the recipe packet and the book to the player again. `ERR_ABSENT` when the connection has none |
+
+```cpp
+values::ValueBuffer<128> ids;
+ids.list().string("example:string_wool").end();
+const int learned = basalt_recipe_book_set(player, ids.data(), ids.finish(), 1);
+```
+
+## Merchants with your own trades
+
+`items::merchant_open(player, spec, length)` opens a merchant window for a player with a trade list that you write. It is
+the villager trading screen without a villager: the player picks a trade, hands over the cost and takes the result. The
+spec is a map with a `title` (MiniMessage) and `offers`, a list of maps:
+
+| Key | Meaning |
+|---|---|
+| `buy` | The first cost, an item value. Required |
+| `buy2` | A second cost, an item value or null |
+| `sell` | What the player receives, an item value. Required |
+| `uses` | Times the trade has been used, 0 by default |
+| `max_uses` | Times it can be used before it locks, 12 by default |
+| `xp` | Experience the villager gains per trade, 0 by default |
+| `price_multiplier` | How much demand changes the price, 0.0 by default |
+| `demand` | The current demand, 0 by default |
+| `special_price` | A flat price adjustment, 0 by default |
+
+A spec without `offers`, or an offer without `buy` or `sell`, answers `ERR_INVALID`. The call answers `ERR_ABSENT` when the
+player's connection has no merchant window.
+
+```cpp
+static void trader(core::Ctx ctx) {
+    const auto name = commands::command_source_name(ctx);
+    const core::Player player = players::player_by_name(name.c_str());
+
+    values::ValueBuffer<512> spec;
+    spec.map().key("title").string("<gold>Trader").key("offers").list();
+    spec.map()
+        .key("buy").map().key("id").string("minecraft:emerald").key("count").integer(2).end()
+        .key("sell").map().key("id").string("minecraft:bread").key("count").integer(6).end()
+        .key("max_uses").integer(8)
+        .key("xp").integer(3)
+        .end();
+    spec.end().end();
+
+    basalt_merchant_open(player, spec.data(), spec.finish());
+}
+```
+
+Plain chest and container windows, and menus with click handlers, are on the [Menus](/docs/server/wasm-menus) page.
+
+## Loot tables
+
+A loot table is the rule behind what a chest holds or a mob drops. You can ask the server to roll one, and then do what
+you like with the items: give them, drop them, or show them.
+
+| Call | What it does |
+|---|---|
+| `items::loot_tables(out, capacity)` | Every loot table id as a list of strings |
+| `items::loot_roll(table, spec, length, out, capacity)` | Rolls a table by id and answers a list of item values |
+| `items::loot_roll_json(json, spec, length, out, capacity)` | The same for a table written as JSON text, in the format of a loot table file |
+| `items::loot_number(json, as_float, seed, out, capacity)` | Evaluates a number provider given as JSON text. `as_float` 1 picks a decimal provider, 0 a whole-number one. The answer is a whole number or a decimal |
+| `items::loot_apply(spec, length, out, capacity)` | Runs loot functions on a stack and answers the resulting item value |
+| `items::loot_enchant(spec, length, out, capacity)` | Enchants a stack the way an enchanting table level would, and answers the resulting item value |
+
+`loot_roll` answers `ERR_ABSENT` when the table or the world is unknown, `ERR_INVALID` for a bad spec. `loot_roll_json`
+answers `ERR_ABSENT` when the JSON does not parse as a table.
+
+### The roll spec
+
+`loot_roll`, `loot_roll_json` and `trades_roll` take a **roll spec**: a map where every key is optional. An empty map, or
+null, takes every default.
+
+| Key | Meaning |
+|---|---|
+| `world` | The world name, the default world when absent |
+| `x`, `y`, `z` | Where the roll happens, 0 by default |
+| `luck` | The luck value of the roller, 0 by default |
+| `seed` | A whole number. 0 or absent rolls without a fixed seed, anything else gives the same drops every time |
+| `looter` | A player UUID, for tables that depend on who is looting |
+
+```cpp
+static void zombie_drops(core::Ctx ctx) {
+    const auto name = commands::command_source_name(ctx);
+    const core::Player player = players::player_by_name(name.c_str());
+    const auto inventory = items::Inventory::of_player(player);
+
+    values::ValueBuffer<64> roll;
+    roll.map().key("luck").number(1.0).end();
+
+    const char* table = "minecraft:entities/zombie";
+    char buffer[1024];
+    char spare[8192];
+    values::Value drops;
+    const int status = values::call_value(
+        [&](char* out, int capacity) {
+            return basalt_loot_roll(table, bs_text_len(table), roll.data(), roll.finish(), out, capacity);
+        },
+        buffer, sizeof buffer, spare, sizeof spare, drops);
+    if (status != 0) {
+        commands::command_reply(ctx, "<red>That loot table is not available.");
+        return;
+    }
+    for (int i = 0; i < drops.count(); ++i) {
+        const values::Value stack = drops.at(i);
+        const char* id = nullptr;
+        int length = 0;
+        if (!stack.find("id").as_str(id, length) || length > 63) {
+            continue;
+        }
+        char item[64];
+        for (int k = 0; k < length; ++k) {
+            item[k] = id[k];
+        }
+        item[length] = 0;
+        inventory.give(item, static_cast<int>(stack.find("count").i64_or(1)));
+    }
+}
+```
+
+### Functions and enchanting
+
+`loot_apply` takes a map with `functions` (JSON text: one loot function object, or an array of them), `item` (an item value),
+and the optional `world`, `x`, `y`, `z` and `seed`. It answers `ERR_INVALID` for a bad spec and `ERR_ABSENT` when the JSON
+or the world is unknown.
+
+```cpp
+values::ValueBuffer<256> spec;
+spec.map()
+    .key("functions").string(R"({"function":"minecraft:set_count","count":5})")
+    .key("item").map().key("id").string("minecraft:bread").end()
+    .end();
+```
+
+`loot_enchant` takes a map with `item` (an item value), `levels` (the enchanting level to roll at), `options` (an
+enchantment id, or a tag with a leading `#`, `#minecraft:in_enchanting_table` by default) and the optional `seed` and
+`world`.
+
+```cpp
+values::ValueBuffer<192> spec;
+spec.map().key("item").map().key("id").string("minecraft:diamond_sword").end().key("levels").integer(30).end();
+```
+
+## Rolling villager trades
+
+`items::trades_roll(profession, level, spec, length, out, capacity)` answers the trades a villager of a profession offers
+at a level from 1 to 5, as a list of maps. The profession is an id such as `minecraft:farmer`, and `minecraft:` may be
+left out. The spec takes `world`, `x`, `y`, `z` and `seed` like a roll spec, plus:
+
+| Key | Meaning |
+|---|---|
+| `variant` | The villager type (plains, desert and so on) |
+| `amount` | How many trades to draw |
+| `listed` | A list of trade ids to draw from without repeats |
+
+Each trade in the answer is a map with `cost_a` (an item value), `cost_b` (an item value or null), `result` (an item value),
+`max_uses`, `xp` and `price_multiplier`. These are the same things a merchant offer takes, under different names:
+`cost_a` is `buy`, `cost_b` is `buy2` and `result` is `sell`. The call answers `ERR_ABSENT` when the
+profession, the level or the world is unknown, `ERR_INVALID` for a bad spec or a level outside 1 to 5.
+
+## Gotchas
+
+- Recipe ids are global. A recipe stays until you remove it, a second add with the same id answers `ERR_INVALID`, and
+  `recipe_reset` drops every recipe that plugins added.
+- The cooking recipes need `cookingtime`. Without it the recipe is rejected.
+- Ingredients are strings or lists of strings, not objects with an `item` key (only brewing uses `item` objects, inside its
+  `input` and `reagent`).
+- `items::merchant_open` opens a window for one player, with the trades you pass in that call.
+- A loot roll with `seed` 0 gives different drops each call. Pass a fixed seed to get repeatable ones.
+- Rolled items come back as item values (`id`, `count` and possibly `components`). To hand them out, read the fields and
+  call the inventory functions, or drop them with `entities::drop_item`.
+
+## Where to go next
+
+| You want to | Page |
+|---|---|
+| Give a player the rolled items | [Items and inventories](/docs/server/wasm-items) |
+| Build click menus and container windows | [Menus](/docs/server/wasm-menus) |
+| Drop items in the world | [Entities](/docs/server/wasm-entities) |
+| Read the values these calls return | [Values](/docs/server/wasm-values) |

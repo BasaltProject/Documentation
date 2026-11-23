@@ -1,0 +1,367 @@
+---
+title: Players
+description: Find online players, talk to them, move them, heal them and read or change any of their properties from a plugin.
+group: Plugin API
+---
+
+Almost everything a plugin does ends up at a player: a message, a sound, a teleport, a changed game mode. This page covers
+finding the player, the few calls you use all the time, and the generic property and operation interface that reaches
+everything else about a player.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static core::Player source(core::Ctx ctx) {
+    return players::player_by_name(commands::command_source_name(ctx).c_str());
+}
+
+static void boost(core::Ctx ctx) {
+    const core::Player player = source(ctx);
+    if (player == 0) {
+        commands::command_reply(ctx, "<red>Only players can use this.");
+        return;
+    }
+    events::player_set_health(player, 20.0);
+    events::player_effect(player, "minecraft:speed", 200, 1);
+    players::particle(player, "minecraft:happy_villager", 20, 0.5);
+    players::sound(player, "minecraft:entity.player.levelup", 1.0f, 1.0f);
+    players::action_bar(player, "<green>Boosted for ten seconds");
+}
+
+void plugin_init() {
+    commands::command("boost", "", boost);
+}
+```
+
+Names in this page are the C++ spelling, `area::function`. Other languages use their own casing for the same calls, see
+[The SDK](/docs/server/wasm-sdk). In C++ the calls that reach a player by uuid, by property name or by operation name sit
+in the `events` namespace, next to the event calls. Text sent to players is MiniMessage, see
+[Text](/docs/server/wasm-text).
+
+## Finding players
+
+| Call | Does |
+|---|---|
+| `players::player_by_name` | The handle of the online player with that name, or 0 when nobody has it. The match ignores case |
+| `events::player_by_uuid` | The same by uuid text, or 0 |
+| `players::players_online` | Fills an array with the handles of everyone online and returns how many there are |
+| `players::player_name` | The name of the player behind a handle |
+| `events::player_uuid` | The uuid text of the player behind a handle |
+
+`players::players_online` takes the array and its capacity. When more players are online than fit, it writes nothing and
+returns the count, so call it again with a bigger array.
+
+```cpp
+static void announce(core::Ctx) {
+    core::Player online[64];
+    const int count = players::players_online(online, 64);
+    for (int i = 0; i < count && i < 64; ++i) {
+        players::send(online[i], "<gray>Restart in five minutes");
+    }
+}
+```
+
+A player who is not online has no handle. Their name, uuid, ban state and statistics are reachable through the
+administration calls of [Server control](/docs/server/wasm-server-control#access-lists-and-statistics).
+
+## The handle, and when it goes stale
+
+A player is a handle, a small integer. Asking for the same player twice gives the same handle for as long as they stay
+online. Every call that takes a handle answers `ERR_STALE` once the player has left, and `ERR_INVALID` for a number that
+was never a player handle.
+
+The handle an event gives you for a player who is leaving stays usable until that callback ends, so a `player.quit`
+listener can still read the name. After that it is stale. Handles that a plugin keeps in a variable for later
+(a cooldown table, a queue) go stale without warning. Keep the uuid text instead, and turn it into a fresh handle with
+`events::player_by_uuid` when you need it. Kicking a player makes the handle stale at once.
+
+Handles belong to the plugin that asked for them. Never hand one to another plugin: send the uuid text through a service,
+see [Services](/docs/server/wasm-services).
+
+## Sending text
+
+| Call | Does |
+|---|---|
+| `players::send` | A chat message |
+| `players::action_bar` | Text above the hotbar |
+| `events::player_title` | A title and a subtitle with fade in, stay and fade out in ticks |
+| `events::player_kick` | Disconnects the player with a message. The handle is stale afterwards |
+
+All four take the same text: a string starting with `@` is a lang key (the rest is the key), anything else is MiniMessage.
+Each `{name}` is replaced from the arguments you pass, see [Text](/docs/server/wasm-text). A lang key that
+does not exist answers `ERR_ABSENT`. For `events::player_title`, an empty subtitle means none, the timings cannot be
+negative and one argument list serves both texts.
+
+```cpp
+static void welcome(core::Player player) {
+    core::Args args;
+    args.add("server", "Basalt");
+    events::player_title(player, "<gold>Welcome to {server}", "<gray>Have fun", 10, 60, 20, &args);
+}
+```
+
+## Particles and sounds
+
+| Call | Does |
+|---|---|
+| `players::particle` | Shows a particle effect to this player only, at their position. Takes the particle id, how many and the spread |
+| `players::sound` | Plays a sound to this player only, at their position, with a volume and a pitch (1.0 is normal) |
+
+Ids carry their namespace: `minecraft:happy_villager`, `minecraft:entity.player.levelup`. Both calls answer
+`ERR_INVALID` for an empty id. For particles at another place, sounds in a category, or sounds that follow an entity, use
+the `particle_at`, `sound_at`, `sound_entity` and `stop_sound` operations in [Operations](#operations) below.
+
+## Health, game mode and position
+
+| Call | Does |
+|---|---|
+| `events::player_health` | Writes the health, in half hearts, into a `double` |
+| `events::player_set_health` | Sets the health. 20.0 is full. A negative or NaN value is `ERR_INVALID` |
+| `events::player_gamemode` | `survival`, `creative`, `adventure` or `spectator` |
+| `events::player_set_gamemode` | Changes the game mode by name. An unknown name is `ERR_INVALID` |
+| `events::player_teleport` | Moves the player to a world and position, facing a yaw and a pitch in degrees |
+| `events::player_effect` | Gives a potion effect: id, duration in ticks, level |
+
+`events::player_teleport` takes the world name, the three coordinates, then yaw and pitch. An empty world name means the
+world the player is in. It answers `ERR_ABSENT` when the move could not be made (an unknown world, for instance) and
+`ERR_INVALID` for NaN or infinite coordinates.
+
+For `events::player_effect` the duration is in ticks, `-1` lasts until removed and `0` removes the effect. The level
+counts from 0, so 1 is the second level. An unknown effect id is `ERR_ABSENT`.
+
+Food, experience level and the rest are properties, read and written through the generic interface below.
+
+## Properties and operations by name
+
+The calls above cover the common cases. Everything else about a player goes through four calls that take a name:
+
+| Call | Does |
+|---|---|
+| `events::player_describe` | Lists every property and every operation that exists |
+| `events::player_get` | Reads one property as a value |
+| `events::player_set` | Writes one writable property from a value |
+| `events::player_call` | Runs one operation with a list of arguments and returns its result as a value |
+
+Values are the encoded structured data described in [Values](/docs/server/wasm-values). Properties and operations are
+identified by name, and `events::player_describe` tells you which names exist on the server you run on.
+
+```cpp
+static void fly(core::Ctx ctx) {
+    const core::Player player = source(ctx);
+    if (player == 0) {
+        return;
+    }
+    values::ValueBuffer<32> allowed;
+    allowed.boolean(true);
+    events::player_set(player, "allow_flight", allowed.data(), allowed.finish());
+
+    values::ValueBuffer<32> speed;
+    speed.number(0.05);
+    events::player_set(player, "fly_speed", speed.data(), speed.finish());
+
+    values::ValueBuffer<128> header;
+    header.list().string("<gold>Welcome").string("<gray>basaltmc.org").end();
+    char buffer[64];
+    values::Value result;
+    events::player_call(player, "tab_list", header.data(), header.finish(), buffer, sizeof buffer, result);
+
+    char food_buffer[32];
+    values::Value food;
+    if (events::player_get(player, "food", food_buffer, sizeof food_buffer, food) == 0 && food.i64_or(20) < 10) {
+        players::send(player, "<yellow>You are hungry.");
+    }
+}
+```
+
+The reader and the buffers work as for every call that answers a value: you provide the buffer, the `Value` points into it,
+so keep the buffer alive while you read. A call answers `ERR_INVALID` when the answer does not fit.
+
+### Rules of the generic calls
+
+- `events::player_get` answers `ERR_ABSENT` for a name that is not a property. A property that is not set (a custom
+  `health_scale`, for example) reads as the null value.
+- `events::player_set` answers `ERR_INVALID` for an unknown name, a read only property or a value of the wrong kind. A whole
+  number is accepted where a real is expected and a whole real where an integer is expected; a bool needs a bool.
+- `events::player_call` takes a list value of arguments (nothing at all is an empty list) and answers `ERR_ABSENT` for an
+  unknown operation and `ERR_INVALID` for a malformed list. The result is whatever the operation returns: a bool for most
+  of the ones that can fail, a number, a list, or null when there is nothing to say.
+- All of them answer `ERR_STALE` for a player who left.
+
+### Discovering the names
+
+`events::player_describe` answers a map with two lists:
+
+- `properties`, each entry `{name, kind, writable}` where `kind` is `bool`, `int`, `real`, `text` or `list`;
+- `operations`, the names of every operation.
+
+The answer is several kilobytes, so give it a large buffer that lives outside the stack.
+
+```cpp
+static char g_table[16384];
+
+static void describe(core::Ctx ctx) {
+    values::Value table;
+    if (events::player_describe(g_table, sizeof g_table, table) != 0) {
+        commands::command_reply(ctx, "<red>The table does not fit the buffer.");
+        return;
+    }
+    const int count = table.find("properties").count();
+    core::Args args;
+    char text[24];
+    core::format_i64(count, text);
+    args.add("n", text);
+    commands::command_reply(ctx, "{n} properties", &args);
+}
+```
+
+Besides the properties that `events::player_describe` lists, `events::player_get` reads these fixed names: `name`, `uuid`,
+`online`, `health`, `food`, `gamemode`, `level`, `world`, `x`, `y`, `z`, `yaw`, `pitch`, `ping`, `sneaking`, `flying`,
+`on_ground`, `held_item` (an item id or null), `address` and `permission_level`. Of those, `health`, `food` (a whole number
+from 0), `level` (a whole number from 0) and `gamemode` can be written.
+
+### Properties worth knowing
+
+Times are ticks, distances are blocks, and text is MiniMessage. Properties marked read only answer `ERR_INVALID` to
+`events::player_set`.
+
+**Movement and state**
+
+| Property | Kind | Meaning |
+|---|---|---|
+| `allow_flight` | bool | May fly. Follows the game mode's rule again when the game mode changes |
+| `flying` | bool | Is flying. Only true while `allow_flight` is |
+| `fly_speed`, `walk_speed` | real | Defaults are 0.1 and 0.2, within -1 to 1. `walk_speed` also sets the movement speed attribute |
+| `sprinting`, `sneaking`, `swimming`, `gliding` | bool | Server-side state flags |
+| `exhaustion`, `saturation` | real | Hunger state |
+| `exp` | real | Progress to the next level, 0 to 1 |
+| `total_experience` | int | Writing it resets the player to level 0 and gives that many points |
+| `exp_to_next_level` | int | Read only. Points the current level needs |
+| `health_scale` | real or null | Scales the health bar the client draws to this many points. Null turns it off |
+| `slot_limit` | int | The most one inventory slot holds, 1 to 99 (default 99) |
+| `view_distance`, `simulation_distance` | int or null | Per player distances in chunks, 2 to 32. Null restores the server's |
+| `attack_cooldown` | real | Read only. Attack strength, 0 to 1 |
+| `idle_ms` | int | Read only. Milliseconds since the last action |
+| `previous_gamemode` | text or null | Read only. The game mode before the last change |
+
+**Tab list**
+
+| Property | Kind | Meaning |
+|---|---|---|
+| `tab_header`, `tab_footer` | text or null | This player's own header and footer. While one is set, the server's tab list configuration stays off for them |
+| `list_name` | text or null | The name everybody sees in the tab list. Null is the plain name |
+| `listed` | bool | Whether everybody sees them in the tab list |
+| `list_order` | int | Sort order in the tab list |
+
+**What the client reports** (all read only)
+
+| Property | Kind | Meaning |
+|---|---|---|
+| `locale` | text | The language the client uses |
+| `client_brand` | text | The brand the client announced |
+| `protocol_version` | int | The protocol number the client speaks |
+| `virtual_host` | text | The host and port the client connected to |
+| `client_view_distance` | int | The view distance the client asked for |
+| `main_hand` | int | 0 left, 1 right |
+| `transferred` | bool | Whether the player arrived through a transfer |
+| `pack_status` | int | The last resource pack answer, -1 for none |
+
+**Player's own world view** (read only): `player_time` (null when the player has no clock of their own),
+`player_time_relative`, `player_weather` (null when none) and `compass_target` (a list `x, y, z`).
+
+The full list has more of the same kind (waypoint style and color, hurt cooldown, air supply, regeneration counters and
+others). Ask `events::player_describe`.
+
+### Operations
+
+An operation takes its arguments as a list, in this order. A bool result means whether it worked.
+
+**Text and title**
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `title_part` | kind, text | Sets one part. `kind` is `title`, `subtitle` or `actionbar` |
+| `title_times` | fade_in, stay, fade_out | Sets the title timing |
+| `clear_title` | reset (optional) | Clears the title, or resets its timing too when true |
+| `tab_list` | header, footer | Sets both at once. Null clears one |
+
+Text in operations is MiniMessage. Unlike `players::send`, an operation does not look up `@` lang keys.
+
+**Sounds and particles**
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `sound_at` | sound, category, x, y, z, volume, pitch, seed | Plays a sound at a place. `category` is `master`, `music`, `record`, `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`, `voice` or `ui` |
+| `sound_entity` | sound, category, entity id, volume, pitch, seed | A sound at an entity's position |
+| `stop_sound` | sound, category (both optional) | Stops matching sounds. With neither it stops all |
+| `particle_at` | name, x, y, z, count, offset x, y, z, speed x, y, z, force, randomization, extra values | A particle at a place. Answers false for an unknown particle. Particles that need data (dust color, block state, item id) take it after `randomization` |
+| `world_event` | id, x, y, z, data | A level event, such as a door sound or a record starting |
+| `game_event` | event, parameter | A raw game event, such as the demo screen or the elder guardian effect |
+
+**Health and experience**
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `give_exp`, `give_levels` | amount | Adds experience points or levels |
+| `fake_health` | health, food, saturation | Shows the client other values without changing the player |
+| `fake_experience` | progress, level | The same for the experience bar |
+| `send_health`, `send_experience` | none | Sends the real values again |
+
+**What the player sees**
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `hide_entity`, `show_entity` | entity id | Hides or shows an entity for this player only |
+| `can_see` | entity id | Whether this player sees it |
+| `set_player_time` | time, relative (optional) | A clock of this player's own. An absolute time freezes it |
+| `reset_player_time` | none | Back to the world's time |
+| `set_player_weather` | `downfall`, `clear` or null | This player's own weather. Null resets it |
+| `set_compass_target` | x, y, z | Where this player's compass points |
+| `border_set` | center x, center z, size, warning blocks, warning seconds | A world border only this player sees |
+| `border_reset` | none | Back to the world's border |
+| `block_change` | x, y, z, block state id | Shows one block differently |
+| `sign_text` | x, y, z, front text, back text, color, glowing, type | Shows text on a sign for this player only, lines joined by a newline |
+| `look_at` | x, y, z, eyes (optional) | Turns the player's view toward a point |
+
+**Connection, items and statistics**
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `transfer` | host, port (25565 by default) | Moves the client to another server |
+| `resource_pack` | uuid, url, hash, required, prompt | Offers a resource pack |
+| `remove_resource_pack` | uuid (optional) | Removes one pack, or all of them with no uuid |
+| `update_commands` | none | Sends the command tree again, after you changed what the player may run |
+| `cooldown` | item id | Ticks left on the item's use cooldown |
+| `set_cooldown` | item id, ticks | Starts a cooldown, or clears it with 0 |
+| `statistic` | key | A statistic counter, by stored key such as `minecraft:custom/minecraft:jump` or `minecraft:mined/minecraft:stone` |
+| `set_statistic`, `inc_statistic` | key, value | Sets a counter, or adds to it (1 by default) |
+| `known_recipes`, `has_recipe`, `discover_recipes`, `undiscover_recipes` | none, one id, a list of ids, a list of ids | The player's recipe book |
+| `spawn_point`, `set_spawn_point`, `clear_spawn_point` | none, world, x, y, z, yaw, none | The respawn point |
+| `respawn` | none | Respawns a dead player. False when they are alive |
+| `wake_up`, `swing`, `hurt_animation` | none, offhand, yaw | Animations. Swing and hurt are seen by everyone in the world |
+
+The windows a player can be shown (signs, books, merchants, dialogs) are in
+[Menus, forms and dialogs](/docs/server/wasm-menus).
+
+## Things that catch people out
+
+- A handle is a number, not a promise. Store the uuid, not the handle, for anything that outlives the callback.
+- `players::player_by_name` returns 0, not an error, for an unknown name. Check for 0 before using the handle.
+- Health is in half hearts. A full bar is 20.0.
+- `events::player_effect` levels count from 0 and durations are in ticks, 20 to the second.
+- Operations take MiniMessage text only. Lang keys with `@` and `{name}` arguments work in `players::send`,
+  `players::action_bar`, `events::player_title` and `events::player_kick`.
+- An answer bigger than your buffer comes back as `ERR_INVALID`. The table of `events::player_describe` needs several
+  kilobytes, so give it a static buffer.
+- A callback has to return quickly. Do not loop over every property of every player in one callback.
+
+## Where to go next
+
+| Page | What is there |
+|---|---|
+| [Menus, forms and dialogs](/docs/server/wasm-menus) | Windows, forms, dialogs, signs and books |
+| [Permissions](/docs/server/wasm-permissions) | What a player may do, grants and providers |
+| [Events](/docs/server/wasm-events) | `player.join`, `player.quit` and the other player events |
+| [Server control](/docs/server/wasm-server-control) | Bans, whitelists, statistics of players who are offline |
+| [Values](/docs/server/wasm-values) | Writing and reading the values these calls take |

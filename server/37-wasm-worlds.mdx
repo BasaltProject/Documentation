@@ -1,0 +1,775 @@
+---
+title: Worlds and blocks
+description: Read and change blocks, chunks, light and biomes, play effects, tune world properties and create worlds from a plugin.
+group: Plugin API
+---
+
+This page is for plugins that look at a world or change it: place a block, fill a platform, wait for a chunk to load,
+play a sound, move the border, read the weather, create a minigame world. Everything here lives in the `worlds` area of
+the SDK. The calls are written as `worlds::world_fill` and so on; other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk). Structure templates, noise and saved-data upgrades are on
+[Structures, noise and data fixing](/docs/server/wasm-structures).
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace core = basalt::server::core;
+namespace worlds = basalt::server::worlds;
+
+void stairs(core::Ctx ctx) {
+    const int32_t world = worlds::world_default();
+    const int32_t state = worlds::block_state_id("minecraft:oak_stairs[facing=east,half=top]");
+    worlds::world_state_set(world, 0, 64, 0, state, worlds::kNotify);
+
+    char text[96];
+    const int length = worlds::world_block_get(world, 0, 64, 0, 0, text, sizeof text);
+    if (length > 0 && length < static_cast<int>(sizeof text)) {
+        text[length] = 0;
+        basalt::server::commands::command_reply(ctx, text);
+    }
+}
+
+void plugin_init() {
+    basalt::server::commands::command("stairs", "", stairs);
+}
+```
+
+Nearly every call takes a world handle first and answers a number: a count, an id, or one of the shared error codes
+(`ERR_ABSENT`, `ERR_STALE`, `ERR_INVALID`, `ERR_DENIED`). Calls that return text or structured data fill a buffer you
+pass in and return the length the full answer needs, so a result larger than your buffer tells you how much room to
+make, see [Values](/docs/server/wasm-values).
+
+## Worlds and handles
+
+A world is a handle: a positive number you get by name, from the default world, or from the list of loaded worlds. It
+stays valid for as long as the plugin runs, and it answers `ERR_STALE` once that world has been unloaded. A world
+created later under the same name gets a new handle. A handle is only ever the first argument of a worlds call; the
+other areas (players, entities, items) name a world by its name or take a position.
+
+| Call | Does |
+|---|---|
+| `worlds::world_by_name` | The handle of the world with that name, or 0 when there is none |
+| `worlds::world_default` | The handle of the default world |
+| `worlds::world_list` | Writes the handle of every loaded world into your array and returns how many there are |
+| `worlds::world_name` | The name of the world behind a handle |
+
+```cpp
+int32_t handles[16];
+const int count = worlds::world_list(handles, 16);
+for (int i = 0; i < count && i < 16; ++i) {
+    char name[64];
+    const int length = worlds::world_name(handles[i], name, sizeof name);
+    // ...
+}
+```
+
+## Where a call may run
+
+Every call in this area runs on the plugin thread, inside a callback or `plugin_init`, and acts on the world the way the
+owner of that part of the world would. On a server with the default scheduler, one region owns everything: that is the
+tick thread, and every call takes effect immediately. A block you set is visible to the very next call.
+
+If the server runs with regional scheduling (`regional` in [Server settings](/docs/server/server-settings)), a call is
+valid only for positions the calling region owns. To work somewhere else, resolve the place first with
+`worlds::world_at(world, x, z, handler)`. It queues `handler` to run on the owner of the column at (x, z), later, and
+returns a request handle. Inside that handler you may touch the blocks that region owns. With the default scheduler the
+owner is the plugin thread itself and the handler runs on the next turn, so code written the careful way works on both.
+
+```cpp
+int32_t g_world = 0;
+
+void place_far(core::Ctx) {
+    const int32_t stone = worlds::block_state_id("minecraft:stone");
+    worlds::world_state_set(g_world, 5000, 70, 5000, stone, worlds::kNotify);
+}
+
+void far_edit(core::Ctx) {
+    g_world = worlds::world_default();
+    worlds::world_at(g_world, 5000.0, 5000.0, place_far);
+}
+```
+
+A handler is a plain function without captured state, so keep what it needs in a global. The completion value of
+`world_at` is null. `worlds::world_request_cancel(request)` drops a request that has not run yet, and its handler then
+never runs.
+
+Anything that would make the server wait (loading, generating or relighting a chunk) has a request form that returns a
+handle and finishes in a handler, and is described below. Handlers must return quickly, see
+[Execution model](/docs/server/wasm-execution-model).
+
+## Blocks
+
+A block state is either a number, the **state id**, or **text** such as
+`minecraft:oak_stairs[facing=east,half=top]`. Numbers are what the bulk calls move around and are the cheap form. Text
+is what you write in code and in files. Ids belong to the game version the server runs, so keep the text form in
+anything you save and convert when you load.
+
+| Call | Does |
+|---|---|
+| `worlds::block_state_id` | The state id of block text. `ERR_ABSENT` for text that is not a block state |
+| `worlds::block_state_text` | The text of a state id, with its properties. `ERR_ABSENT` for a number that is not a state |
+| `worlds::world_block_get` | The block at a position as text. `ERR_ABSENT` when the chunk is not loaded |
+| `worlds::world_block_set` | Puts a block, given as text, at a position. `ERR_INVALID` for text that is not a block state, `ERR_ABSENT` when the chunk is not loaded |
+| `worlds::world_state_get` | The state id at a position, or `ERR_ABSENT` as above |
+| `worlds::world_state_set` | Puts a state id at a position. `ERR_INVALID` for a number that is not a state |
+
+The `get` calls and the `set` calls take `flags`. The ones that matter here are `worlds::kLoad`, which loads the chunk
+from disk when it is not loaded (it does not generate a missing one), and `worlds::kNotify`, which tells the players who
+are watching that block. Without `kNotify` the block changes in the world but nobody is told, so players keep seeing the
+old block until the chunk is sent to them again. The full list of flags is below.
+
+A single call is fine for a few blocks. For more, use the bulk calls.
+
+## Blocks in bulk
+
+One bulk call is one trip across the boundary and one pass over the chunk. A loop of single `world_state_set` calls
+over thousands of blocks is the slowest thing a plugin can do to a world. Pick the call that matches the shape of what
+you are changing.
+
+| You want to | Use | Notes |
+|---|---|---|
+| Read scattered positions | `worlds::world_states_read` | Flat triples `x, y, z`; writes one id each, -1 where the chunk is not loaded, returns the count |
+| Write scattered positions | `worlds::world_states_write` | Positions and one state per position; returns how many were written |
+| Fill a box | `worlds::world_fill` | Two corners, inclusive, in any order; returns how many blocks changed. A box of more than 16,777,216 blocks is `ERR_INVALID` |
+| Read one 16x16x16 section | `worlds::world_section_read` | 4096 ids into your array |
+| Replace one section | `worlds::world_section_write` | 4096 ids; `ERR_ABSENT` when the chunk is not loaded |
+| Read a whole chunk | `worlds::world_chunk_read` | Every section, lowest first |
+| Replace sections of a chunk | `worlds::world_chunk_apply` | Up to 64 sections in one call; can hand back what was there before |
+| Write and then set off the consequences | `worlds::world_changes_apply` | See [Changes that set things off](#changes-that-set-things-off) |
+
+`world_fill` skips chunks that are not loaded, unless you pass `worlds::kLoad`, which loads them first.
+
+**Sections.** A section is 4096 state ids as 32-bit integers, ordered `index = y * 256 + z * 16 + x`, with x, y, z
+local to the section (0 to 15). The section number is the block y divided by 16, rounded down, so block y 64 is in
+section 4 and the lowest section of an overworld is -4. A whole overworld chunk is 24 sections, which is 98,304 numbers
+(384 KiB): size your array for it, or walk the sections one at a time.
+
+`world_chunk_apply(world, chunk_x, chunk_z, section_ys, count, states, flags, previous)` writes `count` sections whose
+numbers are listed in `section_ys`, with 4096 ids per section in `states`. A negative id keeps the block that is there.
+When `previous` is not null it receives the 4096 ids each section held before, which is what an undo needs. With
+`worlds::kResend` the chunk is sent again to the players who see it. It returns the number of blocks changed.
+
+```cpp
+void read_scattered(int32_t world) {
+    const int32_t at[] = {0, 64, 0, 1, 64, 0, 2, 64, 0};
+    int32_t states[3];
+    worlds::world_states_read(world, at, 3, states, 0);
+    // states[i] is -1 where the chunk is not loaded
+}
+```
+
+### Flags
+
+These are bits you add together in the `flags` argument of the calls that say they take them. The SDK names the first
+four (`worlds::kLoad`, `kNotify`, `kResend`, `kGenerate`); for the rest, write the number or define a constant of your
+own.
+
+| Value | Name | Meaning |
+|---|---|---|
+| 1 | load | Load the chunk (not generate it) when it is not loaded |
+| 2 | notify | Tell the players who watch the change |
+| 4 | resend | Send the changed chunks again to their watchers |
+| 8 | generate | Generate the chunk when it does not exist |
+| 16 | save | Save before unloading |
+| 32 | disk | Also touch the copy kept on disk (structure templates) |
+| 64 | global | Reach every player of the world, not only those in range |
+| 128 | break | An explosion breaks blocks |
+| 256 | fire | An explosion starts fires |
+| 512 | fluid | A scheduled tick is the fluid's, not the block's |
+| 1024 | indirect | Shape updates reach the blocks next to the neighbours too |
+| 2048 | entities | Include entities |
+
+## Changes that set things off
+
+Writing a state changes a block and nothing else. In the game, putting a block down also makes its neighbours react,
+fences join, sand fall, comparators read again. `worlds::world_changes_apply(world, positions, states, count, effects)`
+writes the states and then runs the effects you ask for on the blocks that changed. It returns how many changed.
+`effects` is a sum of these bits:
+
+| Value | Effect | Does |
+|---|---|---|
+| 1 | neighbors | Neighbours are told one of theirs changed |
+| 2 | shapes | Blocks around reshape to fit: fences join, stairs turn, unsupported blocks break |
+| 4 | light | The light around is worked out again |
+| 8 | entities | What the block that left does with its contents, such as a container spilling its items |
+| 16 | poi | Points of interest (beds, bells, job blocks) follow the change |
+| 32 | ticks | The new block books the ticks it needs: sand its fall, water its flow, fire its spread |
+| 64 | clients | The players who see the blocks are shown the new state |
+| 128 | place | The rest of what happens when a block is placed: golems, pistons, redstone dust |
+| 256 | departure | What the block that left sets off on its way out |
+| 512 | output signal | Comparators around read the block again |
+
+```cpp
+void drop_sand(core::Ctx) {
+    const int32_t world = worlds::world_default();
+    const int32_t sand = worlds::block_state_id("minecraft:sand");
+    const int32_t at[] = {0, 80, 0, 0, 81, 0};
+    const int32_t states[] = {sand, sand};
+    constexpr int32_t kNeighbors = 1, kShapes = 2, kTicks = 32, kClients = 64, kPlace = 128;
+    worlds::world_changes_apply(world, at, states, 2, kNeighbors | kShapes | kTicks | kClients | kPlace);
+}
+```
+
+Sand placed that way falls. Without the `clients` bit, the players are not told about the blocks.
+
+When the blocks are already written, for instance by a `world_fill` or a section write, the same pieces are available on
+their own:
+
+| Call | Does |
+|---|---|
+| `worlds::world_blocks_settle` | Runs `effects` for blocks already written. Optionally takes the state each block had before, which `departure` and `poi` need. Returns how many positions were loaded |
+| `worlds::world_blocks_notify` | Tells the block at each position that a neighbour changed; optionally which neighbour. Returns how many positions were loaded |
+| `worlds::world_blocks_reshape` | Lets the blocks around each position reshape to fit it; `indirect` widens it to the blocks next to those |
+| `worlds::world_state_valid` | The state a state would settle to if you put it there (a fence joining, stairs turning). Writes nothing |
+| `worlds::world_tick_schedule` | Books a tick of the block, or of its fluid with the `fluid` flag, some ticks from now. 1 when booked, 0 when nothing there ticks |
+| `worlds::world_tick_pending` | 1 when a tick of the block is already booked |
+
+## Chunks
+
+Block calls answer `ERR_ABSENT` for a chunk that is not loaded. This section is about getting chunks loaded, and
+keeping them.
+
+| Call | Does |
+|---|---|
+| `worlds::world_chunk_status` | 0 not loaded, 1 asked for and on its way, 2 loaded, 3 loaded and ticking (a player is near) |
+| `worlds::world_chunk_load` | Loads the chunk now and returns 1 when it is loaded afterwards, else 0. With `worlds::kGenerate` a missing chunk is created |
+| `worlds::world_chunk_unload` | Saves and drops a chunk nobody uses. 1 when dropped, 0 when a player still sees it |
+| `worlds::world_chunk_request` | Asks for a chunk without waiting; a handler runs when it is done |
+| `worlds::world_chunks_loaded` | The loaded chunks as flat pairs `x, z` |
+| `worlds::world_chunks_resend` | Sends chunks (flat pairs) again to the players near them |
+
+`world_chunk_load` waits for the chunk, which can take a long time when it has to be generated. Prefer the request form.
+
+### Waiting for a chunk
+
+`worlds::world_chunk_request(world, chunk_x, chunk_z, flags, priority, handler)` returns a request handle at once. Later
+the handler runs on the owner of the world, and `worlds::world_value_result(ctx, ...)` answers a boolean: `true` when the
+chunk is loaded, `false` when it never was. A lower `priority` goes first; `worlds::kGenerate` creates the chunk when
+it does not exist. The handler never runs inside the call that asked for it, even when the chunk was already there, so
+write the code that follows the same way in both cases. `worlds::world_request_cancel` cancels a request.
+
+```cpp
+void chunk_ready(core::Ctx ctx) {
+    char out[16];
+    const int length = worlds::world_value_result(ctx, out, sizeof out);
+    basalt::server::values::Value answer;
+    bool loaded = false;
+    if (length > 0 && length <= static_cast<int>(sizeof out) && answer.open(out, length)) {
+        answer.as_bool(loaded);
+    }
+    // loaded is true: the blocks of this chunk can be read and written now
+}
+
+void ask(core::Ctx) {
+    const int32_t world = worlds::world_default();
+    worlds::world_chunk_request(world, 62, 62, worlds::kGenerate, 0, chunk_ready);
+}
+```
+
+### Keeping chunks loaded
+
+A chunk nobody is near is unloaded. To keep some loaded for your own use, hold them:
+
+| Call | Does |
+|---|---|
+| `worlds::world_chunk_hold` | Keeps chunks (flat pairs) loaded for a holder name you choose, until released. `ERR_ABSENT` when the world does not support it |
+| `worlds::world_chunk_release` | Lets go of the chunks (flat pairs) that holder held. A negative count releases everything the holder held |
+| `worlds::world_chunk_held` | The chunks (flat pairs) held for a holder name |
+
+Holder names are private to your plugin: the server adds your plugin id in front, so two plugins can both hold under
+`"arena"` without meeting. A hold stays until you release it, whether or not a player is near, so release what you no
+longer need. The holders of one chunk can be listed with the `chunk_holders` operation, see [The long
+tail](#the-long-tail).
+
+```cpp
+const int32_t chunks[] = {62, 62, 62, 63};
+worlds::world_chunk_hold(world, "arena", chunks, 2);
+// ...
+worlds::world_chunk_release(world, "arena", nullptr, -1);
+```
+
+### Chunks as they are stored
+
+`worlds::world_stored_get` returns a chunk exactly as it is stored on disk, as a named NBT compound in bytes (`ERR_ABSENT`
+when the world has none). `worlds::world_stored_list` lists the chunks (flat pairs) stored in one region file, given the
+region's x and z. `worlds::world_stored_put` writes raw NBT as the stored chunk and flushes its region; it needs the
+`worldgen` capability (see [Creating and removing worlds](#creating-and-removing-worlds)) and answers `ERR_ABSENT` when
+the NBT is rejected or the chunk is loaded and cannot be replaced.
+
+## A worked example
+
+A command that builds a 7 by 7 platform with a glowstone floor and a chequer of smooth stone on top, far from spawn.
+The chunk may not be loaded, so the command asks for it and builds when it arrives. The platform lies inside one chunk,
+so one request is enough.
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace core = basalt::server::core;
+namespace values = basalt::server::values;
+namespace worlds = basalt::server::worlds;
+
+namespace {
+
+constexpr int32_t kX = 1000;
+constexpr int32_t kY = 100;
+constexpr int32_t kZ = 1000;
+
+void build(int32_t world) {
+    const int32_t glow = worlds::block_state_id("minecraft:glowstone");
+    const int32_t stone = worlds::block_state_id("minecraft:smooth_stone");
+
+    worlds::world_fill(world, kX - 3, kY, kZ - 3, kX + 3, kY, kZ + 3, glow, worlds::kNotify);
+
+    int32_t at[49 * 3];
+    int32_t states[49];
+    int32_t count = 0;
+    for (int32_t dx = -3; dx <= 3; ++dx) {
+        for (int32_t dz = -3; dz <= 3; ++dz) {
+            if ((dx + dz) % 2 == 0) {
+                at[count * 3] = kX + dx;
+                at[count * 3 + 1] = kY;
+                at[count * 3 + 2] = kZ + dz;
+                states[count] = stone;
+                ++count;
+            }
+        }
+    }
+    worlds::world_states_write(world, at, states, count, worlds::kNotify);
+}
+
+void chunk_ready(core::Ctx ctx) {
+    char out[16];
+    const int length = worlds::world_value_result(ctx, out, sizeof out);
+    values::Value answer;
+    bool loaded = false;
+    if (length > 0 && length <= static_cast<int>(sizeof out) && answer.open(out, length)) {
+        answer.as_bool(loaded);
+    }
+    if (loaded) {
+        build(worlds::world_default());
+        basalt::server::log::log_info("platform built");
+    }
+}
+
+void platform(core::Ctx ctx) {
+    const int32_t world = worlds::world_default();
+    const int32_t cx = worlds::chunk_coord(kX);
+    const int32_t cz = worlds::chunk_coord(kZ);
+
+    if (worlds::world_chunk_status(world, cx, cz) >= 2) {
+        build(world);
+        basalt::server::commands::command_reply(ctx, "<green>Platform built.");
+        return;
+    }
+    worlds::world_chunk_request(world, cx, cz, worlds::kGenerate, 0, chunk_ready);
+    basalt::server::commands::command_reply(ctx, "<yellow>Loading the chunk, the platform follows.");
+}
+
+} // namespace
+
+void plugin_init() {
+    basalt::server::commands::command("platform", "", platform);
+}
+```
+
+## Light
+
+The server works out the light itself when blocks change. These calls are for plugins that edit a lot and want to read
+the result, or take control of it. `layer` is 0 for block light and 1 for sky light.
+
+| Call | Does |
+|---|---|
+| `worlds::world_light_at` | The light level 0 to 15 at a position, up to date. `ERR_ABSENT` when the chunk is not loaded |
+| `worlds::world_light_read` | One section's light as 2048 bytes, two levels per byte (low nibble first), in the same order as section blocks. `ERR_ABSENT` when the chunk is not loaded, or has no light yet |
+| `worlds::world_light_write` | Replaces a section's light from 2048 bytes; it stands until blocks around change. Any other length is `ERR_INVALID` |
+| `worlds::world_light_check` | Works the light of chunks (flat pairs) out again away from the tick, then sends them. A handler runs afterwards; its value is the number of chunks that were loaded |
+
+## Biomes
+
+Biomes are stored per 4 by 4 by 4 cell. A chunk has one number per cell, `index = (cellY * 4 + cellZ) * 4 + cellX`,
+starting from the lowest cell of the world; each number is an index into the `biomes` table of
+[game data tables](/docs/server/wasm-structures#game-data-tables).
+
+| Call | Does |
+|---|---|
+| `worlds::world_biome_get` | The biome id at a position, such as `minecraft:plains`. `ERR_ABSENT` when the chunk is not loaded |
+| `worlds::world_biome_set` | Sets the biome of the cell that holds a position. `ERR_ABSENT` for an unknown biome or an unloaded chunk |
+| `worlds::world_biomes_read` | A chunk's biomes, one number per cell |
+| `worlds::world_biomes_write` | Writes biome numbers in the same order (a negative number keeps the cell) and shows the chunk again to its watchers |
+
+## Block entities and stored data
+
+Chests, signs and the like carry data besides their state. Block entity data travels as a named NBT compound in bytes.
+
+| Call | Does |
+|---|---|
+| `worlds::world_block_entity_get` | The block entity at a position: id, x, y, z and its data. `ERR_ABSENT` when the position holds none |
+| `worlds::world_block_entity_edit` | `op` 0 replaces the data from an NBT compound, 1 creates a block entity (empty NBT for its defaults), 2 removes it and leaves the block. `ERR_ABSENT` when the block cannot own one, or for 2 when there was none |
+| `worlds::world_block_entities` | The positions (flat triples) of the block entities of a loaded chunk |
+
+A plugin can also keep its own data with a world, a chunk or a block entity, as a named NBT compound, and the server
+saves it with them.
+
+| Call | Does |
+|---|---|
+| `worlds::world_data_get` | `scope` 0 is the world (x, y, z ignored), 1 a loaded chunk (x and z are chunk coordinates), 2 a block entity at x, y, z. `ERR_ABSENT` when there is none |
+| `worlds::world_data_set` | Replaces that data from an NBT compound. `ERR_ABSENT` as above, or when the NBT is rejected |
+
+## Effects
+
+Sounds, particles and the like change nothing in the world. They are shown to the players in range.
+
+| Call | Does |
+|---|---|
+| `worlds::world_sound` | Plays a sound id at a point to the players in range (16 blocks scaled by `volume`). `category` is one of `master`, `music`, `record`, `weather`, `block`, `hostile`, `neutral`, `player`, `ambient`, `voice`, `ui`; empty means `master`. `ERR_INVALID` for an unknown category or an empty sound id |
+| `worlds::world_particle` | Shows a particle described by a map, see below |
+| `worlds::world_level_event` | A level event (a sound or burst the client knows by number) at a block; with `global` it reaches every player of the world |
+| `worlds::world_block_event` | A block event (a chest lid, a bell, a note) to the players watching the block, with two numbers |
+| `worlds::world_explode` | An explosion of `power` at a point, caused by an entity id (-1 for none). `break` lets it destroy blocks and `fire` start fires. 1 when it happened |
+| `worlds::world_lightning` | A lightning bolt at a point. Returns the bolt's entity id, or `ERR_ABSENT` when the spawn was cancelled |
+| `worlds::world_game_event` | Raises a game event such as `minecraft:block_place` that sculk sensors in range hear. The source is an entity uuid or empty |
+
+The particle map takes `type` (`minecraft:flame`) and a position `x`, `y`, `z`. Everything else is optional: `count` (1),
+`offset_x`, `offset_y`, `offset_z`, `speed` (one number for all three axes) or `speed_x`, `speed_y`, `speed_z`,
+`randomization` (0, 1 or 2), `force` (a boolean), `data` (a list of numbers that particle's options read in order: a
+state id, a colour, a scale), `item` (an item id) and `player` (the name of the one player who sees it). A missing
+`type` is `ERR_INVALID`.
+
+```cpp
+void sparkle(core::Ctx) {
+    const int32_t world = worlds::world_default();
+    values::ValueBuffer<256> spec;
+    spec.map()
+        .key("type").string("minecraft:flame")
+        .key("x").number(0.5).key("y").number(65.0).key("z").number(0.5)
+        .key("count").integer(20)
+        .key("offset_x").number(0.3).key("offset_y").number(0.3).key("offset_z").number(0.3)
+        .key("speed").number(0.02)
+        .end();
+    worlds::world_particle(world, spec.data(), spec.finish());
+    worlds::world_sound(world, "minecraft:block.note_block.bell", "block", 0.5, 65.0, 0.5, 1.0f, 1.2f, 0);
+}
+```
+
+### Effects for one player
+
+`worlds::world_player_effect(player, op, args, alen, buffer, cap)` does something that only one player sees and changes
+nothing for anyone else. `player` is a player handle, see [Players](/docs/server/wasm-players). `op` names the effect
+and `args` is a list of values, the positional arguments of that effect. The answer is a value, null when the effect
+answers nothing. `ERR_ABSENT` for an effect that is not in the list, `ERR_INVALID` for arguments of the wrong type,
+`ERR_STALE` for a player who left.
+
+| Effect | Arguments |
+|---|---|
+| `sound_at` | sound, category, x, y, z, volume, pitch, seed |
+| `sound_entity` | sound, category, entity id, volume, pitch, seed |
+| `stop_sound` | sound (null for all), category |
+| `particle_at` | type, x, y, z, count, offset_x, offset_y, offset_z, speed_x, speed_y, speed_z, force, randomization, then the particle's options |
+| `world_event` | level event number, x, y, z, data |
+| `set_player_time` | ticks (null to reset), relative |
+| `reset_player_time` | none |
+| `set_player_weather` | `"downfall"` or `"clear"` (null to reset) |
+| `block_change` | x, y, z, state id: shows a block as another |
+| `block_damage` | x, y, z, stage (0 to 9), and optionally the id of the entity that is breaking it |
+| `sign_text` | x, y, z, front text, back text, colour, glowing, sign block id |
+| `open_sign` | x, y, z, front |
+| `block_entity` | x, y, z, block id, SNBT text |
+| `game_event` | event number, parameter |
+| `border_set` | center x, center z, size, warning distance, warning time |
+| `border_reset` | none: shows the world's real border again |
+| `entity_event` | entity id, event number |
+| `post_effects`, `set_post_effects` | read, or write a list of post-processing effect names |
+
+The same call reads and writes a few per-player properties: `player_time`, `player_time_relative`, `player_weather`,
+`view_distance` and `simulation_distance`. With empty `args` it reads the property, with one value it writes it. The
+first three are read only.
+
+```cpp
+void bell_for(int32_t player) {
+    values::ValueBuffer<256> args;
+    args.list()
+        .string("minecraft:block.note_block.bell").string("block")
+        .number(0.5).number(64.0).number(0.5).number(1.0).number(1.0).integer(0)
+        .end();
+    char out[64];
+    worlds::world_player_effect(player, "sound_at", args.data(), args.finish(), out, sizeof out);
+}
+```
+
+### The border
+
+`worlds::world_border_get` answers a map with `center_x`, `center_z`, `size`, `target_size`, `lerp_ticks`,
+`damage_amount`, `damage_buffer`, `warning_distance` and `warning_time`. `worlds::world_border_set` takes a map with any
+of `center_x`, `center_z`, `size`, `damage_amount`, `damage_buffer`, `warning_distance` and `warning_time`, and
+applies the keys that are present. A `seconds` key makes the size move to the new value over that long. A negative size,
+negative buffer or negative `seconds` is `ERR_INVALID`.
+
+```cpp
+values::ValueBuffer<64> border;
+border.map().key("size").number(100.0).key("seconds").number(30.0).end();
+worlds::world_border_set(world, border.data(), border.finish());
+```
+
+## Properties and game rules
+
+`worlds::world_get(world, key, buffer, cap)` reads one property of a world as a value, and
+`worlds::world_set(world, key, value, length)` writes the ones that can be written. An unknown name is `ERR_ABSENT`, a
+value of the wrong type or out of range is `ERR_INVALID`. `world_get(world, "properties")` lists what the server knows
+as a list of `{name, type, writable}`.
+
+| Property | Type | Writable | Meaning |
+|---|---|---|---|
+| `name` | string | no | The world's name |
+| `dimension` | string | no | `minecraft:overworld` and so on |
+| `seed` | integer | no | The world seed |
+| `min_height` | integer | no | The lowest block y |
+| `height` | integer | no | How many blocks tall the world is |
+| `sea_level` | integer | no | The sea level |
+| `view_distance` | integer | yes | In chunks, 2 to 32 |
+| `time` | integer | no | The age of the world in ticks |
+| `day_time` | integer | yes | The time of day, 0 to 23999 |
+| `raining`, `thundering` | boolean | no | The weather now; set it with `weather` below |
+| `difficulty` | string | yes | `peaceful`, `easy`, `normal` or `hard` |
+| `difficulty_locked` | boolean | yes | Whether the difficulty can be changed |
+| `spawn` | list | yes | The world spawn as `[x, y, z]` |
+| `folder` | string | no | The world's folder |
+| `player_count` | integer | no | Players in the world |
+| `block_entity_count`, `tickable_block_entity_count` | integer | no | Block entities loaded, and those that tick |
+| `block_version` | integer | no | Changes whenever a block or chunk of this world does, so a copy of a section stays good while it holds still |
+| `forced_chunks` | list | no | Chunks kept loaded by the world itself, as flat `x, z` |
+| `weather_times` | map | yes | `{rain, thunder, clear}` ticks left |
+| `clock` | map | no | `{total_ticks, rate, paused, markers}`, where markers are `{name, ticks}` |
+| `spawn_rules` | map | yes | `{limits, ticks_per, allow_monsters, allow_animals}`; `limits` and `ticks_per` map each mob category (`monster`, `creature`, `ambient`, `axolotls`, `underground_water_creature`, `water_creature`, `water_ambient`, `misc`) to a number |
+| `rules` | list | no | The names of the game rules |
+| `plugin_data` | bytes | yes | The NBT that plugins keep on the world, the same as `world_data_get` with scope 0 |
+| `tunable.<key>` | number | yes | `void_damage` (0 or 1), `void_damage_amount`, `void_damage_offset`, `simulation_distance` |
+
+Two more keys can be written and not read back: `weather`, a map `{raining, thundering}` of booleans, and `clock_rate`,
+a number from 0.00001 to 1000 that speeds up or slows down the world's clock.
+
+```cpp
+void noon(core::Ctx) {
+    const int32_t world = worlds::world_default();
+
+    values::ValueBuffer<16> time;
+    time.integer(6000);
+    worlds::world_set(world, "day_time", time.data(), time.finish());
+
+    values::ValueBuffer<32> clear;
+    clear.map().key("raining").boolean(false).key("thundering").boolean(false).end();
+    worlds::world_set(world, "weather", clear.data(), clear.finish());
+
+    char out[32];
+    const int length = worlds::world_get(world, "time", out, sizeof out);
+    values::Value age;
+    if (length > 0 && length <= static_cast<int>(sizeof out) && age.open(out, length)) {
+        basalt::server::log::log_info("the world has an age");
+    }
+}
+```
+
+**Game rules** are read and written as text.
+
+| Call | Does |
+|---|---|
+| `worlds::world_rule_get` | A rule as text: `"true"`, `"false"` or a number. `ERR_ABSENT` for a rule the world does not know |
+| `worlds::world_rule_set` | Sets a rule from text. `ERR_INVALID` for a value that does not fit the rule's type, `ERR_ABSENT` for an unknown rule |
+
+The rules and their types are listed by the `game_rules` table of
+[game data tables](/docs/server/wasm-structures#game-data-tables).
+
+```cpp
+worlds::world_rule_set(world, "doDaylightCycle", "false");
+```
+
+## The long tail
+
+Some things are too rare for a call of their own. They are reached by name:
+
+- `worlds::world_call(world, op, args, alen, buffer, cap)` runs one operation of a world. `args` is a map, and the
+  answer is a value.
+- `worlds::worlds_data(query, args, alen, buffer, cap)` reads a read-only table of game data: blocks, items, biomes,
+  tags and the like. See [game data tables](/docs/server/wasm-structures#game-data-tables).
+
+Both list themselves. `world_call(world, "ops", {})` returns the names of every operation the server has, and
+`worlds_data("tables", {})` the names of every table. An unknown name is `ERR_ABSENT`, a bad argument `ERR_INVALID`.
+These two calls return a structured value whose size you cannot know in advance, so a small helper that retries with a
+spare buffer helps:
+
+```cpp
+template <typename Call>
+bool query(Call call, values::Value& root) {
+    static char small[512];
+    static char spare[16384];
+    return values::call_value(call, small, sizeof small, spare, sizeof spare, root) == 0;
+}
+
+int32_t surface_y(int32_t world, int32_t x, int32_t z) {
+    values::ValueBuffer<128> args;
+    args.map().key("x").integer(x).key("z").integer(z).key("kind").string("surface").end();
+    values::Value answer;
+    const bool ok = query(
+        [&](char* out, int cap) { return worlds::world_call(world, "highest", args.data(), args.finish(), out, cap); },
+        answer);
+    return ok ? static_cast<int32_t>(answer.i64_or(-1)) : -1;
+}
+```
+
+### World operations
+
+Arguments are the keys of the map; a key marked with `?` is optional. Positions are block coordinates.
+
+**Blocks and the ground**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `save` | none | Saves the world |
+| `highest` | `x`, `z`, `kind` (`surface`, `ocean_floor` or `motion_blocking`; default `surface`), `load?` | The highest y that counts for that kind, or the world's lowest y minus 1 when the chunk is not loaded |
+| `use_item` | `x`, `y`, `z`, `face` (`down`, `up`, `north`, `south`, `west`, `east` or 0 to 5), `item`, `yaw?`, `pitch?` | Uses a block item on a face as a player holding it would; answers how many blocks were put down |
+| `survives` | `x`, `y`, `z`, `state` | Whether that state could stand there |
+| `bone_meal` | `x`, `y`, `z` | Spends bone meal on the block as a dispenser would; whether anything there grew |
+| `break_block` | `x`, `y`, `z`, `tool?`, `enchantments?` (a map of id to level), `drops?` (default true) | Breaks the block as a player would and drops what it gives (unless `drops` is false); whether anything broke |
+| `drops` | `x`, `y`, `z`, `tool?`, `enchantments?`, `by_entity?` (default true) | The list of `{item, count, components}` that block would drop |
+| `random_tick` | `x`, `y`, `z` | Gives the block a random tick; whether it ticked |
+| `break_speed` | `player` (name), `x`, `y`, `z` | How much of the block that player mines per tick with what they hold |
+
+**Redstone and fluids**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `signal` | `x`, `y`, `z`, `face`, `direct?` | The redstone signal, 0 to 15, the block gives toward that face |
+| `own_signal` | `x`, `y`, `z`, `face` | What the block itself gives toward that face, without the signal a conductor takes from its neighbours |
+| `analog_signal` | `x`, `y`, `z`, `face` | What a comparator reads from the block when it faces it from that face, or -1 when the block has no analog output |
+| `fluid` | `x`, `y`, `z` | `{fluid (empty, water or lava), source, level, falling}` |
+| `fluid_flow` | `x`, `y`, `z` | The flow of the fluid as `[x, y, z]` |
+
+**Growth and features**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `grow_tree` | `x`, `y`, `z`, `sapling` | Whether a tree grew |
+| `place_tree` | `tree`, `x`, `y`, `z`, `apply?` (default true) | The blocks placed as `{x, y, z, before, after}`. With `apply` false nothing is written, which previews it |
+| `place_feature` | `feature`, `x`, `y`, `z`, `seed`, `apply?` | The same, for a world generation feature |
+| `feature_ids` | none | The ids of the features `place_feature` knows |
+
+**Points of interest, climate and places**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `pois` | `types?` (list of ids), `x`, `y`, `z`, `radius?` (16), `occupancy?` (2) | A list of `{type, x, y, z, free_tickets}` |
+| `climate` | `x`, `y`, `z` (in quarts, 4-block cells) | The six climate parameters: temperature, humidity, continentalness, erosion, depth, weirdness |
+| `humidity`, `temperature` | `x`, `y`, `z` | A number |
+| `beacon_scan` | `x`, `y`, `z` | `{levels, sections}`: the pyramid levels under a beacon and the colour and height of each beam section above it |
+| `lightning_target` | `x`, `z` | Where lightning near that column would strike, as `[x, y, z]` |
+| `structures` | `chunk_x`, `chunk_z` | The structure starts of a loaded chunk: `{structure, chunk_x, chunk_z, bounds, pieces}` |
+| `locate_structure` | `structure`, `x`, `z`, `cells?` (100), `skip_existing?` | The block x and z of the nearest structure of that kind, searching that many placement cells out |
+| `locate_biome` | `biomes` (list), `x`, `y`, `z`, `radius?` (6400), `step?` (32) | The nearest block of one of those biomes as `[x, y, z]`, searching in rings of `step` blocks |
+
+**Chunks and time**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `inhabited_time` | `chunk_x`, `chunk_z`, `value?` | The chunk's inhabited time in ticks, after setting it when `value` is given |
+| `force_chunk` | `chunk_x`, `chunk_z`, `forced?` (default true) | Keeps a chunk loaded by the world itself (listed in `forced_chunks`) |
+| `chunk_holders` | `chunk_x`, `chunk_z`, `all?` | The holders of that chunk, or of every chunk with `all` |
+| `move_to_time_marker` | `marker` | 0 when there is no such marker, 1 when the clock did not move, 2 when it moved |
+| `random_sequence` | `id`, `kind` (`int`, `bound`, `long`, `bool`, `float`, `double`, `gaussian`, `reset`, `clear`; default `long`), `argument` | A draw from the world's named random sequence |
+
+**Raids, hives, vaults and the End**
+
+| Operation | Arguments | Answers |
+|---|---|---|
+| `raids` | none | Every raid as a map with its id, status, omen level, centre, heroes, raiders and boss bar |
+| `raid_control` | `id`, `action` (`stop`, `join`, `set_leader`, `remove_leader`, `create`), `arguments?` (up to four numbers), `value?` | The raid id, or -1 |
+| `raid_bar` | `id`, `action` (`bar_title`, `bar_color`, `bar_progress`, `bar_add` and the like), `text?`, `value?` | Whether it worked |
+| `set_raid` | `id`, `omen_level`, `total_groups` | Whether it worked |
+| `sculk` | `action` (`shriek`, `bloom`, `update`), `x`, `y`, `z`, `source_x`, `source_y`, `source_z`, `value?`, `player?` | Whether it worked |
+| `hive` | `action` (`enter`, `honey`, `bee`, `emergency`), `x`, `y`, `z`, `entity_id?`, `player?` | How many bees moved, or -1 without a hive |
+| `vault` | `action` (`tick`, `insert_key`), `x`, `y`, `z`, `player?` | 1 when it did something |
+| `creaking_heart` | `action` (`spawn`, `resin`), `x`, `y`, `z` | The new creaking's uuid, or the clump's `"x,y,z"`; null when nothing happened |
+| `dragon_fight` | none | The state of the dragon fight: `previously_killed`, `portal`, `respawn_stage`, `gateways_left`, `dragon_uuid`, the boss bar and the crystals. `ERR_ABSENT` when the world has no fight |
+| `dragon_fight_action` | `action` (`respawn`, `stage`, `portal`, `gateway`, `crystals`), `value?` | Whether it worked |
+| `dragon_fight_bar` | `action` (`bar_title`, `bar_color`, `bar_style`, `bar_add`, `bar_clear`), `text?`, `value?` | Whether it worked |
+| `place_end_gateway` | `x`, `y`, `z` | Puts a delayed end gateway there, with the spawn effect |
+
+## Creating and removing worlds
+
+Making and removing worlds needs the `worldgen` capability. Ask for it in `plugin.toml`:
+
+```toml
+[capabilities]
+worldgen = true
+```
+
+Without it, `worlds::world_create`, `worlds::world_unload`, `worlds::world_delete` and `worlds::world_stored_put` answer
+`ERR_DENIED`. No operator grant is needed for it, see [plugin.toml](/docs/server/wasm-plugin-toml).
+
+| Call | Does |
+|---|---|
+| `worlds::world_create` | Creates a world from a map and returns its handle. `ERR_INVALID` for a missing name or one that already exists, `ERR_ABSENT` when the server cannot make it |
+| `worlds::world_unload` | Takes a world that holds no player out of play, saving it first with the `save` flag. `ERR_ABSENT` when it is not loaded, `ERR_INVALID` for the default world or a world with players. Every handle of it turns stale |
+| `worlds::world_delete` | Deletes an unloaded, non-default world from the server's storage, by name only. `ERR_ABSENT` for a name that is not a known unloaded world |
+
+The map for `world_create` has `name` and three optional keys: `dimension` (`overworld`, `nether` or `end`, default
+`overworld`), `type` (`normal`, `flat`, `void`, `amplified`, `large_biomes` or `debug`, default `normal`) and `seed` (an
+integer). An unknown dimension or type is `ERR_ABSENT`, so a typo does not quietly make an overworld. See
+[Worlds](/docs/server/worlds) for what each type is.
+
+```cpp
+void lobby(core::Ctx) {
+    values::ValueBuffer<128> spec;
+    spec.map().key("name").string("lobby").key("type").string("void").end();
+    const int32_t handle = worlds::world_create(spec.data(), spec.finish());
+    if (handle > 0) {
+        // the world exists and can be used
+    }
+}
+```
+
+Making a world is slow server work and is not charged to the time a callback may use, so call `world_create`,
+`world_unload` and `world_delete` on their own, not in the middle of other work.
+
+## Helpers
+
+Three small helpers come with the SDK and cost no call into the server.
+
+| Helper | Does |
+|---|---|
+| `worlds::chunk_coord(block)` | The chunk coordinate of a block coordinate (the coordinate divided by 16, rounded down) |
+| `worlds::block_distance(x1, y1, z1, x2, y2, z2)` | The straight-line distance between two block positions |
+| `worlds::pos_offset(pos, dx, dy, dz)` | Adds an offset to a position stored as three numbers in an array, in place |
+
+```cpp
+int32_t pos[3] = {10, 64, -3};
+worlds::pos_offset(pos, 0, 1, 0);                     // {10, 65, -3}
+const int32_t cx = worlds::chunk_coord(pos[0]);       // 0
+const double distance = worlds::block_distance(0, 0, 0, 3, 4, 0); // 5
+```
+
+## Things that catch people out
+
+- A block call on a chunk that is not loaded answers `ERR_ABSENT`, and the bulk reads put -1 for it. Ask for the chunk
+  first, or pass `worlds::kLoad` when loading it from disk is acceptable.
+- A write without `worlds::kNotify` does not tell the players who watch. Use it on ordinary edits, or send the chunks
+  again afterwards with `worlds::world_chunks_resend`.
+- Do not write blocks one at a time in a loop. Fill a box, write a section, or send a list of positions in one call.
+- State ids are numbers of the running game version. Save block text, not ids.
+- Section numbers are block y divided by 16, rounded down, so they are negative below y 0 in a world that goes down
+  there.
+- A whole-chunk read for a tall world needs a large array: 98,304 numbers for an overworld chunk.
+- `world_chunk_load` waits. Use `world_chunk_request` in code that runs every tick, and keep the handler short.
+- A world handle goes stale when its world is unloaded. Check for `ERR_STALE` if you keep a handle for a long time, and
+  look the world up by name again.
+- Chunk holds stay until you release them.
+- `world_create` and the other world-management calls need the `worldgen` capability.
+
+## Where to go next
+
+| Page | For |
+|---|---|
+| [Structures, noise and data fixing](/docs/server/wasm-structures) | Capture, scan and place structure templates, sample terrain noise, upgrade old saved data, read the game data tables |
+| [Tasks](/docs/server/wasm-tasks) | Delay and repeat work in ticks |
+| [Players](/docs/server/wasm-players) | Player handles, teleports and per-player messages |
+| [Entities](/docs/server/wasm-entities) | Spawn and find entities in a world |
+| [Values](/docs/server/wasm-values) | Reading and writing the structured data these calls take and return |

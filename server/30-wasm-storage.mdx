@@ -1,0 +1,356 @@
+---
+title: Configuration and storage
+description: Read the settings an operator edits, and keep a plugin's data across restarts with player data, the plugin store, JSON documents and files.
+group: Plugin API
+---
+
+A plugin has one place to read what the operator chose and four places to put what it has to remember. Variables in the
+module's memory are gone when the plugin reloads or the server stops, so anything that matters goes in one of these.
+
+| Place | Best for | Needs capability | Lives in |
+|---|---|---|---|
+| `resources/config.toml` | Settings the operator edits: prices, delays, switches | none | The plugin's data folder |
+| Per-player data | A value per player: a balance, a rank, a setting | `players_data` | The server's player database |
+| The plugin store | A value for the whole server: a counter, a flag | `storage` | The server's player database |
+| JSON documents | Structured data: arenas, warps, shop tables | `storage` | `data/<name>.json` in the data folder |
+| Files | Text or bytes in any format, yours or the operator's | `files` | The plugin's data folder |
+
+A capability is declared in `plugin.toml`:
+
+```toml
+[capabilities]
+players_data = true
+storage = true
+files = ["data", "exports"]
+```
+
+`files` is a list of the folders of the data folder the plugin may use, see [Files](#files). None of these three needs the
+operator's approval in `config/server.toml`: declaring them is enough. A call that needs a capability the plugin did not
+declare returns `ERR_DENIED`, except the whole-number and boolean per-player getters, which answer with their default,
+see [Per-player data](#per-player-data).
+
+Function names are written as in C++ (`config::config_i64`, `server::store_set`). Other languages use their own casing,
+see [The SDK](/docs/server/wasm-sdk).
+
+## Where the files live
+
+Everything under `resources/` in the plugin is the plugin's **data folder** once it runs. Which folder that is depends on
+how the plugin is installed:
+
+- A **loose folder** (a plugin folder with its `plugin.toml` and `resources/` that you copied into `plugins/`) uses its own
+  `resources/` folder as the data folder. `config.toml` and `lang/` are the files the operator edits, and the files the
+  plugin writes appear beside them.
+- A **package** (`.bspkg`) copies its `resources/` to `plugins/<id>/` the first time it loads, and never overwrites a file
+  that is already there. The operator edits the copies, and a plugin update does not undo their changes. Files named in
+  `[resources] private` of `plugin.toml` are not copied.
+
+The configuration and the language files are read when the plugin loads, so `/plugins reload <id>` applies a change.
+
+## Configuration
+
+`resources/config.toml` holds the settings. The plugin reads them by dotted key, with a default for a key that is missing:
+
+```toml
+# resources/config.toml
+welcome-bonus = 50
+payout-period = 1200
+
+[shop]
+sparkles-price = 100
+```
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const long long bonus = bs::config::config_i64("welcome-bonus", 50);
+    const long long price = bs::config::config_i64("shop.sparkles-price", 100);
+    bs::data::data_set_i64(player, "coins", bonus);
+    char text[24];
+    bs::core::format_i64(price, text);
+    bs::core::Args args;
+    args.add("price", text);
+    bs::players::send(player, "<gray>Sparkles cost {price} coins.", &args);
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+}
+```
+
+| Call | Returns |
+|---|---|
+| `config::config_i64(key, default)` | The whole number at the key, or the default when the key is missing or not a whole number |
+| `config::config_f64(key, default)` | The number at the key. A whole number is accepted too |
+| `config::config_bool(key, default)` | The true or false at the key, or the default |
+| `config::config_str(key)` | The text at the key, as a `Text<256>`: `ok()` is false when the key is missing or not text |
+| `server::config_value(key, reply)` | Any value as a [value](/docs/server/wasm-values): a table is a map, an array a list. An empty key is the whole configuration. `ERR_ABSENT` when there is no such key |
+
+```cpp
+static void total(bs::core::Ctx ctx) {
+    bs::server::Reply<> prices;
+    if (bs::server::config_value("prices", prices) < 0) {
+        bs::commands::command_reply(ctx, "<red>No prices in config.toml.");
+        return;
+    }
+    long long sum = 0;
+    for (int i = 0; i < prices.value.count(); ++i) {
+        sum += prices.value.at(i).i64_or(0);
+    }
+    char text[24];
+    bs::core::format_i64(sum, text);
+    bs::core::Args args;
+    args.add("sum", text);
+    bs::commands::command_reply(ctx, "<gray>All prices add up to <gold>{sum}</gold>.", &args);
+}
+```
+
+- Keys are dotted: `shop.sparkles-price` is the key `sparkles-price` of the table `[shop]`.
+- Hyphens and underscores: `config_value` finds a key under either spelling, so `payout_period` finds `payout-period`. The
+  four typed getters want the key exactly as it is written in the file.
+- Every other `.toml` file in the data folder is a table named after the file without `.toml`. A file
+  `resources/shops/prices.toml` is reached as `prices.<key>`, which means file names must be unique across folders: two
+  files with the same name, `.toml` or `.json`, stop the plugin from loading.
+- A `.toml` file that is not valid TOML, language files included, stops the plugin from loading, and the log names it.
+- The configuration is a copy read when the plugin loads. A plugin cannot write it; data the plugin saves goes in one of the
+  places below.
+
+## Per-player data
+
+Per-player data is a small set of named values attached to a player, saved with that player in the player database and kept
+for each plugin apart: another plugin cannot see your keys. It needs the `players_data` capability. A value is a whole
+number, a boolean or a text.
+
+```cpp
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const long long joins = bs::data::data_get_i64(player, "joins", 0) + 1;
+    bs::data::data_set_i64(player, "joins", joins);
+    if (!bs::data::data_get_bool(player, "welcomed", false)) {
+        bs::data::data_set_bool(player, "welcomed", true);
+        bs::players::send(player, "<gold>First time here, welcome!");
+    }
+}
+```
+
+| Call | Does |
+|---|---|
+| `data::data_get_i64(player, key, default)` | The whole number, or the default |
+| `data::data_get_bool(player, key, default)` | The boolean, or the default |
+| `data::data_get_str(player, key)` | The text, as a `Text<256>`: `ok()` is false when the key is not set |
+| `data::data_set_i64(player, key, value)` | Saves a whole number |
+| `data::data_set_bool(player, key, value)` | Saves a boolean |
+| `data::data_set_str(player, key, value)` | Saves a text |
+| `data::data_remove(player, key)` | Deletes the key. `ERR_ABSENT` when it was not set |
+
+A key keeps the kind of the last write. Reading a number from a key that holds text gives the default, and writing a number
+over text replaces it. The first write creates the key. A table or list is not a value here: store one key per field
+(`home_x`, `home_y`), or write a [JSON document](#json-documents).
+
+There is no float value. Store a decimal as a scaled whole number (cents, tenths) or keep it in the plugin store.
+
+The player argument is a [player handle](/docs/server/wasm-players), so it has to be online. A handle of a player who left
+is `ERR_STALE`: the setters and `data_get_str` return it, the other two getters return their default.
+
+### Leaderboards
+
+`data::store_top(key, limit, buffer, capacity)` finds the highest whole numbers of one data key across **every** player who
+has it, online or not, best first. `limit` is at most 1000 and also needs the `players_data` capability. Only whole numbers
+take part: a player whose value is text, a decimal or missing is left out.
+
+The rows are written into the buffer you pass, and the call returns how many bytes the answer needs. When that is more than
+the buffer holds, nothing is written and you call again with a larger buffer. Each row is a little-endian `u32` with the
+length of a name, the name, and then an `i64` with the value. The name is the player's name while they are online and their
+uuid otherwise.
+
+```cpp
+static long long read_le(const char* at, int bytes) {
+    unsigned long long value = 0;
+    for (int i = bytes - 1; i >= 0; --i) {
+        value = (value << 8) | static_cast<unsigned char>(at[i]);
+    }
+    return static_cast<long long>(value);
+}
+
+static void top(bs::core::Ctx ctx) {
+    char rows[512];
+    const int size = bs::data::store_top("coins", 5, rows, sizeof rows);
+    if (size < 0 || size > static_cast<int>(sizeof rows)) {
+        bs::commands::command_reply(ctx, "<red>Could not read the ranking.");
+        return;
+    }
+    int at = 0;
+    int rank = 1;
+    while (at + 4 <= size) {
+        const int length = static_cast<int>(read_le(rows + at, 4));
+        at += 4;
+        if (at + length + 8 > size) {
+            break;
+        }
+        char name[64] = {};
+        for (int i = 0; i < length && i < 63; ++i) {
+            name[i] = rows[at + i];
+        }
+        const long long value = read_le(rows + at + length, 8);
+        at += length + 8;
+        char number[24];
+        char coins[24];
+        bs::core::format_i64(rank++, number);
+        bs::core::format_i64(value, coins);
+        bs::core::Args args;
+        args.add("rank", number).add("name", name).add("amount", coins);
+        bs::commands::command_reply(ctx, "<gray>{rank}. {name} <gold>{amount}</gold>", &args);
+    }
+}
+```
+
+### When the plugin goes away
+
+The rows stay in the player database after a plugin is removed, so taking a plugin out for an afternoon loses nothing.
+The server names them at start, `/plugins orphans` lists them and `/plugins purge <id> confirm` deletes them, see
+[Commands](/docs/server/commands) and the `orphan-data` setting in [Server settings](/docs/server/server-settings).
+
+## The plugin store
+
+The store is a key-value area for the whole plugin, not one player. It needs the `storage` capability, is kept in the player
+database under the plugin's id and is written as soon as you call `server::store_set`.
+
+```cpp
+static void count_start() {
+    bs::server::Reply<> reply;
+    long long starts = 0;
+    if (bs::server::store_get("starts", reply) == 0) {
+        starts = reply.value.i64_or(0);
+    }
+    bs::server::store_set("starts", starts + 1);
+}
+```
+
+| Call | Does |
+|---|---|
+| `server::store_get(key, reply)` | Reads the value into `reply`, a [value](/docs/server/wasm-values) of the kind that was stored. `ERR_ABSENT` when the key is not set |
+| `server::store_set(key, value)` | Saves a whole number or a text under the key |
+
+The store holds a boolean, a whole number, a decimal or a text; setting a key to null deletes it. A list, a map or bytes is
+`ERR_INVALID`, and so is an empty key. For anything bigger than a scalar use a [JSON document](#json-documents).
+
+## JSON documents
+
+A JSON document is structured data kept as a file. It needs the `storage` capability, not `files`. `server::data_read`
+loads one into a [value](/docs/server/wasm-values), and `server::data_write` replaces it:
+
+```cpp
+static void save_warp(bs::core::Ctx ctx) {
+    bs::server::Reply<> reply;
+    long long saved = 0;
+    if (bs::server::data_read("warps", reply) == 0) {
+        saved = reply.value.find("count").i64_or(0);
+    }
+    bs::values::ValueBuffer<128> doc;
+    doc.map().key("count").integer(saved + 1).key("last").string("spawn").end();
+    if (bs::server::data_write("warps", doc) < 0) {
+        bs::commands::command_reply(ctx, "<red>Could not save.");
+    }
+}
+```
+
+| Call | Does |
+|---|---|
+| `server::data_read(name, reply)` | The document as a value. `ERR_ABSENT` when the file does not exist, `ERR_INVALID` when it is not valid JSON or the name is not allowed |
+| `server::data_write(name, doc)` | Writes the value as JSON, creating folders. `ERR_INVALID` for bytes or a name that is not allowed |
+
+- A plain name such as `warps` is the file `data/warps.json`. A name with a `/` or ending in `.json` is a path in the data
+  folder, so `arenas/pvp.json` is `arenas/pvp.json` there.
+- A name that starts with `/` or contains `..`, a colon or a backslash is `ERR_INVALID`.
+- Reading gives objects as maps, arrays as lists, and a number as a whole number when it is whole and a decimal otherwise.
+  Writing a map makes an object whose keys are the map keys.
+- The file is written to a temporary file and renamed into place, so a crash in the middle never leaves a half-written
+  document.
+- Nothing is saved on its own. Call `data_write` when the data changes, for example from `plugin.disable` and from a
+  repeating task.
+
+The file is plain JSON in the data folder, so the operator can read and edit it, and a plugin with the `files` capability
+for `data` can read it as text.
+
+## Files
+
+The `files` capability lets a plugin read and write any file in its data folder, for formats other than JSON. Its value is
+the list of folders the plugin may use: `["data", "exports"]` allows `data/` and `exports/` and everything below them, and
+`["."]` allows the whole data folder.
+
+| Call | Does |
+|---|---|
+| `server::file_read(path, buffer, capacity)` | Writes the file's bytes into the buffer and returns how many bytes the file has. Nothing is written when that is more than `capacity`, so call again with a larger buffer. `ERR_ABSENT` when there is no file |
+| `server::file_write(path, text)` | Replaces the file with the text, creating folders. `ERR_ABSENT` when the write failed |
+| `server::file_exists(path)` | Whether the path exists, in the data folder or in the packaged `resources/` |
+| `server::file_list(prefix, reply)` | The sorted paths of every file whose path starts with the prefix, as a list of texts. An empty prefix lists everything the plugin may see |
+| `server::file_stat(path, reply)` | A map `{kind, size, modified}`: `kind` is `file`, `directory` or `other`, `modified` is in milliseconds. `ERR_ABSENT` when it does not exist |
+| `server::file_walk(path, reply)` | Every path under a folder, parents first, folders ending in `/`. `ERR_ABSENT` when the folder does not exist |
+| `server::file_delete(path, recursive)` | Removes a file or an empty folder, or a folder and everything in it when `recursive` is true. `ERR_ABSENT` when nothing is there |
+
+```cpp
+static void export_players(bs::core::Ctx ctx) {
+    const int written = bs::server::file_write("exports/players.csv", "name,coins\n");
+    char text[256];
+    const int size = bs::server::file_read("exports/players.csv", text, sizeof text - 1);
+    if (written < 0 || size < 0 || size >= static_cast<int>(sizeof text)) {
+        bs::commands::command_reply(ctx, "<red>Export failed.");
+        return;
+    }
+    text[size] = 0;
+    bs::commands::command_reply(ctx, text);
+}
+```
+
+- A path is relative to the data folder and uses `/`. A path that is empty for a write, that contains `..`, a colon or a
+  backslash, that starts with `/`, or that leaves the folder through a link is `ERR_INVALID`. A plugin never reaches outside
+  its own folder.
+- A path outside the folders granted in `plugin.toml` is `ERR_DENIED`, and so is every call when the plugin did not declare
+  `files` at all.
+- A write goes to a temporary file next to the target and is renamed into place, so a reader never sees a half-written file.
+- A read falls back to the packaged `resources/` when the file is not in the data folder, so a file shipped in the package
+  can be read even before a copy exists.
+- `file_list` includes files shipped in the package and files created at run time.
+
+## Errors
+
+| Result | Meaning here |
+|---|---|
+| `ERR_ABSENT` | No such key, file or folder |
+| `ERR_STALE` | The player handle is no longer valid |
+| `ERR_INVALID` | An empty or malformed key or path, a document that does not parse, a value kind the store does not take |
+| `ERR_DENIED` | The capability is missing, or the path is outside the granted folders |
+
+## Things that catch people out
+
+- `data_get_i64` and `data_get_bool` without `players_data` return their default and give no error, so a plugin that forgot
+  the capability looks as if nobody has any data. The setters, `data_get_str`, `data_remove` and `store_top` report
+  `ERR_DENIED`.
+- `config_i64` does not accept a decimal and `config_str` does not accept a number: a mismatch is the default, not a
+  conversion.
+- The typed config getters are exact about `-` and `_`. `config_value` is not.
+- Answers read through the SDK's `Reply` fit in about 1 KiB. A larger document, such as a long JSON file, comes back as
+  `ERR_INVALID`. Keep documents small, or read a big file with `server::file_read` and your own buffer.
+- A JSON document is not saved until you write it. Anything only held in memory is lost on a reload.
+- Two files with the same name anywhere in the data folder stop the plugin from loading, `.toml` and `.json` alike.
+- Package updates never overwrite the operator's copies. A key added to `config.toml` in a later version is missing from the
+  copy an existing server already has, so always pass a sensible default.
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| Messages whose wording lives in `resources/lang/` | [Text, language files and placeholders](/docs/server/wasm-text) |
+| What `plugin.toml` takes, capabilities included | [Manifest and layout](/docs/server/wasm-plugin-toml) |
+| To read and build the values `Reply` holds | [Values](/docs/server/wasm-values) |
+| To save on a timer or on shutdown | [Tasks and time](/docs/server/wasm-tasks) |
+| To show a ranking in chat or a scoreboard | [Commands](/docs/server/wasm-commands) |

@@ -1,0 +1,143 @@
+---
+title: Kiln
+description: The plugin command line: creating, building, checking and packaging plugins, and how it finds or downloads a compiler.
+group: Plugin basics
+---
+
+Kiln is the one tool a plugin author needs. It creates a project, builds it with the compiler of its language, checks the
+result against what the server accepts and packs it. It is a single native executable with no runtime of its own:
+[download it](https://github.com/BasaltProject/Kiln/releases) from the releases page, which also carries a `SHA256SUMS`
+file, make it executable and put it on your `PATH` as `kiln`.
+
+| Command | Does |
+|---|---|
+| `kiln new <id> [name] [--lang <language>]` | Creates a working plugin in a new folder named `<id>` |
+| `kiln build [plugin]` | Compiles the sources to `build/plugin.wasm` and checks the result |
+| `kiln check [plugin\|module.wasm]` | Verifies the manifest and the module without running anything |
+| `kiln pack [plugin]` | Checks, then writes the package into `build/` |
+| `kiln toolchain list\|install\|path\|clean` | Manages the compilers Kiln downloads |
+| `kiln --version` | Prints the version |
+
+`[plugin]` is the plugin folder and defaults to the current one. Every command that takes `--target server|proxy` works on
+a [proxy plugin](/docs/proxy/wasm-plugins) with `--target proxy`, or with `target = "proxy"` in `plugin.toml`.
+
+## Create
+
+```bash
+kiln new greeter "Greeter" --lang rust
+```
+
+`--lang` is one of `c`, `cpp`, `zig`, `rust`, `assemblyscript`, `go`, `kotlin`, `csharp` or `java`, and defaults to C++.
+The project is a working plugin with an event, a command, a task, a menu, a config file and a language file, so you start
+from something that runs. Each language writes its own layout, see its page under
+[Languages](/docs/server/wasm-lang-cpp). The language is remembered as `lang` in `plugin.toml`, so later commands do not
+need `--lang` again.
+
+## Build
+
+```bash
+kiln build
+```
+
+```
+kiln: built build/plugin.wasm (5897 bytes, C++, 0.4 s)
+```
+
+Kiln compiles every source of the project into one module and writes it to `build/`. The SDK is part of Kiln and is
+unpacked into `build/.kiln/` on every build, so nothing is installed in your project and an update of Kiln updates the SDK
+with it. `-v` shows the compiler commands. When the build succeeds Kiln runs the same verification as `kiln check`.
+
+## Check
+
+`kiln check` is meant to catch, before a server does, the mistakes that make a plugin fail to load. For the manifest it
+checks that `id`, `version`, `api` and `abi` are present and valid and that `main` ends in `.wasm`. For the built module
+it checks:
+
+- every function the module imports exists in the plugin API, is a function and has exactly the expected shape. A
+  misspelt name is reported by name;
+- the module exports its memory and the entry points the server calls, and does not import its memory;
+- it does not import from a host that does not exist (a toolchain that linked against the wrong target does this, and
+  Kiln says so);
+- for a server plugin, nothing from the proxy API, and the other way round for a proxy plugin;
+- the size limits: at most 16 MiB of module, 4096 initial memory pages and 2048 imports.
+
+```
+build/plugin.wasm: import basalt.player_sendd is not part of ABI 1
+1 problem(s)
+```
+
+A passing check prints `ok`. `kiln check some.wasm` verifies a module on its own.
+
+<x-docs.callout type="note" title="What check does not do">
+Kiln does not run your plugin. It proves the plugin can be loaded, not that it behaves: try it on a server. The server
+also validates the manifest when it loads the plugin, and refuses a capability name it does not know.
+</x-docs.callout>
+
+## Pack
+
+```bash
+kiln pack
+```
+
+```
+Packed ./build/greeter-0.1.0.bspkg
+```
+
+`pack` verifies the plugin and writes `build/<id>-<version>.bspkg` (`.bppkg` for a proxy plugin): a zip holding
+`plugin.toml`, the module and every file under `resources/`. The layout is described in
+[Manifest and layout](/docs/server/wasm-plugin-toml#layout-of-a-package). Drop the file in `plugins/` and start the
+server.
+
+## Toolchains
+
+Kiln builds a plugin with the compiler of its language and never asks you to install one. For each language it looks for a
+suitable compiler already on the machine, and otherwise downloads a pinned one.
+
+1. **A compiler on your `PATH`** that can target WebAssembly. Kiln runs it to find out rather than trusting its name:
+   `clang` counts for C and C++ only when it can link WebAssembly with `lld`, `rustc` only when the `wasm32` standard
+   library is installed, and so on.
+2. **The pinned toolchain from the cache**, downloaded on first use, with its checksum verified.
+
+Downloads go into a per-user cache and never need administrator rights or touch anything else on the machine:
+
+| Platform | Cache |
+|---|---|
+| Linux | `$XDG_CACHE_HOME/basalt/kiln`, or `~/.cache/basalt/kiln` |
+| macOS | `~/Library/Caches/basalt/kiln` |
+| Windows | `%LOCALAPPDATA%\basalt\kiln\cache` |
+
+`KILN_HOME` or `--cache-dir <dir>` moves it. An interrupted download resumes where it stopped.
+
+| Language | Kiln uses | First build downloads (Linux x64) |
+|---|---|---|
+| C, C++ | `clang` on your machine, else Zig | Zig, about 55 MB |
+| Zig | Zig | about 55 MB |
+| Rust | `rustc` with the `wasm32` standard library, no Cargo | about 180 MB |
+| AssemblyScript | the AssemblyScript compiler on Node | Node and the compiler, about 80 MB |
+| Go | TinyGo with Go | about 245 MB |
+| Kotlin | Kotlin/Wasm with a JRE | about 140 MB |
+| C# | .NET 10 with NativeAOT-LLVM and the WASI SDK | about 400 MB, Linux x64 only |
+| Java | TeaVM and the Eclipse compiler, with Zig, on a JRE 17 or newer from your machine or downloaded | TeaVM, the Eclipse compiler, Zig and a JRE when there is none |
+
+```bash
+kiln toolchain list              # what is installed and what a download costs
+kiln toolchain install rust      # fetch a language's toolchain ahead of time
+kiln toolchain path zig          # where an installed toolchain lives
+kiln toolchain clean             # remove every downloaded toolchain
+```
+
+`--offline` refuses every download and fails with the exact `kiln toolchain install` command to run while you are online,
+which is what you want in a build that has no network. `--no-download` fails without touching the network but still uses
+a toolchain that is already in the cache.
+
+## Using Kiln in CI
+
+A build job needs nothing but the executable:
+
+```bash
+kiln toolchain install cpp
+kiln build
+kiln pack
+```
+
+Keep the cache folder between runs so the toolchain is not downloaded every time.

@@ -1,0 +1,569 @@
+---
+title: Entities
+description: Find, spawn, move and remove entities, read and write their properties by name, and give mobs goals of your own.
+group: Plugin API
+---
+
+Everything that is not a block lives here: pigs, zombies, dropped items, arrows, minecarts, armor stands, and the players
+themselves when you want to treat them as entities. You get a **handle** for an entity (by spawning it, by looking it up,
+by asking for the entity of a player), and then you move it, read and write its properties by name, run operations on it
+(damage, effects, equipment, pathfinding, riding) and, when you want a mob to behave in a new way, give it goals that your
+plugin answers.
+
+The calls live in the `entities` area. Other languages use their own casing for the same names, see
+[The SDK](/docs/server/wasm-sdk). These calls need no capability in `plugin.toml`.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void guard(core::Ctx ctx) {
+    const auto name = commands::command_source_name(ctx);
+    const int me = entities::of_player(players::player_by_name(name.c_str()));
+
+    double at[3];
+    if (entities::position(me, at) != 0) {
+        return;
+    }
+
+    values::ValueBuffer<64> options;
+    options.map().key("yaw").number(180.0).key("reason").string("guard").end();
+    const int zombie = entities::spawn("world", "minecraft:zombie", at[0] + 2.0, at[1], at[2], options.data(),
+                                       options.finish());
+    if (zombie <= 0) {
+        commands::command_reply(ctx, "<red>The zombie could not be spawned.");
+        return;
+    }
+
+    values::ValueBuffer<32> health;
+    health.number(40.0);
+    entities::set(zombie, "max_health", health.data(), health.finish());
+    entities::set(zombie, "health", health.data(), health.finish());
+
+    values::ValueBuffer<64> effect;
+    effect.list().string("minecraft:speed").integer(600).integer(1).end();
+    char result[16];
+    entities::call(zombie, "add_effect", effect.data(), effect.finish(), result, sizeof result);
+
+    entities::release(zombie);
+    commands::command_reply(ctx, "<green>A guard zombie stands next to you.");
+}
+
+void plugin_init() {
+    commands::command("guard", "", guard);
+}
+```
+
+Options, queries, property values and operation arguments are all [values](/docs/server/wasm-values). Answers that are
+values come back through a buffer you provide, and the call returns the length it needs (see
+[Values](/docs/server/wasm-values#decoding) for reading them and for what to do when your buffer is too small).
+
+## Handles
+
+An entity handle is a positive number that stands for one live entity or player. You get one from a spawn, a lookup, a
+query, or `entities::of_player`. Looking up the same entity twice gives the same handle.
+
+| You have | Call | Answer |
+|---|---|---|
+| A numeric id (what events carry, and the `vehicle`, `passengers`, `target` and `leash_holder` properties) | `entities::by_id(world, id)` | The handle, or `ERR_ABSENT` when no live entity of that world has the id |
+| A UUID text | `entities::by_uuid(uuid)` | The handle (the entity may be in any world), `ERR_ABSENT`, or `ERR_INVALID` for text that is not a UUID |
+| A search | `entities::query(world, query, length, out, capacity)` | How many handles were written into `out` |
+| A player handle | `entities::of_player(player)` | The entity handle of that player (always the same one for the same player) |
+| An entity handle that is a player | `entities::player(entity)` | The player handle, or `ERR_ABSENT` when the entity is not a player |
+| A handle | `entities::id(entity)` | The numeric id the world and the events use |
+| A handle | `entities::alive(entity)` | 1 while the entity is in the world, 0 once it left |
+| A handle you are done with | `entities::release(entity)` | Frees the handle, the entity is untouched |
+
+A world is always named by its name, never by a handle.
+
+### Queries
+
+`entities::query` takes a map and writes the handles of the matching entities of one world as an array of 32-bit numbers.
+Every key is optional, and an empty query matches every entity of the world.
+
+| Key | Meaning |
+|---|---|
+| `type` | An entity type id, or a list of them (`minecraft:` may be left out) |
+| `x`, `y`, `z`, `radius` | Entities inside that sphere (all four are needed) |
+| `min_x`, `min_y`, `min_z`, `max_x`, `max_y`, `max_z` | Entities inside that box (all six are needed) |
+| `chunk_x`, `chunk_z` | The entities of that chunk (both are needed) |
+| `limit` | At most that many |
+
+The answer is the number of matches. The handles are written only when they fit in `capacity`, so a count larger than
+your buffer means "call again with room for this many". `ERR_ABSENT` means the world does not exist, `ERR_INVALID` a
+malformed query.
+
+```cpp
+values::ValueBuffer<128> query;
+query.map().key("type").string("zombie").key("x").number(at[0]).key("y").number(at[1]).key("z").number(at[2])
+    .key("radius").number(16.0).key("limit").integer(32).end();
+int found[32];
+const int count = entities::query("world", query.data(), query.finish(), found, 32);
+for (int i = 0; i < count && i < 32; ++i) {
+    entities::remove(found[i]);
+}
+```
+
+### How long a handle lives
+
+A handle lives until the entity leaves the world (it dies, is removed, its chunk unloads, or the player logs out) or until
+you call `entities::release`. After that every call except `entities::alive` and `entities::release` answers `ERR_STALE`
+for it, and a handle value is never reused for another entity. Holding a handle across ticks is fine as long as you
+check for `ERR_STALE`.
+
+At most 65535 handles are live per plugin. Past that, lookups and spawns answer `ERR_INVALID` until entities die or you
+release handles. Release the handles of entities you no longer need, in particular after a large query.
+
+All of these calls must run on the thread that owns the entity's region: a task, a command, an event or any callback of
+your plugin. Called from anywhere else they answer `ERR_STALE` and change nothing.
+
+## Spawning and removing
+
+| Call | What it does |
+|---|---|
+| `entities::spawn(world, type, x, y, z, opts, length)` | Spawns an entity of `type` and returns its handle |
+| `entities::spawn_nbt(world, nbt, length, cause)` | Brings back an entity from the bytes `entities::snapshot` gave you |
+| `entities::drop_item(world, item, length, x, y, z, vx, vy, vz)` | Puts an item on the ground with a velocity and returns the handle of the item entity |
+| `entities::remove(entity)` | Takes the entity out of the world (a player is not removed: `ERR_INVALID`) |
+| `entities::remove_uuid(world, uuid)` | The same for the entity with that UUID, `ERR_ABSENT` when there is none |
+| `entities::types(out, capacity)` | Every entity type id the server knows, as a list of strings |
+| `entities::type_attributes(type, out, capacity)` | The attributes a new living entity of that type starts with, as a map from attribute id to base value |
+
+The `opts` of a spawn are optional (length 0 for none): `yaw` (a number, 0 by default) and `reason`, the text the
+`entity.spawn` event reports (`plugin` by default). A spawn answers `ERR_ABSENT` when a listener cancelled the
+`entity.spawn` event or the server refused the spawn, and `ERR_INVALID` for an unknown world or type. `spawn_nbt` takes
+the same kind of `cause` (an empty text means `plugin`).
+
+`entities::drop_item` takes an item map: `id` and optionally `count` (1 by default), or `nbt`, the bytes of a whole saved
+stack, which replaces the other keys. The [item stack](/docs/server/wasm-items#the-item-stack) page has the richer item
+form for inventories, but a dropped item only needs these.
+
+```cpp
+values::ValueBuffer<64> item;
+item.map().key("id").string("minecraft:diamond").key("count").integer(3).end();
+entities::drop_item("world", item.data(), item.finish(), 10.5, 65.0, 10.5, 0.0, 0.2, 0.0);
+```
+
+## Position, motion and rotation
+
+| Call | What it does |
+|---|---|
+| `entities::position(entity, out)` | Writes x, y, z as three doubles |
+| `entities::teleport(entity, x, y, z, opts, length)` | Moves the entity |
+| `entities::velocity(entity, out)` | Writes the velocity in blocks per tick as three doubles |
+| `entities::set_velocity(entity, x, y, z)` | Replaces the velocity |
+| `entities::rotation(entity, out)` | Writes yaw and pitch in degrees as two doubles |
+| `entities::set_rotation(entity, yaw, pitch)` | Turns the entity |
+
+The `opts` of a teleport are optional: `yaw` and `pitch` (kept when absent) and `world`, the name of another world. Only a
+player can be sent to another world, any other entity answers `ERR_INVALID` for it. A teleport answers `ERR_DENIED` when
+an event handler of a plugin refused it, and `ERR_ABSENT` for an unknown world.
+
+A player's velocity belongs to its client: `entities::velocity` and `entities::set_velocity` answer `ERR_INVALID` for a
+player. To push an entity instead of replacing its velocity, use the `push` and `knockback` operations below.
+
+## Properties by name
+
+Most of what an entity has is reached by name: `entities::get(entity, name, out, capacity)` writes one property as a
+value and `entities::set(entity, name, value, length)` changes it. A name the entity does not know answers `ERR_ABSENT`,
+a property that does not apply to this kind of entity reads as null, and `entities::set` answers `ERR_INVALID` for a
+read-only property or a value the entity refuses.
+
+```cpp
+static long long fire_ticks_of(int entity) {
+    char buffer[32];
+    const int length = entities::get(entity, "fire_ticks", buffer, sizeof buffer);
+    values::Value value;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !value.open(buffer, length)) {
+        return 0;
+    }
+    return value.i64_or(0);
+}
+```
+
+Send a value of the kind the property has. Whole numbers, decimals, booleans, strings and lists of strings are accepted,
+and `velocity` takes a map with `x`, `y` and `z`. Reading is strict about the kind too: `as_f64` reads a decimal and
+`as_i64` a whole number, so use the one that matches the table below.
+
+### Finding the names
+
+The names are the server's own, so ask the entity instead of guessing:
+
+| Call | Answer |
+|---|---|
+| `entities::properties(entity, out, capacity)` | A list of maps `{name, writable}` for this kind of entity |
+| `entities::operations(entity, out, capacity)` | A list of maps `{name, columns}`, with `columns` empty unless the operation returns rows |
+
+A player entity answers a different table than any other entity, so ask the entity you actually have.
+
+### Properties every entity has
+
+`id`, `type`, `world`, `uuid`, `alive`, `x`, `y`, `z`, `on_ground`, `age`, `width` and `height` are read-only. `yaw`,
+`pitch` and `custom_name` can be written. `pos` reads as a map with `x`, `y` and `z`, and `velocity` as the same map and
+can be written the same way.
+
+### Common properties
+
+The properties below apply to the entities they make sense for. Writable ones are marked rw.
+
+| Names | Kind | Access | Meaning |
+|---|---|---|---|
+| `health`, `max_health`, `absorption` | decimal | rw | Health is clamped to 0 to `max_health`, use the `kill` operation to die. Writing `max_health` changes the base value |
+| `fire_ticks`, `frozen_ticks`, `air`, `max_air` | integer | rw | Ticks on fire, frozen ticks, air supply and its ceiling |
+| `fall_distance`, `last_damage` | decimal | rw | Accumulated fall distance, the last damage taken |
+| `no_gravity`, `invulnerable`, `glowing`, `silent`, `invisible`, `persistent` | boolean | rw | The usual flags. `persistent` means the mob never despawns |
+| `custom_name`, `custom_name_visible` | string, boolean | rw | The name text and whether it shows above the entity |
+| `ticks_lived`, `no_damage_ticks`, `arrows_in_body` | integer | rw | Ticks since creation, the hurt cooldown, stuck arrows |
+| `tags` | list of strings | rw | Scoreboard tags. Writing a list replaces them all |
+| `vehicle` | integer | read | Id of what it rides, -1 for none |
+| `passengers` | list | read | Ids of its riders |
+| `no_ai`, `can_pick_up_loot`, `left_handed`, `aggressive` | boolean | rw | Mob switches |
+| `target` | integer | rw | Id of the attack target, -1 for none |
+| `leash_holder` | integer | rw | Id of what holds the lead, -1 for none |
+| `last_damage_cause`, `sleeping` | string, boolean | read | Damage type of the last hit, asleep |
+| `last_hurt_by_player` | string | rw | UUID of the player that hurt it last, empty clears it |
+| `breed_age`, `love_ticks`, `love_cause` | integer, integer, string | rw | Growth age (negative is a baby), ticks in love, UUID of who fed it |
+| `owner`, `sitting`, `tamed_horse` | string, boolean, boolean | rw | Taming state |
+| `age_locked`, `burns_in_day`, `despawn_in_peaceful` | boolean, boolean, integer | rw | An animal's age stops, burns in daylight, -1 default, 0 never and 1 despawns in peaceful |
+| `nav_open_doors`, `nav_pass_doors`, `nav_can_float` | boolean | rw | Ground navigation through doors, and across water |
+| `cube_size` | integer | rw | Slime and magma cube size, health and attributes follow |
+| `fuse`, `powered`, `swell` | integer, boolean, integer | rw | Primed TNT fuse, charged creeper, creeper fuse progress |
+| `profession`, `villager_level`, `villager_experience` | string, integer, integer | rw | Villager state, the level is 1 to 5 |
+| `trading_player` | integer | read | Id of the player trading with a villager, -1 for none |
+| `owner_id`, `critical`, `arrow_pickup`, `pierce_level`, `explosion_power` | mixed | rw | Projectile state. `arrow_pickup` is 0 disallowed, 1 allowed, 2 creative only |
+| `bounce`, `incendiary` | boolean | rw | A projectile reflects instead of landing, an explosive sets fires |
+| `arrow_knockback`, `arrow_life`, `fired_from` | integer, integer, string | rw | Arrow punch, ticks spent in the ground, the weapon that fired it |
+| `wither_charged`, `trident_glint`, `attached_to` | boolean, boolean, integer | rw | Blue wither skull, glint on a thrown trident, the entity a firework rocket boosts |
+| `eye_despawn`, `eye_drops` | integer, boolean | rw | Flight ticks of an eye of ender, and whether it drops as an item |
+| `bolt_cause` | integer | rw | Id of the entity that caused a lightning bolt |
+
+More names exist for particular mobs and vehicles (taming, fishing bobbers, minecarts, boats, villagers, wardens,
+dragons, and so on). They appear in `entities::properties` for an entity they apply to. A few that are handy:
+
+| Names | Kind | Access | Meaning |
+|---|---|---|---|
+| `category` | string | read | Mob category: `monster`, `creature`, `ambient`, `water_creature` and so on |
+| `display_text` | string | rw | Text of a text display, in MiniMessage |
+| `object_data` | integer | rw | Spawn data, such as the block state id of a falling block |
+| `loot_table`, `loot_seed` | string, integer | rw | The loot table a mob drops and its seed |
+| `gliding`, `swimming`, `crouching`, `sprinting` | boolean | rw | Forces the shared flag clients see, and the matching pose |
+| `pose` | integer | rw | Forces a pose by number, -1 clears it |
+| `visual_fire` | integer | rw | -1 follows the real fire, 0 never shows fire, 1 always |
+| `no_physics`, `collidable`, `freeze_locked` | boolean | rw | Ignore collisions, push other entities, lock the frost count |
+| `portal_cooldown`, `no_action_time`, `max_no_damage_ticks` | integer | rw | Ticks before the next portal, idle ticks, hurt cooldown length (20 by default) |
+| `spawn_reason` | string | read | Why the mob spawned (`natural`, `plugin` and so on) |
+| `neutral_anger_end`, `conversion_countdown`, `despawn_delay` | integer | rw | Anger timer, ticks until a mob converts, despawn timer |
+| `villager_restocks` | integer | rw | Restocks a villager has done today |
+
+A player entity reads and writes a player table instead (flight, speed, food and experience values, tab list texts,
+view distance and so on). The [player](/docs/server/wasm-players) page covers what a player can do, and
+`entities::properties` on a player handle lists them all.
+
+## Operations by name
+
+`entities::call(entity, name, args, length, out, capacity)` runs one operation. `args` is a list value with the
+arguments in order (length 0 for none). The answer is a boolean, a number, a string, bytes (NBT), a list, or, for
+operations that return rows, a list of maps keyed by the columns that `entities::operations` reports. Ids (passengers,
+path nodes) are whole numbers. `ERR_ABSENT` means the operation is unknown or this entity cannot do it, and
+`ERR_INVALID` a bad argument list.
+
+```cpp
+values::ValueBuffer<64> args;
+args.list().number(6.0).string("minecraft:magic").end();
+char result[16];
+entities::call(zombie, "damage", args.data(), args.finish(), result, sizeof result);
+```
+
+### Damage, movement and state
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `damage` | `amount`, `cause` (a damage type, `generic` by default), `attacker_id` (-1 for none) | Whether the hit landed. It goes through armor, the hurt cooldown and events |
+| `kill` | none | Whether the death sequence started |
+| `knockback` | `power`, `x`, `z` | Pushes the entity away from that point |
+| `push` | `x`, `y`, `z` | Adds to the velocity |
+| `look_at` | `x`, `y`, `z`, `yaw_speed`, `pitch_speed` (both optional) | Turns the head towards a point through the mob's look control |
+| `move_to` | `x`, `y`, `z`, `speed` (a multiplier, 1.0 by default) | Starts walking a path to the point |
+| `can_reach` | `x`, `y`, `z` | Whether a path exists |
+| `find_path` | `x`, `y`, `z` | The nodes of a path as a flat list of whole numbers, three per node (x, y, z), empty when there is none |
+| `path_nodes` | none | The nodes of the path being followed, in the same shape |
+| `stop_path`, `has_path` | none | Stops walking, tells whether a path is being followed |
+| `mount` | `vehicle_id` | Rides another entity |
+| `dismount`, `eject` | none | Gets off, throws every rider off |
+
+### Effects and attributes
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `add_effect` | `effect`, `ticks` (-1 is infinite), `amplifier`, `ambient`, `particles`, `icon` (the last three optional) | Whether it was applied |
+| `remove_effect`, `has_effect` | `effect` | Whether it did, whether the entity has it |
+| `clear_effects` | none | `true` |
+| `effects` | none | Rows with the columns `effect`, `duration`, `amplifier`, `ambient`, `particles`, `icon` |
+| `attribute`, `attribute_base`, `attribute_default` | `attribute` | The value with modifiers, the base value, the default for the entity type |
+| `has_attribute` | `attribute` | Whether the entity has that attribute |
+| `set_attribute_base` | `attribute`, `value` | `true` |
+| `attribute_modifiers` | `attribute` | Rows with the columns `id`, `amount`, `operation` |
+| `add_attribute_modifier` | `attribute`, `id`, `amount`, `operation` (`add_value`, `add_multiplied_base` or `add_multiplied_total`) | Whether it was added |
+| `remove_attribute_modifier` | `attribute`, `id` | Whether it was removed |
+
+Effect and attribute ids may leave out `minecraft:`.
+
+### Equipment, riding and saved data
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `equipment` | `slot` | The stack as NBT bytes, or null for an empty slot |
+| `set_equipment` | `slot`, `stack` (NBT bytes, null clears the slot) | Whether it was set |
+| `drop_chance`, `set_drop_chance` | `slot`, and the `chance` for the second | The chance a slot drops its item, `true` |
+| `nbt` | `path` (optional, dotted) | The whole entity NBT as bytes, or the compound at that path |
+| `nbt_value` | `path` | One scalar value, or null |
+| `nbt_set` | `path`, `type` (`bool`, `byte`, `short`, `int`, `long`, `float`, `double`, `string`, `uuid` or `pos`), `value` | Writes into the entity's extra data. A `uuid` is a UUID text, a `pos` is `"x,y,z"` |
+| `nbt_remove` | `path` | Whether a key was removed |
+| `merge_nbt` | `nbt` (bytes) | Merges a compound: live fields are updated and the rest is kept as extra data |
+
+Equipment slots are `mainhand`, `offhand`, `feet`, `legs`, `chest`, `head`, `body` and `saddle`. Every change to the saved
+data is sent again to the players who can see the entity.
+
+### Mobs and vehicles
+
+Many operations belong to one kind of mob. A selection:
+
+| Operation | Does |
+|---|---|
+| `is_breed_item(item)` | Whether the item is the animal's breeding food |
+| `ambient_sound()`, `xp_reward()` | The sound the mob would make now, the experience a kill would give |
+| `ranged_attack(x, y, z, charge)` | Skeletons, the wither and llamas shoot at a point |
+| `shear_ready()`, `shear(source)` | Whether a mob could be sheared, shears it |
+| `retype(type)` | Turns the entity into another type, keeping its saved data, UUID and riders, and answers the new entity id (-1 on failure) |
+| `villager_restock()`, `villager_add_trades(count)`, `villager_reset_offers()`, `villager_zombify()` | Villager trading and conversion |
+| `warden_anger(id)`, `warden_set_anger(id, value)`, `warden_clear_anger(id)`, `warden_disturb(x, y, z)` | The anger book of a warden, keyed by entity id |
+| `allay_duplicate()` | Spawns a copy and answers its id, or -1 |
+| `held_get(kind, slot)`, `held_set(kind, slot, stack)` | A stack in a mob's own state: kind `piglin`, `villager` or `allay` |
+| `hit_entity(id)`, `land()` | A projectile hits that entity, or a thrown potion or wind charge bursts, on its next tick |
+| `hook_own(player_id)`, `hook_retrieve(off_hand)` | Registers a fishing bobber as that player's own, reels it in |
+
+Use `entities::operations` on the entity to see everything it accepts.
+
+## Saved form
+
+`entities::snapshot(entity, out, capacity)` writes the entity as the named NBT compound the world would save (its id,
+position, rotation, motion, UUID and the rest), as raw bytes and not as a value. A player cannot be snapshotted
+(`ERR_INVALID`).
+
+`entities::restore(entity, nbt, length)` applies saved bytes to a live entity in place, as `/data merge entity` does, and
+`entities::spawn_nbt` makes a new entity from them. Together they let you copy a mob:
+
+```cpp
+char saved[4096];
+const int length = entities::snapshot(pig, saved, sizeof saved);
+if (length > 0 && length <= static_cast<int>(sizeof saved)) {
+    entities::spawn_nbt("world", saved, length, "copy");
+}
+```
+
+## Natural spawning
+
+`entities::spawn_rules(world, rules, length, out, capacity)` reads and changes the natural spawning rules of a world. With
+no rules (length 0) it only reads. The `rules` map takes:
+
+| Key | Meaning |
+|---|---|
+| `limits` | A map from a mob category to the cap for that world. A negative value restores the vanilla number |
+| `ticks_per` | A map from a mob category to how often that category tries to spawn. A negative value restores vanilla |
+| `allow_monsters`, `allow_animals` | Booleans |
+
+The categories are `monster`, `creature`, `ambient`, `axolotls`, `underground_water_creature`, `water_creature`,
+`water_ambient` and `misc`. The answer is a map with the same keys holding what a plugin changed (categories left at
+vanilla are left out). `ERR_ABSENT` means the world is unknown.
+
+```cpp
+values::ValueBuffer<96> rules;
+rules.map().key("limits").map().key("monster").integer(20).end().key("allow_animals").boolean(false).end();
+char answer[256];
+entities::spawn_rules("world", rules.data(), rules.finish(), answer, sizeof answer);
+```
+
+## Vanilla formulas
+
+`entities::mechanic(name, args, length, out, capacity)` runs one of the server's stateless entity formulas, so a plugin
+can get exactly the numbers vanilla would. The arguments are a map and the answer a value, both depending on the name.
+The call touches no live entity, so it works from any thread. `ERR_ABSENT` means an unknown name, `ERR_INVALID` a bad
+argument.
+
+| Name | Arguments | Answer |
+|---|---|---|
+| `combat.after_armor` | `damage`, `armor`, `toughness`, `fraction_add` (optional) | Damage after armor, a decimal |
+| `combat.after_protection` | `damage`, `protection` | Damage after enchantment protection |
+| `combat.after_resistance` | `damage`, `amplifier` | Damage after the resistance effect |
+| `combat.after_difficulty` | `damage`, `difficulty` (`peaceful`, `easy`, `normal`, `hard`) | Damage scaled by difficulty |
+| `combat.scales_with_difficulty` | `scaling`, `caused_by_living_non_player` (optional) | A boolean |
+| `combat.absorb` | `damage`, `absorption` | A map `{health, absorption}` |
+| `combat.fall_damage` | `distance`, `safe` (optional) | A whole number |
+| `breeding.offspring_attribute` | `a`, `b`, `min`, `max`, `first`, `second`, `third` | The attribute value of a baby |
+| `physics.clip` | `box`, `from`, `to` | A point, or null |
+| `physics.collide` | `colliders`, `box`, `movement` | A point |
+| `physics.step_up` | `colliders`, `grounded`, `grounded_offset_y`, `movement`, `max_up_step`, `reach_squared` | A point, or null |
+| `physics.rotate_towards_movement` | `motion`, `x_rot_o`, `y_rot_o`, `x_rot`, `y_rot`, `speed` | A map, or null |
+| `physics.closest_hit` | `candidates`, `from`, `to`, `margin` | `{index, point}`, or null |
+| `physics.picked_hit` | `candidates`, `root`, `from`, `to`, `max` | `{index, point}`, or null |
+| `physics.projectile_margin` | `tick_count` | A decimal |
+| `physics.leash_angular_friction` | `on_ground`, `block_friction` and `in_liquid` (both optional) | A decimal |
+| `physics.shulker_box` | `size`, `direction`, `progress_from`, `progress_to`, `position` | A box |
+| `physics.leash_pull` | `self`, `holder`, `quad` and `slack` (optional), `self_motion`, `holder_motion`, `known_motion` | `{torque, push}`, or null |
+
+A point is a list of three decimals. A box is a map with `min_x`, `min_y`, `min_z`, `max_x`, `max_y`, `max_z`. A collider
+is a box map plus `shape` (a whole number), a candidate is a box map plus `pick_radius`, `pick_from_inside` and `root`,
+and a leash body is a map with `position`, `width`, `height` and `yaw`. Indexes in answers start at 1.
+
+```cpp
+values::ValueBuffer<32> args;
+args.map().key("distance").number(10.0).end();
+char buffer[32];
+const int length = entities::mechanic("combat.fall_damage", args.data(), args.finish(), buffer, sizeof buffer);
+values::Value damage;
+if (length > 0 && length <= static_cast<int>(sizeof buffer) && damage.open(buffer, length)) {
+    // damage.i64_or(0) is the damage of a ten block fall
+}
+```
+
+## Goals and behaviors
+
+A mob can carry goals that your plugin owns next to the vanilla ones, in the same selector. Priority, flags and
+interruption work as in vanilla. You add the goal with an operation and answer the server's questions in an event
+callback.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `add_goal` | `key`, `priority`, `flags` (optional) | Whether it was added. `flags` is a comma list of `move`, `look`, `jump` and `target`, in lowercase |
+| `remove_goal` | `key` | How many goals were retired. Vanilla goals are named by their class in snake case without `Goal` (`panic`, `look_at_player`) |
+| `remove_goals` | `flags` (optional) | How many were retired: every goal that locks one of the flags, or all of them with no flags |
+| `has_goal` | `key` | Whether a live goal has that key |
+| `goals` | none | Rows with the columns `key`, `priority`, `running`, `plugin`, `usable`, `flags` |
+
+Keys may leave out `minecraft:`. A running goal that is removed stops on the mob's next update.
+
+The server asks your plugin with the `entity.goal` event (see [Events](/docs/server/wasm-events)). Inside the callback,
+read `key` and `phase` with `events::event_field_str`, get the mob with `entities::event_entity(ctx)`, and answer with
+`entities::ai_answer(ctx, 1)` or `entities::ai_answer(ctx, 0)`. The phases are:
+
+| Phase | When | Your answer |
+|---|---|---|
+| `can_use` | The selector wants to know whether the goal could start | Required |
+| `can_continue` | The goal is running and the selector asks whether it should go on | Required |
+| `start`, `stop`, `tick` | The goal started, stopped, or runs this tick | Ignored |
+
+A callback that does not answer means false. At most 24 calls per mob per tick reach a plugin, so keep goals cheap and
+let them end.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static bool same(const char* a, const char* b) {
+    while (*a != 0 && *a == *b) {
+        ++a;
+        ++b;
+    }
+    return *a == *b;
+}
+
+static bool has_path(int mob) {
+    char buffer[8];
+    const int length = entities::call(mob, "has_path", nullptr, 0, buffer, sizeof buffer);
+    values::Value value;
+    return length > 0 && length <= static_cast<int>(sizeof buffer) && value.open(buffer, length) && value.bool_or(false);
+}
+
+static void wander(core::Ctx ctx) {
+    const auto key = events::event_field_str(ctx, "key");
+    if (!same(key.c_str(), "example:wander")) {
+        return;
+    }
+    const int mob = entities::event_entity(ctx);
+    if (mob <= 0) {
+        return;
+    }
+    const auto phase = events::event_field_str(ctx, "phase");
+    if (same(phase.c_str(), "can_use")) {
+        entities::ai_answer(ctx, 1);
+    } else if (same(phase.c_str(), "can_continue")) {
+        entities::ai_answer(ctx, has_path(mob) ? 1 : 0);
+    } else if (same(phase.c_str(), "start")) {
+        double at[3];
+        if (entities::position(mob, at) == 0) {
+            values::ValueBuffer<64> target;
+            target.list().number(at[0] + 6.0).number(at[1]).number(at[2]).number(1.0).end();
+            char result[8];
+            entities::call(mob, "move_to", target.data(), target.finish(), result, sizeof result);
+        }
+    }
+}
+
+static void tame_pigs(core::Ctx ctx) {
+    values::ValueBuffer<32> query;
+    query.map().key("type").string("pig").end();
+    int pigs[16];
+    const int count = entities::query("world", query.data(), query.finish(), pigs, 16);
+    values::ValueBuffer<64> goal;
+    goal.list().string("example:wander").integer(3).string("move").end();
+    char result[8];
+    for (int i = 0; i < count && i < 16; ++i) {
+        entities::call(pigs[i], "add_goal", goal.data(), goal.finish(), result, sizeof result);
+        entities::release(pigs[i]);
+    }
+    commands::command_reply(ctx, "<green>The pigs have a new idea.");
+}
+
+void plugin_init() {
+    events::on("entity.goal", core::kNormal, wander);
+    commands::command("wanderpigs", "", tame_pigs);
+}
+```
+
+### Brain behaviors
+
+Mobs that run on a brain (villagers, for example) use activities and memories instead of a goal selector. The brain
+operations work through the same `entities::call`, and your plugin answers the `entity.behavior` event exactly like
+`entity.goal`: the same fields, the same phases, the same `entities::ai_answer`, the same limit per tick.
+
+| Operation | Arguments | Does |
+|---|---|---|
+| `brain_add_behavior` | `activity`, `priority`, `key` | Adds a plugin behavior to an activity |
+| `brain_clear_behaviors` | none | Removes the plugin behaviors |
+| `brain_behaviors` | none | Rows with the columns `activity`, `priority`, `key` |
+| `brain_define_activity` | `activity`, a list of requirements written `memory=status` (`present`, `absent` or `registered`), a list of memories to erase when it stops | Defines an activity |
+| `brain_set_activity` | `activity`, `mode` (`force`, `default`, or anything else to switch only when possible) | Switches the active activity |
+| `brain_set_core`, `brain_set_default` | the activities that always run, the default activity | Configures the activities |
+| `brain_first_valid` | a list of activities | Activates the first one whose requirements hold |
+| `brain_active`, `brain_active_non_core`, `brain_is_active` | none, none, `activity` | The active activities, the active non-core one, whether one is active |
+| `brain_register`, `brain_set_memory`, `brain_memory`, `brain_has_memory`, `brain_check_memory`, `brain_memory_ttl`, `brain_erase_memory`, `brain_clear_memories` | a memory `key` (and a `value` with an optional `ttl` for `brain_set_memory`) | Reads and writes the memories of the brain. `brain_memories` lists them as rows `key`, `present`, `ttl` |
+| `brain_sensors`, `brain_schedule` | sensors written `name` or `name@range`, a schedule name | Configures what the brain senses and when |
+| `brain_tick`, `brain_has`, `brain_clear` | none | Runs the brain now, tells whether the mob has one, drops it |
+
+## Gotchas
+
+- A handle is only good while the entity is in the world. Check for `ERR_STALE`, and use `entities::alive` when you only
+  want to know whether it is still there.
+- Entity ids are plain whole numbers that events and properties carry (`-1` for none). They are not handles: turn one
+  into a handle with `entities::by_id` before calling anything else.
+- `entities::position`, `velocity` and `rotation` write into an array of doubles you provide: three, three and two.
+- `entities::get` answers null for a property that does not apply to the entity (a creeper has no `profession`), and
+  `ERR_ABSENT` only for a name the server does not know at all.
+- Send an integer to an integer property and a decimal to a decimal one. A value of the wrong kind can be refused with
+  `ERR_INVALID`.
+- Goal flags are lowercase (`move`, not `MOVE`). A flag the server does not know is ignored.
+- Plugin goals are asked many times per second. Answer `can_use` from a cheap check and keep slow work out of the
+  callback, as a callback has to return quickly like any other.
+- A snapshot is raw NBT, not a value. Pass the bytes straight to `entities::restore` or `entities::spawn_nbt`.
+
+## Where to go next
+
+| You want to | Page |
+|---|---|
+| React to deaths, damage, spawns and targeting | [Events](/docs/server/wasm-events) |
+| Give players items or look inside containers | [Items and inventories](/docs/server/wasm-items) |
+| Work with the player as a player | [Players](/docs/server/wasm-players) |
+| Find a place to spawn things | [Worlds](/docs/server/wasm-worlds) |
+| Read the encoded values | [Values](/docs/server/wasm-values) |

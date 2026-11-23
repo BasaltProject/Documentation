@@ -1,0 +1,377 @@
+---
+title: Packets and plugin channels
+description: Talk to clients on plugin channels, listen to, cancel, rewrite and send raw packets, and make a player do what a client packet would.
+group: Plugin API
+---
+
+Most plugins never touch a packet: the events, commands and player calls cover what they need. This page is for the ones
+that do. There are two levels. **Plugin channels** are the named message channels that mods and proxies use to talk to a
+server, and a plugin can listen on them and answer. **Raw packets** let a plugin see, change, cancel and send the packets
+of any connection, in both directions, and make a player do what one of their client's packets would have done.
+
+Functions are written here as `area::function`, the C++ spelling (the area is `packets`). Other languages use their own
+casing, see [The SDK](/docs/server/wasm-sdk).
+
+## What you need
+
+Both levels are switched off by default. A plugin asks in `plugin.toml`, and the server owner grants it.
+
+```toml
+[capabilities]
+network = ["arena:lobby"]
+packets = true
+```
+
+| Capability | Gives | Operator grant |
+|---|---|---|
+| `network = ["<channel>", ...]` | Plugin channels, and only the channels named in the list | `network` |
+| `packets = true` | Raw packet listeners, sending and receiving packets, the registry calls and the player actions | `packets` |
+
+The operator allows them per plugin in `config/server.toml`:
+
+```toml
+[plugins.allow]
+arena = ["network", "packets"]
+```
+
+A plugin that asks for a capability it was not granted loads without it, and every call that needs it returns
+`ERR_DENIED`. A channel the manifest does not list is `ERR_DENIED` too, granted or not. See
+[Server settings](/docs/server/server-settings) for the operator side and [plugin.toml](/docs/server/wasm-plugin-toml) for
+the manifest.
+
+<x-docs.callout type="warning" title="Why this is a grant">
+A packet listener sees what every player sends, chat and commands included. The server owner decides which plugins may.
+</x-docs.callout>
+
+## Plugin channels
+
+A plugin channel is a name like `arena:lobby` and a stream of byte messages between one client and the server. What the
+bytes mean is up to the two ends.
+
+| Call | What it does |
+|---|---|
+| `packets::channel_listen(name, handler)` | Calls `handler` for every message a client sends on the channel. `ERR_DENIED` without the capability or for a channel the manifest does not list; `ERR_INVALID` for an empty name |
+| `packets::channel_send(player, name, body, length)` | Sends a message to one player. Answers `1` when it was sent and `0` when the player cannot receive it |
+
+A listener stays until the plugin is disabled. A send answers `0` when the player is not a Java client, or when their
+client did not register that channel. It answers `ERR_STALE` for a player who left.
+
+Inside the handler, three calls tell you what arrived:
+
+| Call | Answers |
+|---|---|
+| `packets::packet_ctx_body(ctx, out, capacity)` | The message bytes |
+| `packets::packet_ctx_player(ctx)` | The player who sent it, as a handle, or `0` when there is none |
+| `packets::packet_ctx_info(ctx, out, capacity)` | A map with `kind` (`"channel"`), `channel`, `size`, `player_name` and `player_uuid` |
+
+An echo that sends every message straight back:
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void on_message(core::Ctx ctx) {
+    char body[256];
+    const int size = packets::packet_ctx_body(ctx, body, sizeof body);
+    if (size < 0 || size > static_cast<int>(sizeof body)) {
+        return;
+    }
+    const core::Player player = packets::packet_ctx_player(ctx);
+    if (player != 0) {
+        packets::channel_send(player, "arena:lobby", body, size);
+    }
+}
+
+void plugin_init() {
+    packets::channel_listen("arena:lobby", on_message);
+}
+```
+
+The calls that read a value (`packet_ctx_info` here) and the ones that read bytes (`packet_ctx_body`) fill a buffer you
+give and return the length the whole answer needs, so a result larger than your buffer means nothing was written. A
+message body is at most 1 MiB. The cancel, replace and relay calls below do not apply to a channel message and answer
+`ERR_INVALID`.
+
+## Packet listeners
+
+### Naming a packet
+
+A packet is named the way the server lists it, with its direction first: `clientbound.set_title_text`,
+`serverbound.chat_message`. Where a name alone is ambiguous, the phase is added: `serverbound.play.custom_payload`. A packet
+can also be named by its id in hex, as in `clientbound.configuration.0x07`.
+
+A listener may use a wildcard to cover a group: `serverbound.*`, `clientbound.play.*`, or `*` for everything. The phases
+are `handshake`, `status`, `login`, `configuration` and `play`.
+
+In game, `/plugins packets` lists every name a plugin can use. In code, `packets::packet_names` and
+`packets::packet_lookup` ask the server itself, so nothing needs to be copied from a table (see
+[Finding names](#finding-names)). The operator uses the same names in `[packets.drop]` and `[packets.kick]` of
+`limits.toml`, see [Server settings](/docs/server/server-settings).
+
+### Listening
+
+```cpp
+const int listener = packets::packet_listen("serverbound.chat_command", "first", false, guard);
+```
+
+`packets::packet_listen(pattern, priority, observe, handler)` returns a listener handle.
+
+| Argument | Meaning |
+|---|---|
+| `pattern` | A packet name or wildcard. An unknown name is `ERR_INVALID` |
+| `priority` | `"first"`, `"early"`, `"normal"`, `"late"` or `"last"`; `nullptr` is `"normal"`. `"first"` runs first |
+| `observe` | `false` makes a **decider**, which may cancel the packet or replace its body. `true` makes an **observer**, which only watches |
+
+Deciders run before observers, and each group runs in priority order. Once a decider has cancelled a packet, the deciders
+after it are skipped; observers still see it, with `cancelled` set. If several deciders replace the body, the last one wins.
+
+An observer that tries to cancel or replace gets `ERR_DENIED`, and anything it did is dropped, so its only effects are the
+ones outside the packet. Use an observer for logging and counting, and a decider for everything that changes the packet.
+
+`packets::packet_unlisten(listener)` removes a listener. It answers `ERR_STALE` for one that was already removed, and it is
+allowed from inside the listener itself. Every listener a plugin made is removed when the plugin is disabled.
+
+### What a listener can do
+
+The handler is called with a ctx. These calls work on it, and only inside that call: the ctx is `ERR_STALE` once the
+handler returns.
+
+| Call | What it does |
+|---|---|
+| `packets::packet_ctx_info(ctx, out, capacity)` | A map that describes the packet, see below |
+| `packets::packet_ctx_body(ctx, out, capacity)` | The body as it arrived, without the packet id. Not what an earlier listener replaced it with |
+| `packets::packet_ctx_player(ctx)` | The player the packet belongs to, as a handle. `0` before login or when the player is gone |
+| `packets::packet_ctx_cancel(ctx)` | Cancels the packet: it is neither sent nor handled. `ERR_DENIED` in an observer |
+| `packets::packet_ctx_set_body(ctx, body, length)` | Replaces the body that continues on its way. `ERR_INVALID` over 1 MiB; `ERR_DENIED` in an observer |
+| `packets::packet_ctx_send(ctx, name, body, length, intercept)` | Sends a clientbound packet on the connection this packet travels on |
+| `packets::packet_ctx_receive(ctx, name, body, length, intercept)` | Hands a serverbound packet to the server as if the client had sent it on this connection |
+
+The keys of the `packet_ctx_info` map for a packet:
+
+| Key | Meaning |
+|---|---|
+| `kind` | `"packet"` |
+| `name`, `phase`, `id`, `serverbound` | Which packet it is |
+| `connection` | A number that stays the same for the life of the connection |
+| `protocol` | The protocol version the client announced, `0` before the handshake |
+| `translated` | `true` when the bytes are in the server's shape for a client of an older version |
+| `size` | The length of the body |
+| `player_name`, `player_uuid` | Who it belongs to, empty before login |
+| `cancelled` | What the listeners before this one decided |
+| `observer` | Whether this listener is an observer |
+
+### Examples
+
+A decider that stops players running `/op` through the chat command packet. The body of that packet is a string: a length
+byte, then the command without its slash.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static bool starts_with(const char* text, const char* word) {
+    while (*word != 0) {
+        if (*text++ != *word++) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void guard(core::Ctx ctx) {
+    char body[128];
+    const int size = packets::packet_ctx_body(ctx, body, sizeof body - 1);
+    if (size < 4 || size > static_cast<int>(sizeof body) - 1) {
+        return;
+    }
+    body[size] = 0;
+    if (starts_with(body + 1, "op ")) {
+        packets::packet_ctx_cancel(ctx);
+    }
+}
+
+void plugin_init() {
+    packets::packet_listen("serverbound.chat_command", "first", false, guard);
+}
+```
+
+An observer that logs the name of every plugin message packet the server receives:
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void watch(core::Ctx ctx) {
+    char info[512];
+    const int size = packets::packet_ctx_info(ctx, info, sizeof info);
+    values::Value root;
+    if (size <= 0 || size > static_cast<int>(sizeof info) || !root.open(info, size)) {
+        return;
+    }
+    const char* name = nullptr;
+    int length = 0;
+    if (!root.find("name").as_str(name, length)) {
+        return;
+    }
+    char line[96] = {};
+    for (int i = 0; i < length && i < 95; ++i) {
+        line[i] = name[i];
+    }
+    log::log_info(line);
+}
+
+void plugin_init() {
+    packets::packet_listen("serverbound.play.custom_payload", nullptr, true, watch);
+}
+```
+
+### Time budget and strikes
+
+A listener runs on the thread that carries the packet, usually the network thread of that connection, while it holds the
+plugin's turn. It must not block, wait or do slow work. Each call has a budget of **5 ms**:
+
+- A call that goes over has its answers (cancel, replace) thrown away, and one **strike** counts against the listener.
+- A call that stays inside the budget resets the count.
+- The third strike in a row removes the listener and the log says so.
+
+The server's watchdog still cuts a plugin that never returns, and a plugin that fails repeatedly is switched off as
+described in [The execution model](/docs/server/wasm-execution-model). The budget applies to channel listeners too.
+
+### Cost
+
+<x-docs.callout type="warning" title="A wide listener runs for everything">
+A packet that nobody listens to costs the server one atomic read. A listener on `*`, on `serverbound.*`, or on a packet
+that arrives all the time (player movement, for one) runs your code for every one of those packets from every player, and
+all of them queue for your plugin's single turn. Listen to the narrowest name that does the job, return quickly, and
+leave the body alone when you do not need it.
+</x-docs.callout>
+
+## Sending and receiving packets
+
+| Call | What it does |
+|---|---|
+| `packets::packet_send(player, name, body, length, intercept)` | Sends the clientbound packet `name` with `body` to a player |
+| `packets::packet_receive(player, name, body, length, intercept)` | Handles the serverbound packet `name` as if the player's client had sent it |
+| `packets::packet_ctx_send(ctx, ...)`, `packets::packet_ctx_receive(ctx, ...)` | The same, on the connection a listener is looking at, without naming a player |
+
+Each of them answers `1` when the packet was written or handled, and `0` when the player has no Java connection (a Bedrock
+player) or the connection is closing. A name that is unknown, or that has the wrong direction (a serverbound name for a
+send), is `ERR_INVALID`, and so is a body over 1 MiB. A player who left is `ERR_STALE`. Without the `packets` capability
+they answer `ERR_DENIED`.
+
+`body` is the packet without its id, in the server's own protocol shape. A client on an older version is translated on the
+way out, and what it sends reaches your listeners already translated (`translated` in the info map says so).
+
+`intercept` decides whether the listeners see the packet. `false` sends it straight past them. `true` runs them on it,
+**including your own plugin's**, so a listener that sends the same kind of packet it listens to with `intercept` on can
+trigger itself.
+
+## Finding names
+
+| Call | What it does |
+|---|---|
+| `packets::packet_names(prefix, out, capacity)` | The packet names that start with `prefix` (an empty string for all) as a list of strings, in the order of `/plugins packets` |
+| `packets::packet_lookup(name, out, capacity)` | What a name means, as a map. `ERR_INVALID` for a name this server does not have |
+
+The map from `packets::packet_lookup` has `name` (as the server spells it), `phase` (null for a wildcard over all phases),
+`serverbound` (null when a wildcard covers both directions), `id` (null for a wildcard) and `wildcard`. Both calls need the
+`packets` capability.
+
+## Player actions
+
+Sometimes you do not want to build a packet, you want the player to do something: hold another hotbar slot, run a command,
+click a slot in a window. `packets::packet_player_receive` does what the client packet named `action` would do for a player.
+
+| Call | What it does |
+|---|---|
+| `packets::packet_player_actions(out, capacity)` | The action names the server accepts, as a list of strings |
+| `packets::packet_player_receive(player, action, args, length)` | Performs an action. `args` is one value, a list of the arguments in the order below. Answers `1` when the server accepted it, `0` when it did not (no Java connection, or the packet was refused) |
+
+An unknown action, or an argument that is not a number, a boolean, a string, null or (for book pages) a list of strings, is
+`ERR_INVALID`. The action does not go through packet listeners.
+
+| Action | Arguments, in order |
+|---|---|
+| `use_item` | hand, yaw, pitch, sequence |
+| `use_item_on` | hand, x, y, z, direction, click x, click y, click z, inside block, sequence |
+| `container_click` | container id, state id, slot, button, mode, carried item known |
+| `interact` | entity id, hand, x, y, z, sneaking |
+| `attack` | entity id |
+| `custom_payload` | channel, data |
+| `chat_command` | command, without the slash |
+| `chat` | message |
+| `move` | x, y, z, yaw, pitch, on ground |
+| `pick_block` | x, y, z, include data |
+| `pick_entity` | entity id, include data |
+| `place_recipe` | container id, recipe id, use max items |
+| `creative_slot` | slot, item |
+| `sign_update` | x, y, z, front side, line 1, line 2, line 3, line 4 |
+| `rename_item` | name |
+| `beacon` | primary effect, secondary effect (either may be null) |
+| `select_trade` | index |
+| `container_button` | container id, button id |
+| `container_close` | container id |
+| `held_slot` | hotbar slot |
+| `edit_book` | slot, pages (a list of strings), title (null to leave the book unsigned) |
+
+A hand is `0` for the main hand and `1` for the off hand. The direction of `use_item_on` is a number from 0 to 5: down, up,
+north, south, west, east. A container click mode is a number from 0 to 6, the mode of the vanilla click packet.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void on_join(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    values::ValueBuffer<32> slot;
+    slot.list().integer(0).end();
+    packets::packet_player_receive(player, "held_slot", slot.data(), slot.finish());
+
+    values::ValueBuffer<64> command;
+    command.list().string("spawn").end();
+    packets::packet_player_receive(player, "chat_command", command.data(), command.finish());
+}
+
+void plugin_init() {
+    events::on("player.join", core::kNormal, on_join);
+}
+```
+
+## Bedrock players
+
+Raw packets are the packets of the Java protocol. A Bedrock player has no Java connection, so `packets::packet_send`,
+`packets::packet_receive`, `packets::channel_send` and `packets::packet_player_receive` answer `0` for them: the call was
+valid and nothing was sent. Treat `0` as "not delivered", never as an error in your code.
+
+## Things that catch people out
+
+- Without the capability **and** the grant, the call answers `ERR_DENIED`. For a channel, it must also be in the manifest
+  list.
+- A ctx works only inside the callback it was given to. Keep nothing but handles and copied data.
+- An observer cannot cancel or replace, and its attempt is dropped. If the packet has to change, use a decider.
+- Over 5 ms in a call throws that call's answers away. Three over-budget calls in a row remove the listener.
+- A listener for a name the server does not have is `ERR_INVALID` when you register it. Check the result of
+  `packets::packet_listen`.
+- `packets::packet_ctx_body` is the body as it arrived. Another listener's replacement is not in it.
+- Before a player has logged in, `packets::packet_ctx_player` is `0` and `player_name` is empty.
+- A body over 1 MiB is `ERR_INVALID`, in either direction.
+- A clientbound name passed to `packets::packet_receive`, or a serverbound name to `packets::packet_send`, is
+  `ERR_INVALID`.
+- A listener on `*` or on movement packets runs for everything. Keep it narrow.
+
+## Where to go next
+
+| To | Read |
+|---|---|
+| React to what players do without packets | [Events](/docs/server/wasm-events) |
+| Add commands | [Commands](/docs/server/wasm-commands) |
+| See why a callback is limited in time | [The execution model](/docs/server/wasm-execution-model) |
+| Grant a plugin its capabilities | [Server settings](/docs/server/server-settings) |
+| Declare a capability | [plugin.toml](/docs/server/wasm-plugin-toml) |

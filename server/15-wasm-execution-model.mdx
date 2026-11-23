@@ -1,0 +1,138 @@
+---
+title: Execution model
+description: How a plugin is loaded, how the server calls it, what handles are and what happens when a plugin misbehaves.
+group: Plugin basics
+---
+
+A plugin does not run on its own. The server loads it, lets it register what it is interested in, and from then on calls
+into it when something happens. Knowing this cycle explains most of the rules in the rest of the API.
+
+## From file to running
+
+1. **Verify.** The server reads `plugin.toml`, checks its `api`, `abi`, dependencies and capabilities, and refuses the
+   plugin with a reason in the log if any of them is wrong.
+2. **Compile.** The module is compiled to machine code once and the result is cached in `.basalt/wasm-cache/`, keyed by
+   the module's contents. A server that restarts, or loads the same plugin again, skips this step. Compiling a large
+   module takes a fraction of a second.
+3. **Instantiate.** The plugin gets its own memory, capped by `memory-mb` in the
+   [`[plugins]` settings](/docs/server/server-settings#plugins). There is exactly one instance of each plugin.
+4. **Initialise.** The plugin's init function runs once. This is where it registers events, commands, tasks, menus and
+   placeholders. If it fails, the plugin does not load.
+5. **Enable.** Listeners of the `plugin.enable` event run. Anything that needs the server to be fully up belongs here.
+
+Unloading is the reverse: `plugin.disable` listeners run, every registration the plugin made is withdrawn, and the
+instance is destroyed. `/plugins reload <id>` is an unload followed by a load from disk.
+
+The server runs the module with Wasmtime and its Cranelift compiler on every platform except FreeBSD, where Wasmtime
+publishes no build and the server uses WAMR instead. A plugin is the same `.wasm` for both.
+
+## Callbacks
+
+You never call the server's functions from a loop of your own. You register a function with the server, and it calls
+that function back, passing a **ctx**: the handle of the thing that happened. The ctx answers questions about it (which
+player joined, what arguments the command had, which slot was clicked) and is only valid until your function returns.
+
+```cpp
+static void on_join(bs::core::Ctx ctx) {                  // the callback
+    const bs::core::Player player = bs::events::event_player(ctx);   // ask the ctx
+    ...
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);       // register it
+}
+```
+
+Underneath, a module exports a single entry point and every registration carries a number of your choosing, a **token**.
+The SDK of each language turns your function into a token and routes the call back for you, so you only ever write the
+function. [The SDK](/docs/server/wasm-sdk) shows how each language spells it.
+
+## Threads and ownership
+
+A plugin instance is single threaded. The server never runs two callbacks of one plugin at the same time, and a callback
+never starts in the middle of another. A callback runs on the thread of whatever triggered it: the tick for a world event,
+a connection thread for a packet, the command thread for a command. That thread owns what the callback touches, which is
+what makes it safe to read and change it.
+
+Two rules follow.
+
+- **A callback must not block.** There is nothing to wait on: no sleep, no waiting for a reply. Anything that takes time
+  is a request the server finishes later by calling you back, see [Tasks and time](/docs/server/wasm-tasks).
+- **A call into the server from inside a callback runs at once**, on the thread you are on. Change a block and the next
+  call sees it.
+
+## Handles
+
+Everything the server gives a plugin to refer to something (a player, a world, an entity, a menu, a task, a ctx) is a
+**handle**: a 32-bit number that is only meaningful to that plugin. Zero is never a valid handle and means "none".
+
+- A handle goes **stale** when what it names is gone: a player left, a world unloaded, a callback ended. Using it answers
+  `ERR_STALE` and can never reach a different player or entity, because the server tracks each handle by generation and
+  refuses an old one.
+- Handles belong to one plugin and disappear with it.
+- A player stays usable for the whole callback of the event that announces they are leaving, so a `player.quit` handler can
+  still read their data.
+
+Keep a handle only as long as you need it. For players, a name or a uuid is the stable identity, and a handle is the
+quick way to talk to one who is online right now.
+
+## Memory
+
+The module's own memory belongs to the plugin and the server never allocates inside it. When a call returns text or a
+structure, you give it a buffer and a size, and it writes the answer there. If the answer is longer than your buffer,
+the call tells you how long it needs to be and writes nothing, so you retry with a larger one. The SDKs wrap this
+retry: C, C++ and Zig work with a buffer you size, and the other languages grow one for you.
+
+A plugin that grows past `memory-mb` fails alone: its instance is stopped and every other plugin and the tick carry on.
+
+## Time
+
+Time is counted in **ticks**, 20 per second at the default rate, and a task scheduled for 100 ticks runs five seconds
+later. The server's own clock is the tick, so a plugin sees game time, not wall time. See
+[Tasks and time](/docs/server/wasm-tasks).
+
+## When a plugin fails
+
+A plugin problem never becomes a server problem. Three things count as a failure:
+
+- the module **traps** (an out-of-bounds access, a divide by zero, a panic, an abort);
+- a callback stays inside the plugin for more than about a quarter of a second and is cut off by the watchdog;
+- the plugin runs out of memory.
+
+A call the server rejects, with a stale handle or a bad argument, is not a failure: it just returns a
+[result code](#result-codes) for the plugin to handle. Each failure is logged with the plugin that caused it. **Three failures in a row switch the plugin off**, and a
+successful callback in between resets the count. A plugin that was switched off stays off until you run
+`/plugins reload <id>`, and `/plugins` shows it as `off after 3 in a row`. A plugin with failures that still runs shows
+`N error(s)` instead.
+
+A callback that loops forever therefore holds the thread for at most about half a second before it is cut off, once per
+failure. Spread heavy work over several tasks instead of one long callback.
+
+<x-docs.callout type="note" title="What a plugin cannot do">
+A module can only import functions the server provides, so it has no files, sockets, threads or process control of its
+own. A small subset of WASI exists for toolchains that insist on a C library: writing to standard output and standard
+error goes to the plugin's log, the clock and random numbers work, and the rest is empty. Everything else goes through the
+API, with the capabilities of the manifest deciding how far it reaches.
+</x-docs.callout>
+
+## Result codes
+
+Calls that can fail return a number. Zero or a positive value is success (often a length or a handle), and a negative one
+is an error:
+
+| Constant | Value | Meaning |
+|---|---:|---|
+| `ERR_ABSENT` | -1 | The key, argument, field or object does not exist |
+| `ERR_STALE` | -2 | The handle no longer refers to anything: the player left, the callback ended |
+| `ERR_INVALID` | -3 | A bad argument: an unknown name, malformed text, a value out of range |
+| `ERR_DENIED` | -4 | The plugin lacks the capability, or the operator did not grant it |
+
+The SDK of some languages turns these into optional values, results or exceptions that you can handle in the usual way
+of the language. [The SDK](/docs/server/wasm-sdk#errors) lists how each one does.
+
+## Decisions and observers
+
+Most callbacks are notifications: something happened and you may react. Some are **decisions**: the server is waiting for
+the answer to carry on, such as an event you may cancel, a permission check or a placeholder. Decisions run inside the
+call that needed them, so they answer immediately, cannot wait and should be quick. [Events](/docs/server/wasm-events)
+explains which events are which.

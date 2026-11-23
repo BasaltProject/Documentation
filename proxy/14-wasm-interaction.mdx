@@ -1,0 +1,310 @@
+---
+title: Dialogs, resource packs, cookies and transfers
+description: Open dialogs, push resource packs, store cookies and transfer players from a proxy plugin, watch how clients answer, and look players up.
+group: Plugins
+---
+
+This page is about asking a player's client to do something, and finding out what it answered: show a dialog, offer a resource pack, keep a cookie for the next visit, send the player to another server address. It also holds the extra player calls that do not belong anywhere else, such as finding a player by UUID, counting players on a backend, broadcasting a line and reading the client's settings.
+
+These calls take a player [handle](/docs/proxy/wasm-players) and run inside a callback. Only the float player data at the end needs a capability (`players_data`).
+
+In tables the functions are written as `interaction::dialog_show`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+
+## A first example
+
+When a player joins, offer a resource pack, and say something when they answer. The pack answer arrives as an event the plugin watches.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool same(const char* text, int length, const char* word) {
+    int i = 0;
+    for (; word[i] != 0 && i < length; ++i) {
+        if (text[i] != word[i]) {
+            return false;
+        }
+    }
+    return i == length && word[i] == 0;
+}
+
+static void on_pack_answer(proxy::core::Ctx ctx) {
+    char buffer[512];
+    const int length = proxy::interaction::value_result(ctx, buffer, sizeof buffer);
+    proxy::values::Value event;
+    if (length < 0 || length > static_cast<int>(sizeof buffer) || !event.open(buffer, length)) {
+        return;
+    }
+    const char* status = nullptr;
+    int status_length = 0;
+    long long handle = 0;
+    if (!event.find("status").as_str(status, status_length) || !event.find("player").as_i64(handle)) {
+        return;
+    }
+    const proxy::core::Player player = static_cast<proxy::core::Player>(handle);
+    if (same(status, status_length, "declined")) {
+        proxy::players::send(player, "<gray>The pack is optional, but the lobby looks better with it.");
+    } else if (same(status, status_length, "successfully_loaded")) {
+        proxy::players::send(player, "<green>Pack loaded, enjoy!");
+    }
+}
+
+static void on_join(proxy::core::Ctx ctx) {
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    char id[64] = {};
+    const int length = proxy::interaction::resource_pack_push(player, "https://example.org/packs/lobby.zip", nullptr,
+                                                              false, "<gold>Install the lobby pack?", "lobby", id,
+                                                              sizeof id - 1);
+    if (length > 0) {
+        id[length] = 0;
+        proxy::log::log_info(id);
+    }
+}
+
+void plugin_init() {
+    proxy::interaction::watch_resource_packs(on_pack_answer);
+    proxy::events::on("player.join", proxy::core::kNormal, on_join);
+}
+```
+
+## What a call answers
+
+Dialogs, packs, cookies and transfers are requests to the player's connection.
+
+| Result | Meaning |
+|---|---|
+| `0` or a positive number | The proxy took the request (or the call gave you a handle or a length). It does not mean the client acted on it. |
+| `ERR_STALE` | The player left. |
+| `ERR_INVALID` | A bad value (see each call), or the proxy could not hand the request over: the player is in a phase that cannot show it, or the proxy has no such facility. |
+| `ERR_ABSENT` | No data to give (no address, no client settings yet) or too many cookie requests pending. |
+| `ERR_DENIED` | The `players_data` capability is missing. |
+
+Like the HUD calls, these requests are sent only to Java players on the game version the proxy is built for. A player on another version or on Bedrock does not receive a dialog, a pack, a cookie or a transfer. See [HUD](/docs/proxy/wasm-hud#what-a-call-answers).
+
+Text arguments are MiniMessage, or a language key when they start with `@`, and are cut at 4096 bytes.
+
+## Watching the client
+
+Two things the client reports can be observed. A watcher is registered once, usually in `plugin_init`, and its callback runs after the proxy has handled the event. It cannot change anything.
+
+| Function | Observes |
+|---|---|
+| `interaction::watch_resource_packs` | `player.resource_pack`: the client answered a pack. |
+| `interaction::watch_settings` | `player.settings`: the client sent its settings, on joining and whenever they change. |
+
+Inside the callback, `interaction::value_result` writes the event as a value that you open with the reader from [Values](/docs/server/wasm-values#decoding), as the example above does. The `player` field is a player handle that is valid for the length of the callback.
+
+`player.resource_pack` carries:
+
+| Field | Meaning |
+|---|---|
+| `player` | The player handle. |
+| `player_name` | The player's name. |
+| `id` | The pack id, the UUID text that `resource_pack_push` returned. |
+| `status` | One of `accepted`, `downloaded`, `successfully_loaded`, `declined`, `failed_download`, `invalid_url`, `failed_reload`, `discarded`. |
+
+A pack that goes well produces `accepted`, then `downloaded`, then `successfully_loaded`.
+
+`player.settings` carries `player`, `player_name` and a `settings` map:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `locale` | string | The client's language, such as `en_us`. |
+| `view_distance` | int | Render distance in chunks. |
+| `chat_mode` | string | `full`, `system` or `hidden`. |
+| `chat_colors` | bool | Whether the client shows colored chat. |
+| `skin_parts` | int | Which skin layers are enabled, as a bit mask. |
+| `main_hand` | string | `left` or `right`. |
+| `text_filtering` | bool | Whether the client filters text. |
+| `server_listing` | bool | Whether the player appears in the server list sample. |
+| `particles` | string | `all`, `decreased` or `minimal`. |
+
+A watcher registered late sees nothing of what happened earlier: the proxy keeps no history for plugins. To read the settings of a player who is already online, use `interaction::player_settings` below. If the plugin's event queue is full, the event is dropped like any other observed event.
+
+## Dialogs
+
+A dialog is a window the client draws over the game, with a title, some text and buttons.
+
+| Function | What it does |
+|---|---|
+| `interaction::dialog_show` | Opens a dialog. |
+| `interaction::dialog_clear` | Closes any dialog the proxy showed. |
+
+`dialog_show` takes the player, a `kind`, the `title`, an optional `body`, the button labels and commands with their count, and `closable` (default true: the player may close it with Escape).
+
+| Kind | Buttons | Use for |
+|---|---|---|
+| `notice` | The first one, if any | A message with an OK button. |
+| `confirmation` | Exactly two: the yes button, then the no button | A question. |
+| `multi_action` | At least one, at most 16 | A menu of choices. |
+
+A `confirmation` without exactly two buttons and a `multi_action` without any are not shown. An unknown kind is `ERR_INVALID`. Titles, bodies and button labels are MiniMessage. A button runs its command as the player when clicked, and there is no callback: the command is written without the slash, up to 256 bytes, and it can be one of your own plugin commands. A button with an empty command only closes the dialog.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static void ask(proxy::core::Ctx ctx) {
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player == 0) {
+        proxy::commands::command_reply(ctx, "Only players can leave.");
+        return;
+    }
+    const char* labels[] = {"<green>Yes, take me", "<red>Stay here"};
+    const char* commands[] = {"leavenow", ""};
+    proxy::interaction::dialog_show(player, "confirmation", "<gold>Leave this network?",
+                                    "<gray>You will be moved to the main network.", labels, commands, 2);
+}
+
+static void leave_now(proxy::core::Ctx ctx) {
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    proxy::interaction::cookie_set(player, "mynet:origin", "survival", 8);
+    proxy::interaction::player_transfer(player, "play.example.net", 25565);
+}
+
+void plugin_init() {
+    proxy::commands::command("leave", "", ask);
+    proxy::commands::command("leavenow", "", leave_now);
+}
+```
+
+The yes button runs `leavenow`, which stores a cookie and transfers the player. The no button closes the dialog and does nothing else.
+
+## Resource packs
+
+`interaction::resource_pack_push` offers a pack to the player. The arguments are the player, the `url` (required), the `hash`, whether the pack is `required`, an optional `prompt` and an optional `id`.
+
+| Argument | Rule |
+|---|---|
+| `url` | Required, at most 32767 bytes. |
+| `hash` | The SHA-1 of the file as 40 hexadecimal digits, or `nullptr` or empty to skip it. Anything else is `ERR_INVALID`. |
+| `required` | When true the client has to take the pack or leave. Default false. |
+| `prompt` | MiniMessage text the client shows with the offer. Optional. |
+| `id` | A UUID, or any other text. Text that is not a UUID becomes a UUID derived from it, so the same text always means the same pack. Without an id the `url` is used. |
+
+The call writes the pack id as UUID text into the buffer you give it and returns its length. The client reports back with `player.resource_pack` events that carry this id. Pushing an id the player already has replaces it. A player can hold up to 16 plugin packs at a time.
+
+| Function | What it does |
+|---|---|
+| `interaction::resource_pack_push` | Offers a pack and returns the id. |
+| `interaction::resource_pack_remove` | Removes one pack. The id is either the UUID text or the same text you passed as `id`, so `"lobby"` works. |
+| `interaction::resource_pack_clear` | Removes every pack a plugin pushed. Packs from a backend are left alone. |
+
+## Cookies
+
+A cookie is a small piece of data the server asks the client to keep and hand back on the next connection, even to a different server. It is a good place for a ticket or a note about where the player came from. Cookies do not prove identity: anyone can edit the ones on their own machine.
+
+| Function | What it does |
+|---|---|
+| `interaction::cookie_set` | Stores up to 5120 bytes under a key in the client. |
+| `interaction::cookie_request` | Asks the client for the cookie under a key. |
+| `interaction::cookie_result` | Reads the answer inside the callback. |
+| `interaction::request_cancel` | Drops a request that is still waiting. |
+
+A key looks like `plugin:session`, 1 to 256 bytes. Data over 5120 bytes is `ERR_INVALID`.
+
+`cookie_request` returns a request handle (a positive number) and calls your callback later. Inside it, `cookie_result` gives the cookie's length and writes the bytes only when they fit. It answers a negative code when the client has no such cookie or did not answer in time. After the callback returns the handle is stale. `cookie_request` answers `ERR_ABSENT` when the plugin has too many requests waiting.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static void on_cookie(proxy::core::Ctx ctx) {
+    char data[64];
+    const int length = proxy::interaction::cookie_result(ctx, data, sizeof data - 1);
+    if (length < 0 || length >= static_cast<int>(sizeof data)) {
+        return;
+    }
+    data[length] = 0;
+    proxy::log::log_info(data);
+}
+
+static void origin(proxy::core::Ctx ctx) {
+    const proxy::core::Player player = proxy::events::event_player(ctx);
+    if (player != 0) {
+        proxy::interaction::cookie_request(player, "mynet:origin", on_cookie);
+    }
+}
+
+void plugin_init() { proxy::commands::command("origin", "", origin); }
+```
+
+The callback does not say which player the cookie came from. If the answer matters per player, keep a request handle next to the player it was made for.
+
+## Transfers
+
+`interaction::player_transfer` tells the client to disconnect and connect to another address, a feature of recent Minecraft versions. The arguments are the player, the host (up to 255 bytes) and the port, 1 to 65535 (the SDK defaults to 25565). An empty host or a port outside the range is `ERR_INVALID`.
+
+The proxy does not wait for the client: the call returns once the request is sent. If the target is another Basalt Proxy, it must have `accept-transfers = true` in `proxy.toml` to take the player (see [Configuration](/docs/proxy/configuration)). A cookie set just before the transfer is there for the next server to ask for.
+
+To move a player to another backend of this proxy, use `players::player_connect` from [Players and backends](/docs/proxy/wasm-players). A transfer is for sending a player to a different address.
+
+## Looking players up
+
+| Function | What it does |
+|---|---|
+| `interaction::players_by_uuid` | The handle of the connected player with that UUID text (with dashes), or 0. |
+| `interaction::players_count` | How many players are connected, or how many are on the backend you name. A name that is not a backend gives 0. It never fails. |
+| `interaction::players_broadcast` | Sends one chat line to every connected player. |
+| `interaction::player_address` | The player's IP address as text. `ERR_ABSENT` when the proxy has none. |
+| `interaction::player_port` | The client's source port. `ERR_ABSENT` when unknown. |
+| `interaction::player_settings` | The client's settings as a value (the map above). `ERR_ABSENT` until the client has sent them. |
+
+`players_broadcast` takes MiniMessage or an `@` key, and arguments for its `{name}` fields:
+
+```cpp
+proxy::core::Args args;
+args.add("count", "12");
+proxy::interaction::players_broadcast("<gray>{count} players online now.", &args);
+```
+
+Finding a player by name, listing everyone and the player's current backend are in [Players and backends](/docs/proxy/wasm-players). One setting at a time is also available there, if you do not want to decode the whole map.
+
+## Float player data
+
+Whole numbers, booleans and text are stored on a player with `data::data_set_i64`, `data_set_bool` and `data_set_str` and read back with their `data_get` twins. Floats have their own pair here. Both need `players_data = true` in the plugin's capabilities, and both use the same key space as the other player data, so a whole number stored earlier reads back as that number.
+
+| Function | What it does |
+|---|---|
+| `interaction::player_data_get_f64` | Reads the float under a key, or the fallback you pass when the key is missing, holds another type, the capability is missing or the player left. |
+| `interaction::player_data_set_f64` | Stores a float. `ERR_INVALID` for a number that is not finite or a bad key, `ERR_DENIED` without the capability. |
+
+```toml
+[capabilities]
+players_data = true
+```
+
+```cpp
+const double coins = proxy::interaction::player_data_get_f64(player, "coins", 0.0);
+proxy::interaction::player_data_set_f64(player, "coins", coins + 0.5);
+```
+
+A key is 1 to 128 bytes, and a plugin can keep 1000 keys per player. For data of a player who is not online, see [Backends, permissions and administration](/docs/proxy/wasm-admin#the-plugin-store-and-player-data).
+
+## Things that catch people out
+
+- **`0` is not "done".** The request reached the player's connection. Whether the client showed the dialog or loaded the pack is what the watchers are for.
+- **Not every client gets it.** Dialogs, packs, cookies and transfers are sent only to players on the proxy's own game version. Others and Bedrock players do not get them.
+- **Dialog buttons have no callback.** A button runs a command. Make the command a plugin command and do the work there.
+- **A dialog with the wrong buttons is silently not shown.** Two for a `confirmation`, at least one for a `multi_action`.
+- **Pack ids are shared.** A text id such as `"lobby"` is the same pack for any plugin that uses it.
+- **Cookie answers do not name the player.** Plan for it before you request cookies for many players at once.
+- **Handles go stale.** A handle kept past a disconnect answers `ERR_STALE`.
+
+## Where to go next
+
+| Page | What is in it |
+|---|---|
+| [HUD](/docs/proxy/wasm-hud) | Boss bars, sidebar, tab list, titles and the pause menu. |
+| [Events](/docs/proxy/wasm-events) | The player events to start from. |
+| [Backends, permissions and administration](/docs/proxy/wasm-admin) | Backends at run time, permissions and the plugin store. |
+| [Values](/docs/server/wasm-values) | Reading the values these events and calls give. |

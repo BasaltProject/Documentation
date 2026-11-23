@@ -1,0 +1,177 @@
+---
+title: Zig
+description: Write a Basalt plugin in Zig: tiny modules, no hidden allocation and the Zig standard library where it makes sense.
+group: Languages
+---
+
+Choose Zig when you want C-sized modules and C-like speed with a modern language: slices instead of pointers, optionals
+instead of sentinel values and `comptime` where you need it. A greeter is about 2 KB. Nothing allocates unless you ask: the
+SDK works over buffers you own, and the standard library is there when you want formatting or an allocator. The cost is
+that Zig changes between releases, and that you manage the buffers yourself in the same way as in C.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `zig` on your `PATH` from version 0.14, and otherwise downloads Zig 0.17.1 (about 55 MB,
+407 MB unpacked) into a per-user cache on the first build, on Linux, macOS and Windows. The language moves between
+releases, so the pinned version is the one the SDK is built against. See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang zig
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/main.zig
+```
+
+`src/main.zig` is the root of your plugin. Other files are ordinary Zig files that you `@import` from it. The module is
+written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time.
+
+## The entry point
+
+Write `pub fn init() void` in `src/main.zig`. Kiln generates a small root file that exports what the server needs and calls
+your `init` once, after the module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/main.zig`.
+
+```zig
+const basalt = @import("basalt_server");
+
+fn onJoin(ctx: basalt.core.Ctx) void {
+    const player = basalt.events.playerOf(ctx);
+    if (player == 0) return;
+    var name: [64]u8 = undefined;
+    var args = basalt.core.Args.init();
+    _ = args.add("name", basalt.players.name(player, &name) orelse "player");
+    _ = basalt.players.send(player, "<green>Welcome, {name}!", &args);
+}
+
+fn hello(ctx: basalt.core.Ctx) void {
+    const times = basalt.commands.argI64(ctx, "times") orelse 1;
+    var i: i64 = 0;
+    while (i < times) : (i += 1) {
+        _ = basalt.commands.reply(ctx, "<yellow>Hello from greeter!", null);
+    }
+}
+
+pub fn init() void {
+    basalt.log.info("greeter loaded");
+    _ = basalt.events.on("player.join", basalt.core.Priority.normal, onJoin);
+    _ = basalt.commands.register("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`events.on` listens to an event, see [Events](/docs/server/wasm-events); `commands.register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Zig spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: `const basalt = @import("basalt_server");` gives one namespace per area, `basalt.players`,
+  `basalt.events`, `basalt.values`, and so on. Functions are camelCase and some drop the area name: `players::player_name`
+  is `players.name`, `events::event_player` is `events.playerOf`, `commands::command_arg_i64` is `commands.argI64`,
+  `config::config_i64` is `config.getI64`.
+- **Strings in** are slices, `[]const u8`, so a string literal works directly.
+- **Strings out** go into a `[]u8` buffer you pass, and the call gives back `?[]const u8`, a slice of that buffer, or
+  `null` on failure.
+- **Optional arguments** are optionals: pass `null`, or `&args`, for `?*const core.Args`.
+- **Handles** are `core.Player` and `core.Ctx`, both `i32`. `0` is never a valid handle.
+- **`Args`** is `core.Args`: `Args.init()`, then `add(key, value)`, which returns the `Args` so pairs chain. It holds 1024
+  bytes in total, and a pair that does not fit is dropped.
+- **Constants** are `core.Priority.lowest` to `core.Priority.highest`, `core.Level` and `core.Status` for the result codes.
+- **Results**: a call that only does something returns an `i32` status. Zig does not let you ignore a value, so write
+  `_ = basalt.players.send(...)` when you do not check it.
+- **Numbers to text**: `core.formatI64(value, &buf)`, or `std.fmt.bufPrint` from the standard library.
+- **Handlers** are function values, `*const fn (ctx: core.Ctx) void`. They cannot capture variables, so keep state in
+  file-level `var`s.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `values.Writer.init(buffer)` writes into a buffer
+you own (`Writer.initAlloc(allocator)` grows one instead), and a call that returns a value gives you
+`Error!values.Value`, which you read in place. This keeps a count of joins in a JSON document (it needs the `storage`
+[capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```zig
+fn recordJoin(who: []const u8) void {
+    var reply: [1024]u8 = undefined;
+    var total: i64 = 0;
+    if (basalt.server.dataRead("joins", &reply)) |doc| {
+        if (doc.find("total")) |value| total = value.asInt() orelse 0;
+    } else |_| {}
+
+    var out: [256]u8 = undefined;
+    var writer = basalt.values.Writer.init(&out);
+    writer.beginMap();
+    writer.key("total");
+    writer.int(total + 1);
+    writer.key("last");
+    writer.string(who);
+    writer.end();
+    const document = writer.finish() catch return;
+    _ = basalt.server.dataWrite("joins", document);
+}
+```
+
+The writer has `nullValue`, `boolean`, `int`, `float`, `string`, `bytes`, `beginList`, `beginMap`, `end` and `key`, and
+`finish()` returns the document or `error.Invalid` or `error.Overflow`. For reading, `find` (a map), `at` (a list),
+`count` and `items()` walk a document, and `asInt`, `asFloat`, `asBool`, `asString` and `asBytes` return an optional that
+is `null` when the value has another kind. Errors from calls are `error.Absent`, `Stale`, `Invalid`, `Denied`, `Failed`
+and `TooLarge`, matching the [result codes](/docs/server/wasm-execution-model#result-codes). The slice a getter returns
+points into your buffer, so keep the buffer alive while you read.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles for `wasm32-freestanding` in `ReleaseSmall` and writes `build/plugin.wasm`, then checks it. The plugin above is
+about 2.1 KB and builds in a fraction of a second. `kiln pack` writes `build/greeter-0.1.0.bspkg` for the server's
+`plugins/` folder, see [Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang zig --target proxy`, with `@import("basalt_proxy")` in place
+of `@import("basalt_server")`. Proxy plugins are packed as `.bppkg`, see [Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **`ReleaseSmall` turns the safety checks off.** An out-of-range slice index or an integer overflow is not caught and
+  stopped as it would be in a safe build, so check indexes and sizes yourself.
+- **The standard library works where it needs no operating system.** `std.fmt`, `std.mem`, the containers and
+  `std.heap.wasm_allocator` are available. There are no files, threads, sockets or clock, because there is no OS under
+  the module.
+- **No allocator by default.** The SDK never allocates. If you want heap memory, take `std.heap.wasm_allocator`; it reuses
+  memory you free, but the module's memory never shrinks.
+- **At most 1024 callbacks.** Each listener, command, task and menu slot you register takes one entry for the life of the
+  module. Registering beyond that returns `Status.invalid`.
+- **Your buffer must hold the answer.** Calls that return a value fail with `error.TooLarge` when the
+  answer does not fit the buffer you pass, so size it for the biggest answer you expect. Documents can be up to 1 MiB.
+- **`players.online` fills nothing when the array is too small.** Size the array above the number of players you expect
+  online, and treat a result equal to the array length as possibly cut off.
+- **A trap disables the plugin, not the server.** `unreachable`, `@panic` and a division by zero stop the callback and
+  count as a failure, see [Execution model](/docs/server/wasm-execution-model).
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `zig`.

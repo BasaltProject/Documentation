@@ -1,0 +1,174 @@
+---
+title: Rust
+description: Write a Basalt plugin in Rust: native speed, closures as handlers and the standard library, in a module of tens of kilobytes.
+group: Languages
+---
+
+Choose Rust when you want native speed together with a language that looks after memory and strings for you. Handlers can
+be closures, text comes back as `String`, and the standard library collections work, so plugins read much like ordinary
+Rust. The cost is size and a few limits: a small plugin is about 20 KB because the standard library and allocator come
+with it (compared with 2 KB in C), and there is no Cargo, so there are no outside crates, only `std` and the SDK.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `rustc` on your `PATH` when it has the `wasm32-unknown-unknown` standard library installed
+(`rustup target add wasm32-unknown-unknown`), and otherwise downloads Rust 1.100 (about 180 MB, 503 MB unpacked) into a
+per-user cache on the first build, on Linux, macOS and Windows. Kiln calls `rustc` directly, never Cargo. See
+[Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang rust
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/lib.rs
+```
+
+`src/lib.rs` is the root of your plugin; other files are ordinary modules declared with `mod` from it. There is no
+`Cargo.toml`. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is
+rebuilt each time.
+
+## The entry point
+
+Write `pub fn init()` in `src/lib.rs`. Kiln generates the exports the server needs and calls your `init` once, after the
+module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/lib.rs`.
+
+```rust
+use basalt_server::commands;
+use basalt_server::core::{Args, Ctx, NORMAL};
+use basalt_server::{events, log, players};
+
+fn on_join(ctx: Ctx) {
+    let player = events::player(ctx);
+    if player == 0 {
+        return;
+    }
+    let name = players::name(player).unwrap_or_default();
+    players::send(player, "<green>Welcome, {name}!", &Args::new().add("name", &name));
+}
+
+fn hello(ctx: Ctx) {
+    let times = commands::arg_i64(ctx, "times").unwrap_or(1);
+    for _ in 0..times {
+        commands::reply(ctx, "<yellow>Hello from greeter!", &Args::new());
+    }
+}
+
+pub fn init() {
+    log::info("greeter loaded");
+    events::on("player.join", NORMAL, on_join);
+    commands::register("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`events::on` listens to an event, see [Events](/docs/server/wasm-events); `commands::register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Rust spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: the `basalt_server` crate, with one module per area, `basalt_server::players`, and so on.
+  Functions are snake_case and some drop the area name: `players::player_name` is `players::name`,
+  `events::event_player` is `events::player`, `commands::command_arg_i64` is `commands::arg_i64`, `config::config_i64` is
+  `config::i64`. Others keep it, such as `menus::menu_create`.
+- **Strings in** are `&str`.
+- **Strings out** are `String`, or `Option<String>` when the call can fail, so `unwrap_or_default()` gives an empty one.
+- **Optional arguments** are not optional in the signature: a call that takes text arguments takes `&Args`, and
+  `&Args::new()` means none.
+- **Handles** are `core::Player` and `core::Ctx`, both `i32`. `0` is never a valid handle. Calls that list handles, such as
+  `players::online()`, return a `Vec`.
+- **`Args`** is `core::Args`, a builder: `Args::new().add("name", &name).add("amount", &amount)`.
+- **Constants** are `core::LOWEST` to `core::HIGHEST` (`i32`) for priorities, `core::DEBUG` to `core::ERROR` for levels,
+  and `core::ERR_ABSENT` and the like for result codes.
+- **Results**: a call that only does something returns an `i32` status, which you may ignore.
+- **Handlers** are closures or functions, anything that is `FnMut(Ctx) + 'static`, so `events::on("player.join", NORMAL,
+  move |ctx| { ... })` can capture what it moves in. State shared between handlers lives in a `thread_local!` with a `Cell`
+  or `RefCell`, or in an `Rc<RefCell<..>>` captured by each closure.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `values::Writer::new()` grows as needed, its
+methods chain, and a call that returns a value gives you `Result<OwnedValue, CallError>`; `.root()` is the value to read.
+This keeps a count of joins in a JSON document (it needs the `storage`
+[capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```rust
+use basalt_server::{server, values};
+
+fn record_join(who: &str) {
+    let total = match server::data_read("joins") {
+        Ok(doc) => doc.root().find("total").and_then(|v| v.as_i64()).unwrap_or(0),
+        Err(_) => 0,
+    };
+
+    let mut doc = values::Writer::new();
+    doc.begin_map();
+    doc.key("total").int(total + 1);
+    doc.key("last").string(who);
+    doc.end();
+    server::data_write("joins", &doc);
+}
+```
+
+The writer has `null`, `boolean`, `int`, `float`, `string`, `bytes`, `begin_list`, `begin_map`, `end` and `key`;
+`Writer::with_limit(n)` caps its size, and `finish()` returns the document or a `WriteError`. For reading, `find` (a map),
+`at` (a list), `count`, `iter()` and `entries()` walk a document, and `as_i64`, `as_f64`, `as_bool`, `as_str` and
+`as_bytes` return an `Option`, `None` when the value has another kind. The `CallError` of a failed call is the
+[result code](/docs/server/wasm-execution-model#result-codes) it stands for.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles the SDK and your crate with `rustc` for `wasm32-unknown-unknown`, with `opt-level=s`, `panic=abort` and fat LTO,
+and writes `build/plugin.wasm`, then checks it. The plugin above is about 19 KB and builds in about a second once the
+toolchain is in place. `kiln pack` writes `build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see
+[Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang rust --target proxy`, with `basalt_proxy` in place of
+`basalt_server` (`basalt_proxy::events::on`). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **`std` is there, the operating system is not.** `String`, `Vec`, `HashMap`, `format!` and iterators work. Threads,
+  files, sockets and the clock do not, and `println!` prints nowhere: write to the server log with `log::info`.
+- **Float formatting costs size.** Printing a float pulls in a lot of formatting code: one `format!("{}", 1.5)` added
+  about 20 KB to the plugin above.
+- **A panic is a trap.** With `panic=abort`, a panic stops the callback and counts as a failure (three in a row switch the
+  plugin off), see [Execution model](/docs/server/wasm-execution-model). An index out of range or an `unwrap` on `None`
+  panics, so prefer `unwrap_or` and `get` in handlers.
+- **There is no Cargo.** You cannot add crates. Small helpers go in your own modules.
+- **Memory is freed.** The allocator reuses what you drop, so a plugin that allocates per call does not grow without
+  bound.
+- **One thread.** Types do not need to be `Send` or `Sync`, and `thread_local!` is the simplest home for plugin state.
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `rust`.

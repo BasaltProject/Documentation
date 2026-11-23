@@ -1,0 +1,215 @@
+---
+title: Permissions
+description: Ask whether someone may do something, grant or deny a node for a session, and become a provider that answers the server's permission questions.
+group: Plugin API
+---
+
+Permissions on a Basalt server come from `config/groups.toml` by default, see
+[Groups and permissions](/docs/server/groups-and-permissions). A plugin can take part in three ways: it can **ask** whether
+a player or the console holds a node, it can **grant or deny** a node to one player for the time they are online, and it can
+become a **provider**, the source that answers the server's own questions, for example to give a rank from your own
+database or to switch commands off in one world.
+
+Function names are written as in C++ (`server::permission_has`). Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk). None of these calls needs a capability.
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void fly(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::players::player_by_name(bs::commands::command_source_name(ctx).c_str());
+    if (bs::server::permission_has(player, "ranks.fly") != 1) {
+        bs::commands::command_reply(ctx, "<red>You may not fly here.");
+        return;
+    }
+    bs::commands::command_reply(ctx, "<green>Flight is yours.");
+}
+
+static void on_join(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    if (player != 0) {
+        bs::server::permission_grant(player, "ranks.fly");
+    }
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+    bs::commands::command("fly", "", fly);
+}
+```
+
+A permission is a dotted node such as `ranks.fly`. Any plugin may invent its own nodes, and server owners then write them
+in `groups.toml` like any other.
+
+## How an answer is found
+
+When the server, or your plugin, asks whether someone holds a node, the question goes down a chain and the first part that
+has an opinion decides:
+
+1. **Providers**, from the highest priority to the lowest. A provider can say yes, no, or leave it undecided.
+2. **Grants and denials** that plugins gave a player with `server::permission_grant` and `server::permission_deny`.
+3. **`groups.toml`**: the rules of the player's group and of the groups it inherits from, where the most specific rule wins,
+   see [Which rule wins](/docs/server/groups-and-permissions#which-rule-wins).
+
+A node that nothing in the chain mentions is denied. So a provider that answers `0` overrides a group that grants the node,
+and a provider that stays silent leaves the decision to the grants and the groups.
+
+## Asking
+
+| Call | Does |
+|---|---|
+| `server::permission_check(subject, node)` | Asks the whole chain about a subject: the text `console`, a player uuid or a player name. Returns 1 when granted, 0 when denied |
+| `server::permission_has(player, node)` | The same for an online player you hold a handle for. Returns 1 or 0 |
+| `server::permission_meta(subject, key)` | A text option for a subject, such as `prefix` or `suffix`, as a `Text<128>`: `ok()` is false when nobody provides one |
+
+```cpp
+static void who(bs::core::Ctx ctx) {
+    const auto prefix = bs::server::permission_meta(bs::commands::command_source_name(ctx).c_str(), "prefix");
+    bs::commands::command_reply(ctx, prefix.ok() ? prefix.c_str() : "<gray>No prefix");
+    const int console = bs::server::permission_check("console", "ranks.fly");
+    bs::commands::command_reply(ctx, console == 1 ? "<green>The console may fly." : "<red>The console may not.");
+}
+```
+
+- `permission_check` takes a name or uuid so it can answer for someone you only know by name. It returns `ERR_ABSENT` when
+  the subject is not online, because the providers can only decide for players who are connected. The console always
+  gets an answer.
+- `permission_has` returns `ERR_STALE` when the player has left, and `ERR_INVALID` for an empty node.
+- Compare with `== 1`. `ERR_ABSENT` is negative, so a test such as `if (permission_check(...))` is also true for it.
+- Options come from providers: a `prefix` exists only when some provider, usually from another plugin, gives one.
+- Your own provider is never asked a question your own plugin raised, see [Becoming a provider](#becoming-a-provider).
+
+## Granting and denying for a session
+
+A plugin can add a node to one player, or take it away, on top of whatever their group says:
+
+| Call | Does |
+|---|---|
+| `server::permission_grant(player, node)` | The player holds the node until they leave |
+| `server::permission_deny(player, node)` | The player does not hold the node until they leave |
+| `server::permission_drop(player, node)` | Removes this plugin's own grant or denial of the node |
+
+Each entry belongs to the plugin that made it, so `permission_drop` never removes another plugin's entry. The entries are not
+saved and are gone when the player leaves: give them again from `player.join`, as the example above does. The player's
+command tree is sent again whenever an entry changes, so tab completion and the commands they see follow at once.
+
+Each call returns 0, `ERR_STALE` when the player has left, or `ERR_INVALID` for an empty node.
+
+Use this for rules that depend on what is happening now: a minigame that lets its players use `/spectate` for the length of
+a round. For a permanent rank, put the node in a group instead.
+
+## Becoming a provider
+
+A provider is how a plugin supplies permissions of its own: ranks stored in another system, a vote reward, a world that
+switches commands off. It registers once, and from then on the server asks it whenever someone's permission is looked up.
+
+```cpp
+static bool same(const char* a, const char* b) {
+    while (*a != 0 && *a == *b) {
+        ++a;
+        ++b;
+    }
+    return *a == *b;
+}
+
+static void lobby_rules(bs::core::Ctx ctx) {
+    const auto kind = bs::server::permission_query(ctx, "kind");
+    const auto node = bs::server::permission_query(ctx, "node");
+    if (same(kind.c_str(), "meta")) {
+        if (same(node.c_str(), "prefix")) {
+            bs::server::permission_answer_meta(ctx, "<gray>[Guest] ");
+        }
+        return;
+    }
+    const auto world = bs::server::permission_query(ctx, "world");
+    if (same(world.c_str(), "lobby") &&
+        (same(node.c_str(), "basalt.command.fill") || same(node.c_str(), "basalt.command.setblock"))) {
+        bs::server::permission_answer(ctx, 0);
+    }
+}
+
+void plugin_init() {
+    bs::server::permission_provide(10, bs::server::kProvideCheck | bs::server::kProvideMeta, lobby_rules);
+}
+```
+
+Nobody can use `/fill` or `/setblock` in the world `lobby` now, whatever their group says, and every player has the option
+`prefix` set to `[Guest] ` for plugins that ask for it. For every other question the handler answers nothing, so the grants
+and `groups.toml` decide.
+
+| Call | Does |
+|---|---|
+| `server::permission_provide(priority, kinds, handler)` | Registers the provider and returns its handle. `priority` has to be above 0 and a higher one is asked first. `kinds` is `server::kProvideCheck` (yes or no questions), `server::kProvideMeta` (options), or both added together. Either error is `ERR_INVALID` |
+| `server::permission_query(ctx, field)` | Inside the handler: a text field of the question, as a `Text<128>` |
+| `server::permission_answer(ctx, answer)` | Inside the handler, for a `check` question: 1 to grant, 0 to deny, -1 for undecided |
+| `server::permission_answer_meta(ctx, text)` | Inside the handler, for a `meta` question: the option's text |
+| `server::permission_provider_remove(handle)` | Stops a provider. `ERR_ABSENT` for a handle that is unknown or already removed |
+| `server::permission_changed()` | Tells the server that the answers of your providers changed, see below |
+
+The provider stops when the plugin unloads, so `permission_provider_remove` is only needed to stop one while the plugin keeps
+running. `permission_provider_remove` and `permission_changed` are not in the C and C++ SDKs.
+
+### What the handler is asked
+
+The handler receives a context that describes the question. `permission_query` reads one text field of it; the fields are:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `check` for a yes or no question, `meta` for an option |
+| `name` | The name of the subject, `CONSOLE` for the console |
+| `uuid` | The player's uuid, empty for the console |
+| `node` | The permission node, or the option key for a `meta` question |
+| `world` | The world the player is in, empty when they are in none or for the console |
+
+The whole question is also available as a [value](/docs/server/wasm-values) through `server::result(ctx, reply)`, which adds
+the boolean `console`. Not answering, or answering -1, leaves the decision to the next provider and then to the grants and
+the groups.
+
+### The rules
+
+- **Decide inside the call.** A provider is a decision, not a request. The answer has to be given before the handler
+  returns, and a handler cannot wait for anything. Keep what you need in memory, filled in earlier from a task or an event,
+  so the answer is a lookup.
+- **Not every question reaches you.** A question raised while your plugin is inside another of its own callbacks, or raised
+  on a thread plugins do not run on, is treated as undecided by your provider.
+- **You never answer yourself.** When your own plugin calls `permission_check`, `permission_has` or `permission_meta`, its
+  own providers are not asked, so a plugin cannot loop on its own answers. Other plugins' providers and the groups are.
+- **Be quick.** Like every callback, a provider that stays busy for about a quarter of a second is interrupted, and three
+  failures in a row switch the plugin off until `/plugins reload`.
+
+### When your answers change
+
+The server sends a player their command tree, the list of commands they can see and complete, when their permissions change.
+If a rank in your own database changes while the player is online, the server cannot know: call `server::permission_changed()`
+and it sends the trees again, so the commands the player sees follow the new answers.
+
+## What it returns
+
+| Result | Meaning here |
+|---|---|
+| 1 or 0 | Granted or denied |
+| `ERR_ABSENT` | `permission_check` or `permission_meta`: the subject is not online, or no provider gives the option |
+| `ERR_STALE` | The player handle is no longer valid, or an answer was given after the handler returned |
+| `ERR_INVALID` | An empty node or key, a priority that is not above 0, no kind, an answer that is not -1, 0 or 1, or an answer to a question of another kind |
+
+## Things that catch people out
+
+- `permission_check` has three outcomes, not two. Treat anything but 1 as not allowed, and `ERR_ABSENT` as "not known".
+- Grants and denials last until the player leaves. They are not saved.
+- A provider that answers 0 wins over a group that grants. To only add permissions, answer 1 for your nodes and stay silent
+  for the others.
+- Your provider does not see your own questions, so you cannot test it by calling `permission_has` from the same plugin.
+  Test it from another plugin, or look at its effect in game.
+- `server::permission_query` gives a `Text<128>`: a name or node longer than that is cut.
+- Options are text and are not parsed for you. A `prefix` is usually MiniMessage, and whoever shows it decides how.
+
+## Where to go next
+
+| You want | Read |
+|---|---|
+| The `groups.toml` side: groups, inheritance, which rule wins | [Groups and permissions](/docs/server/groups-and-permissions) |
+| To protect a command with a node | [Commands](/docs/server/wasm-commands) |
+| To grant a node when a player joins | [Events](/docs/server/wasm-events) |
+| To read your own question as a value | [Values](/docs/server/wasm-values) |

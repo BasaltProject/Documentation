@@ -1,0 +1,584 @@
+---
+title: Scoreboards, boss bars, holograms and NPCs
+description: Draw scoreboards, boss bars, holograms, NPCs, tab list text and claimable screen surfaces for players from a WebAssembly plugin.
+group: Plugin API
+---
+
+This page covers everything a plugin puts in front of a player that is not a chat message: scoreboards with their
+objectives, scores and teams, boss bars, floating text, fake players, the tab list, and the screen surfaces (sidebar, boss
+bar, tab list, name tag, chat format) that several plugins and the operator's own files can share. The calls live in the
+`hud` area of the SDK.
+
+Functions are written here as `area::function`, the C++ spelling. Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk). The configuration-file side of the same screens (`scoreboard.toml`, `boss_bar.toml`,
+`tab_list.toml`) is in [Server list, tab list, scoreboard and boss bar](/docs/server/interface).
+
+## A first example
+
+A private sidebar that every player who joins is shown. The board belongs to the plugin, so `/scoreboard` and the
+operator's files never touch it.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static int g_board = 0;
+
+static void on_join(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const auto name = players::player_name(player);
+    hud::score_set(g_board, name.c_str(), "kills", 0);
+    hud::scoreboard_show(player, g_board);
+}
+
+void plugin_init() {
+    g_board = hud::scoreboard_create();
+
+    values::ValueBuffer<128> spec;
+    spec.map().key("title").string("<red>Kills").end();
+    hud::objective_add(g_board, "kills", spec.data(), spec.finish());
+    hud::display_set(g_board, "sidebar", "kills");
+
+    events::on("player.join", core::kNormal, on_join);
+}
+```
+
+Nothing in `plugin.toml` is needed for any of this: the `hud` area has no capability.
+
+## Which one to use
+
+| You want | Use |
+|---|---|
+| Numbers per player or per name that the game itself understands (sidebar scores, hearts under a name, team colours, friendly fire) | A scoreboard: `hud::scoreboard_create`, objectives, scores, teams |
+| A panel of text that is the same for everyone, or built per player, and that plays well with other plugins and with the operator's files | A surface claim: `hud::surface_claim` |
+| A bar across the top that you drive yourself, for some players | A boss bar |
+| Text floating in a world, or a fake player people can click | A hologram, an NPC |
+| A header and footer, or a different name, in one player's tab list | `hud::player_set` |
+
+## Specs, answers and text
+
+### Specs
+
+Most calls that change something take a **spec**: one [value](/docs/server/wasm-values) holding a map. The same rules hold
+everywhere in this area:
+
+- A key you leave out keeps its current setting, so an update only names what changes.
+- A key the call does not know is ignored.
+- A key with the wrong type makes the call return `ERR_INVALID`.
+- A zero-length spec is an empty map.
+
+`hud::player_set` is the one exception to the second rule: it is strict, and an unknown property is `ERR_INVALID`.
+
+In C++ a spec is built with a `values::ValueBuffer<N>`, where `N` is the size in bytes, and passed as a pointer and a
+length: `spec.data(), spec.finish()`. The tables below write that pair as `spec`. A spec that does not fit in the buffer
+makes `finish()` negative, so size the buffer with room to spare.
+
+### Reading an answer
+
+The `get` calls and the list calls write a value into a buffer you provide and return the length the whole answer needs.
+Check that length against your buffer before reading:
+
+```cpp
+char out[512];
+const int size = hud::bossbar_get(bar, out, sizeof out);
+values::Value info;
+if (size > 0 && size <= static_cast<int>(sizeof out) && info.open(out, size)) {
+    const double progress = info.find("progress").f64_or(0.0);
+}
+```
+
+The calls that fill a buffer with a name (`hud::display_get`, `hud::team_of`) write plain text, not a value.
+
+### Text
+
+Every text argument and every `title`, `text`, `name`, `prefix`, `suffix`, `display_name` and header or footer value is
+MiniMessage, with the plugin's language applied: a string that starts with `@` is a key of your language file, anything
+else is MiniMessage. A key your language files do not have makes the call fail, usually with `ERR_ABSENT`. See
+[Text](/docs/server/wasm-text).
+
+## Handles and cleanup
+
+Boards, boss bars, holograms, NPCs and surface claims are handles: positive numbers that belong to the plugin that made
+them. `0` means none. A handle that was removed or released answers `ERR_STALE`, and a malformed one `ERR_INVALID`.
+
+**Everything a plugin makes and does not release is removed when the plugin is disabled**, whatever the reason.
+Holograms and NPCs disappear, private boards are forgotten, surface claims are let go. The one exception
+is a boss bar made with a `key`, which is a bar of the server and stays (see [Boss bars](#boss-bars)).
+
+| Made by | When the plugin is disabled |
+|---|---|
+| `hud::scoreboard_create` | The board is released |
+| `hud::bossbar_create` without `key` | The bar is removed |
+| `hud::bossbar_create` with `key` | The bar stays, with its players |
+| `hud::bossbar_attach` | Nothing is removed: it only gives you a handle to a bar that already exists |
+| `hud::hologram_create`, `hud::npc_create` | Removed |
+| `hud::surface_claim` | Released |
+
+Objectives, scores and teams you put on the **main** scoreboard are part of the server's own scoreboard. Nothing removes
+them when your plugin is disabled, so take them away yourself if they were temporary.
+
+## Scoreboards
+
+A board holds objectives, scores and teams. The **main board** is the one `/scoreboard` and `/team` edit and the one every
+player sees by default. A board you create is your own: it is drawn only for the players you show it to.
+
+| Call | What it does |
+|---|---|
+| `hud::scoreboard_main()` | The handle of the main board. The same handle every time, never stale, and it cannot be released |
+| `hud::scoreboard_create()` | A new empty board of your own, or `ERR_INVALID` when scoreboards are not available |
+| `hud::scoreboard_release(board)` | Forgets a board you created, once no player is shown it. `ERR_INVALID` for the main board |
+| `hud::scoreboard_list(board, what, out, capacity)` | The names the board holds, as a list of strings. `what` is `"objectives"`, `"entries"` or `"teams"` |
+
+### Objectives, display slots and scores
+
+An objective is a named column of scores. An entry is whatever name has a score: a player name, or any text you like (a
+line such as `"Total"` works).
+
+| Call | What it does |
+|---|---|
+| `hud::objective_add(board, name, spec)` | Adds an objective. `ERR_INVALID` when the name is taken or the criterion is unknown |
+| `hud::objective_remove(board, name)` | Removes it. `ERR_ABSENT` when there is none |
+| `hud::display_set(board, slot, objective)` | Shows the objective in a slot. An empty objective name clears the slot |
+| `hud::display_get(board, slot, out, capacity)` | The name of the objective shown in a slot. `ERR_ABSENT` when the slot is empty |
+| `hud::score_set(board, entry, objective, value)` | Sets a score. `ERR_INVALID` when the objective does not exist or is read only |
+| `hud::score_get(board, entry, objective, &out)` | Reads a score. `ERR_ABSENT` when the entry has none |
+| `hud::score_reset(board, entry, objective)` | Forgets one score, or the entry's scores in every objective when `objective` is empty |
+
+The keys of an objective spec:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `criterion` | string | What changes the score. `"dummy"` (the default) is a score only your plugin changes |
+| `title` | text | The heading shown above the scores. Defaults to the objective name |
+| `hearts` | bool | Draw the score as hearts |
+
+The slots are:
+
+| Slot | Where it shows |
+|---|---|
+| `list` | Next to each name in the tab list |
+| `sidebar` | The panel down the right-hand side |
+| `below_name` | Under each player's name tag |
+| `sidebar.team.<color>` | The sidebar, but only for members of the team of that colour. `<color>` is one of `black`, `dark_blue`, `dark_green`, `dark_aqua`, `dark_red`, `dark_purple`, `gold`, `gray`, `dark_gray`, `blue`, `green`, `aqua`, `red`, `light_purple`, `yellow`, `white` |
+
+Any other slot name is `ERR_INVALID`.
+
+### Teams
+
+A team gives its members a shared look and shared rules. A player (by name) or any other entity (by uuid) is on one team of
+a board at a time: joining a team leaves the one before.
+
+| Call | What it does |
+|---|---|
+| `hud::team_add(board, name)` | Adds a team. `ERR_INVALID` when the name is taken |
+| `hud::team_set(board, name, spec)` | Changes the options below. `ERR_ABSENT` when the team does not exist |
+| `hud::team_remove(board, name)` | Removes the team. `ERR_ABSENT` when there is none |
+| `hud::team_join(board, team, entry)` | Puts an entry on the team. `ERR_ABSENT` when the team does not exist |
+| `hud::team_leave(board, team, entry)` | Takes it off. `ERR_ABSENT` when the entry was not on that team |
+| `hud::team_of(board, entry, out, capacity)` | The name of the team an entry is on. `ERR_ABSENT` when on none |
+
+The keys of a team spec:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `display_name` | text | The team's name where the game shows it |
+| `prefix`, `suffix` | text | Put before and after each member's name |
+| `color` | string | One of the sixteen colour names above, or `"none"` |
+| `friendly_fire` | bool | Whether members can hurt each other |
+| `see_invisible` | bool | Whether members see invisible teammates |
+| `name_tags` | string | Who sees the members' name tags: `always`, `never`, `hideForOtherTeams`, `hideForOwnTeam` |
+| `death_messages` | string | Who sees the members' death messages: `always`, `never`, `hideForOtherTeams`, `hideForOwnTeam` |
+| `collision` | string | `always`, `never`, `pushOtherTeams`, `pushOwnTeam` |
+
+```cpp
+hud::team_add(board, "red");
+values::ValueBuffer<192> spec;
+spec.map()
+    .key("prefix").string("<red>[R] ")
+    .key("color").string("red")
+    .key("friendly_fire").boolean(false)
+    .key("collision").string("pushOtherTeams")
+    .end();
+hud::team_set(board, "red", spec.data(), spec.finish());
+hud::team_join(board, "red", "Steve");
+```
+
+### Showing a board to a player
+
+| Call | What it does |
+|---|---|
+| `hud::scoreboard_show(player, board)` | Draws the board for the player instead of the one they had. Showing the main board puts the player back on the default |
+| `hud::scoreboard_shown(player)` | The handle of the board the player sees, when it is the main board or one of yours. `ERR_ABSENT` when it belongs to another plugin |
+
+## Boss bars
+
+A bar is drawn across the top of the screen of the players added to it.
+
+| Call | What it does |
+|---|---|
+| `hud::bossbar_create(spec)` | Makes a bar and returns its handle. `ERR_INVALID` for a bad spec, or when a kept bar with that `key` already exists |
+| `hud::bossbar_attach(id)` | A handle for a bar that already exists, by its id or key. `ERR_ABSENT` when there is none |
+| `hud::bossbar_update(bar, spec)` | Applies the keys present. `ERR_STALE` when the bar is gone |
+| `hud::bossbar_remove(bar)` | Deletes the bar for everyone |
+| `hud::bossbar_player_add(bar, player)`, `hud::bossbar_player_remove(bar, player)` | Who sees it. Adding a player who is already in, or removing one who is not, is fine |
+| `hud::bossbar_players(bar, out, capacity)` | The uuids of the players shown the bar, as a list of strings |
+| `hud::bossbar_get(bar, out, capacity)` | A map with `id`, `key` (a string, or null), `title`, `color`, `style`, `progress`, `darken_sky`, `boss_music`, `fog` and `visible`. The title comes back in the server's own text form |
+| `hud::bossbar_kept(out, capacity)` | The ids of the kept bars, as a list of strings |
+
+The keys of a boss bar spec:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `title` | text | The text over the bar |
+| `color` | string | `pink`, `blue`, `red`, `green`, `yellow`, `purple` or `white` |
+| `style` | string | `progress` (a solid bar), `notched_6`, `notched_10`, `notched_12` or `notched_20` |
+| `progress` | number | From 0 to 1 |
+| `darken_sky`, `boss_music`, `fog` | bool | The effects a boss bar can add to the world around the player |
+| `visible` | bool | Hide or show the bar without removing it |
+| `key` | string | Only when creating. A namespaced key such as `arena:wave` that keeps the bar |
+
+### Kept bars
+
+A bar made **without** a `key` lives while the plugin does: it goes when the plugin is disabled or when you remove it.
+
+A bar made **with** a `key` is a kept bar. It is saved with the server, listed by `/bossbar`, and it survives the plugin
+being disabled and the server restarting. That is also why creating it again fails: a kept bar with that key already
+exists. The pattern is to attach first and create only when there is nothing to attach to:
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static int g_bar = 0;
+
+static void on_join(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player != 0) {
+        hud::bossbar_player_add(g_bar, player);
+    }
+}
+
+void plugin_init() {
+    g_bar = hud::bossbar_attach("arena:wave");
+    if (g_bar < 0) {
+        values::ValueBuffer<256> spec;
+        spec.map()
+            .key("key").string("arena:wave")
+            .key("title").string("<red>Wave 1")
+            .key("color").string("red")
+            .key("style").string("notched_10")
+            .key("progress").number(1.0)
+            .end();
+        g_bar = hud::bossbar_create(spec.data(), spec.finish());
+    }
+    events::on("player.join", core::kNormal, on_join);
+}
+```
+
+`hud::bossbar_remove` on a handle deletes the bar itself, kept or not. A handle from `hud::bossbar_attach` is yours to
+drop with `hud::bossbar_remove` only when you want the bar gone. If an operator removes a bar with `/bossbar remove`,
+your handle becomes `ERR_STALE`.
+
+## Holograms
+
+A hologram is floating text the server draws at a position in a world. Everybody sees it unless you limit its audience.
+
+| Call | What it does |
+|---|---|
+| `hud::hologram_create(world, text, x, y, z)` | Makes a hologram and returns its handle. `ERR_ABSENT` when the world does not exist or a `@key` is missing; `ERR_INVALID` when the server could not make it |
+| `hud::hologram_set(hologram, spec)` | Changes it. `ERR_INVALID` for a partial position or a key of the wrong type |
+| `hud::hologram_get(hologram, out, capacity)` | A map with `id` (the entity id), `world`, `x`, `y`, `z`, `alive`, `text` and `audience` |
+| `hud::hologram_remove(hologram)` | Removes it |
+
+The keys of a hologram spec:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `text` | text | The new text |
+| `x`, `y`, `z` | number | Move it. All three together, or none |
+| `audience` | list of strings, or null | Player names or uuids who see it. `null` shows it to everyone again |
+
+In `hud::hologram_get`, `audience` is a list of uuids, or null for everyone.
+
+```cpp
+const int sign = hud::hologram_create("world", "<yellow>Welcome to spawn", 0.5, 66.0, 0.5);
+
+values::ValueBuffer<192> spec;
+spec.map().key("text").string("<yellow>Welcome back").key("audience").list().string("Steve").end().end();
+hud::hologram_set(sign, spec.data(), spec.finish());
+```
+
+## NPCs
+
+An NPC is a fake player drawn to its viewers: a name, a skin, something in its hand, and a callback for when someone
+clicks it.
+
+| Call | What it does |
+|---|---|
+| `hud::npc_create(spec, click)` | Makes an NPC and returns its handle. `click` is the callback for a click, or `nullptr` for none. `ERR_ABSENT` for an unknown world; `ERR_INVALID` for a bad spec |
+| `hud::npc_set(npc, spec)` | Changes it |
+| `hud::npc_get(npc, out, capacity)` | A map with `id` (the entity id), `uuid`, `name`, `world`, `x`, `y`, `z`, `alive`, `audience`, `health`, `max_health`, `flags`, `pose` and `held_slot` |
+| `hud::npc_item(npc, slot, out, capacity)` | What the NPC holds in a slot, as a map with `item` and `count`. `ERR_ABSENT` when the slot is empty |
+| `hud::npc_attribute(npc, name, &out)` | The current value of an attribute. `ERR_ABSENT` when the NPC does not have it |
+| `hud::npc_animate(npc, action)` | Plays an animation |
+| `hud::npc_remove(npc)` | Removes it |
+
+### Creating one
+
+The keys of the create spec:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | text | Required, not empty |
+| `x`, `y`, `z` | number | Required, all three |
+| `world` | string | A world name. The default world when left out |
+| `uuid` | string | A fixed uuid for the NPC. It cannot be combined with a click callback |
+| `skin` | map | `texture` (and optionally `signature`), or `name` of an online player whose skin is copied |
+
+The new NPC has two attributes, `max_health` and `movement_speed`. A name without a namespace means `minecraft:`.
+
+### Changing one
+
+`hud::npc_set` takes these keys. They are applied in this order, and `OK` is returned when all of them applied. The
+first one that fails makes the call `ERR_INVALID`, and the keys before it have already taken effect.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | text | The name over its head |
+| `x`, `y`, `z` | number | Move it. All three together, or none |
+| `yaw`, `pitch` | number | Where it looks |
+| `looks_at_players` | bool | Turns its head to follow nearby players |
+| `skin` | map | As when creating |
+| `audience` | list of strings, or null | Names or uuids who see it. `null` shows it to everyone |
+| `health` | number | Its health |
+| `held_slot` | int | The hotbar slot it holds, 0 to 8 |
+| `flags` | int | The entity's shared flags byte: 1 on fire, 2 crouching, 8 sprinting, 16 swimming, 32 invisible, 64 glowing, 128 gliding, added together |
+| `pose` | int | The pose number: 0 standing, 2 sleeping, 5 crouching |
+| `attributes` | map | Attribute name to base value, such as `{"max_health": 30}`. An attribute the NPC lacks is `ERR_INVALID` |
+| `equipment` | map | Slot number written as a string to a map with `item` and `count`, or to null to empty the slot |
+
+Equipment slots are the numbers the Bukkit plugins use: 0 to 8 are the hotbar, 36 to 39 are the feet, legs, chest and
+head, and 40 is the off hand. `hud::npc_item` reads the same numbers, from 0 to 40.
+
+`hud::npc_animate` takes the action number of the vanilla animate packet: 0 swings the main hand, 3 swings the off hand,
+4 and 5 show critical hit particles.
+
+An NPC is not a tab list entry, so it never shows in the player list.
+
+### The click callback
+
+When a player clicks the NPC, the callback runs with a ctx that carries a value: a map with `npc` (the handle), `player`
+(the clicker's name) and `uuid`. Read it with `server::result`, and turn the name into a player handle with
+`players::player_by_name`.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void clicked(core::Ctx ctx) {
+    server::Reply<> click;
+    if (server::result(ctx, click) < 0) {
+        return;
+    }
+    const char* text = nullptr;
+    int length = 0;
+    if (!click.value.find("player").as_str(text, length)) {
+        return;
+    }
+    char who[48] = {};
+    for (int i = 0; i < length && i < 47; ++i) {
+        who[i] = text[i];
+    }
+    const core::Player player = players::player_by_name(who);
+    if (player != 0) {
+        players::send(player, "<aqua>Guide: <white>the shop is just over there.");
+    }
+}
+
+void plugin_init() {
+    values::ValueBuffer<256> spec;
+    spec.map()
+        .key("world").string("world")
+        .key("name").string("<aqua>Guide")
+        .key("x").number(0.5)
+        .key("y").number(64)
+        .key("z").number(0.5)
+        .end();
+    const int npc = hud::npc_create(spec.data(), spec.finish(), clicked);
+
+    values::ValueBuffer<256> more;
+    more.map()
+        .key("looks_at_players").boolean(true)
+        .key("equipment").map()
+            .key("0").map().key("item").string("minecraft:compass").key("count").integer(1).end()
+        .end()
+        .end();
+    hud::npc_set(npc, more.data(), more.finish());
+}
+```
+
+The callback has to return quickly like any other (see [The execution model](/docs/server/wasm-execution-model)). The ctx
+is only good inside the callback.
+
+## The tab list and per-player HUD
+
+`hud::player_set` and `hud::player_get` read and write a handful of properties of one player's screen, addressed by name.
+
+| Call | What it does |
+|---|---|
+| `hud::player_set(player, spec)` | Applies the properties present. `ERR_INVALID` for an unknown key or a value of the wrong type |
+| `hud::player_get(player, out, capacity)` | A map holding every property below |
+| `hud::tab_entry(viewer, entity_id, listed)` | Whether this viewer's tab list shows the player with that entity id. `ERR_INVALID` when no online player has that entity id |
+
+| Property | Type | Meaning |
+|---|---|---|
+| `tab_header`, `tab_footer` | text, or null | The lines above and below the tab list. `null` puts the configured tab list back |
+| `list_name` | text, or null | The name shown in the tab list. `null` puts the real name back |
+| `listed` | bool | Whether the player appears in the tab list at all |
+| `list_order` | int | The player's position in the tab list |
+| `score` | int | The score shown on the death screen |
+| `waypoint_style` | string | The style of the player's waypoint, the marker other players see on the locator bar |
+| `waypoint_color` | int | The waypoint colour as an RGB number such as `16711680` for red, or `-1` for none |
+
+```cpp
+values::ValueBuffer<192> spec;
+spec.map()
+    .key("tab_header").string("<green>Arena")
+    .key("tab_footer").string("<gray>Round 3")
+    .key("list_name").string("<gold>Steve")
+    .end();
+hud::player_set(player, spec.data(), spec.finish());
+```
+
+A header or footer set this way replaces what `tab_list.toml` or a `tab_list` surface would draw for that player, until
+you set it back to `null`. `hud::tab_entry` is different: it is one viewer's view of one other player (hide a vanished
+staff member from some players), and it does not touch what the other player sees.
+
+## Surfaces
+
+A surface is a part of the screen that several plugins might want. Instead of drawing it yourself, you **claim** it, say
+how much you want it, and the server draws what the best claim gives, for each player, again and again.
+
+| Surface | What it is | What the content means |
+|---|---|---|
+| `sidebar` | The panel down the right-hand side | `title` is the heading, `lines` the rows (at most 15 are shown) |
+| `boss_bar` | A bar across the top, drawn in white in the plain progress style | `title` is the text. The first line is the progress from 0 to 1 written as text; with no lines the bar is full |
+| `tab_list` | The header and footer of the player list | `title` is the header, `lines` are the footer, one per line |
+| `name_tag` | The text around the names of other players | `title` goes before the name, the first line goes after it. The request names the player whose tag is drawn |
+| `chat_format` | How a chat line looks | `title` is the format, with `{player}` and `{message}` filled in. The request names the speaker |
+
+Content is a map with `title` (text) and `lines` (a list of text). On the sidebar and the boss bar, `%placeholders%` are
+filled in per player, the placeholders of other plugins included, see [Server list, tab list, scoreboard and boss
+bar](/docs/server/interface#placeholders). On the other surfaces write the final text, which a render callback can build
+for each player. The server redraws every 20 ticks, or at the operator's `update-interval-ticks` when the matching file is
+turned on.
+
+| Call | What it does |
+|---|---|
+| `hud::surface_claim(surface, priority, spec, render)` | Claims a surface and returns the claim handle. `spec` is static content, or empty. `render` is a callback, or `nullptr`. `ERR_INVALID` for an unknown surface name |
+| `hud::surface_update(claim, spec)` | Replaces the static content. `ERR_STALE` when the claim is gone |
+| `hud::surface_release(claim)` | Lets go of the surface |
+| `hud::surface_answer(ctx, spec)` | Inside a render callback: the content for that player |
+
+### Static content and render callbacks
+
+A claim draws in one of two ways. With **static content**, you give a spec when claiming and change it with
+`hud::surface_update`; everyone is shown the same thing, apart from the placeholders. With a **render callback**, the
+server calls you for each player at each redraw, and you answer for that player with `hud::surface_answer`. The static
+content is not used once a callback is given.
+
+The callback's ctx carries a map with `surface` (the surface name) and `player` (a name). Answer with a content map; if you
+do not answer, nothing is drawn for that player and the next claim gets its turn.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void render(core::Ctx ctx) {
+    server::Reply<> request;
+    if (server::result(ctx, request) < 0) {
+        return;
+    }
+    const char* name = nullptr;
+    int length = 0;
+    if (!request.value.find("player").as_str(name, length)) {
+        return;
+    }
+    values::ValueBuffer<256> answer;
+    answer.map()
+        .key("title").string("<gold>Arena")
+        .key("lines").list()
+            .string("<gray>Playing as")
+            .string(name, length)
+            .string("<gray>Online <white>%basalt_server_online%")
+        .end()
+        .end();
+    hud::surface_answer(ctx, answer.data(), answer.finish());
+}
+
+void plugin_init() {
+    hud::surface_claim("sidebar", 10, nullptr, 0, render);
+}
+```
+
+A callback costs one call into your plugin per player per redraw, so keep it short, and prefer static content whenever
+everyone sees the same thing.
+
+### Who draws it
+
+For each player, the claims on a surface are tried from the highest priority down, and the first one that gives content
+draws it. Two claims with the same priority tie, the one that asked first keeps it, and the log says so, so give every
+claim a priority you chose. When a higher priority arrives, the log names who took over from whom. A claim that answers
+with nothing, or a plugin that was switched off, lets the next one draw.
+
+A claim also takes over from the operator's files: a plugin holding the `sidebar` draws it even where `scoreboard.toml` is
+off, and when no claim gives content for a player, the operator's file draws for them as it always did. `/plugins surfaces`
+lists every claim with its plugin and priority, and whether it draws, waits or let go.
+
+On the `name_tag` surface, a player who is on a team of the main board keeps that team's look: a team always wins over a
+claim there.
+
+## Errors in this area
+
+| Code | Here it means |
+|---|---|
+| `ERR_ABSENT` | The named objective, team, entry, key, board or world does not exist, or an NPC attribute is missing |
+| `ERR_INVALID` | A bad name, slot or spec, a key of the wrong type, or the server refused (a taken name) |
+| `ERR_STALE` | The handle is gone, or the player is gone. This includes a boss bar removed by a command |
+
+Success is `0`, or the handle for the calls that make something.
+
+## Things that catch people out
+
+- A kept boss bar cannot be created twice. Call `hud::bossbar_attach` first, and create the bar only when that says
+  `ERR_ABSENT`.
+- Positions are all or nothing. A hologram or NPC move needs `x`, `y` and `z` together, and a create needs all three.
+- `hud::npc_set` is not atomic: when a key fails, the keys before it are already applied.
+- A fixed `uuid` and a click callback cannot be used together on an NPC.
+- `hud::npc_item` and `equipment` use the Bukkit slot numbers (36 to 39 for armour, 40 for the off hand), not inventory
+  slot numbers of the player area.
+- The click callback and the render callback give you a player **name**. Turn it into a handle with
+  `players::player_by_name`, and expect `0` when the player left in the meantime.
+- Static surface content is ignored when the claim has a render callback.
+- The sidebar shows 15 lines. More are dropped.
+- Objectives and teams on the main board stay after your plugin is disabled. Boards you made yourself do not.
+- `hud::player_set` replaces the tab header and footer for that player even when a `tab_list` claim or `tab_list.toml`
+  would draw one. Set `tab_header` and `tab_footer` to `null` to hand it back.
+- A boss bar drawn by a `boss_bar` claim is always white and plain. For colours and styles, make a boss bar yourself.
+
+## Where to go next
+
+| To | Read |
+|---|---|
+| Open chest menus and forms | [Menus](/docs/server/wasm-menus) |
+| Build values and read maps | [Values](/docs/server/wasm-values) |
+| Format text, `@keys` and placeholders | [Text](/docs/server/wasm-text) |
+| Find players and send them messages | [Players](/docs/server/wasm-players) |
+| Change what the operator's files draw | [Server list, tab list, scoreboard and boss bar](/docs/server/interface) |

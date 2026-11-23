@@ -1,0 +1,358 @@
+---
+title: Server control
+description: Broadcast to everyone, read server information, look up a profile, and run the administration operations for settings, ticking, access lists, stopwatches and data packs.
+group: Plugin API
+---
+
+This page is for plugins that talk to the whole server rather than to one player: an announcement, a status line, a
+`/tick freeze` of their own, a ban check against the access lists, a data pack function scheduled from code. Running a
+console command from a plugin is on [Commands](/docs/server/wasm-commands) and is not repeated here.
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static void status(core::Ctx ctx) {
+    server::Reply<> info;
+    if (server::info(info) != 0) {
+        commands::command_reply(ctx, "<red>Could not read the server info.");
+        return;
+    }
+    char online[24];
+    char limit[24];
+    core::format_i64(info.value.find("online").i64_or(0), online);
+    core::format_i64(info.value.find("max_players").i64_or(0), limit);
+    core::Args args;
+    args.add("online", online).add("max", limit);
+    commands::command_reply(ctx, "<gray>{online} of {max} players online", &args);
+    server::broadcast("<yellow>Status checked", nullptr, server::kBroadcastPlayers | server::kBroadcastConsole);
+}
+
+void plugin_init() {
+    commands::command("status", "", status);
+}
+```
+
+Names are the C++ spelling, `area::function`. Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk). Answers are [values](/docs/server/wasm-values): maps, lists and scalars you read with
+`Value::find`, `count` and the typed getters.
+
+## Broadcasting
+
+| Call | Does |
+|---|---|
+| `server::broadcast` | Sends a text to every online player, to the console log, or to both |
+| `server::placeholder_fill` | Replaces every `%name%` in a text with the answers of the registered placeholders, for a player or for nobody |
+
+`server::broadcast` takes the text, an argument list (or null) and flags:
+
+| Flag | Value | Audience |
+|---|---|---|
+| `server::kBroadcastPlayers` | 1 | Every online player |
+| `server::kBroadcastConsole` | 2 | The plugin's lines in the server console |
+
+The two combine with `|`. The text follows the usual rules: a string starting with `@` is a lang key, anything else is
+MiniMessage, and each `{name}` comes from the arguments, see [Text](/docs/server/wasm-text). The result is the number of
+players reached, 0 when only the console was asked. No flag at all is `ERR_INVALID`, and a lang key that does not exist is
+`ERR_ABSENT`.
+
+`server::placeholder_fill` takes the text and a player handle (0 for no player) and returns the filled text, up to 256 bytes in the C++ helper. It answers `ERR_STALE` for a player who left.
+
+## Server information
+
+`server::info` fills a map describing the server and the plugin that asks.
+
+| Key | Value |
+|---|---|
+| `software` | The text `Basalt` |
+| `version` | The server version, empty when it is not known |
+| `minecraft` | The Minecraft version the server speaks |
+| `protocol` | The protocol number, an integer |
+| `tps_1m`, `tps_5m`, `tps_15m` | Ticks per second averaged over the last 1, 5 and 15 minutes |
+| `mean_tick_ms` | The mean duration of a tick in milliseconds |
+| `tick_rate` | The current tick rate |
+| `frozen` | Whether ticking is frozen |
+| `paused` | Whether the server paused because nobody is online |
+| `online` | How many players are online |
+| `max_players` | The player limit, 0 when unknown |
+| `plugins` | A list of `{id, name, version, disabled}`, one per loaded plugin |
+| `plugin` | The plugin that asked: `{id, name, version, authors, lane, lanes, folder}` |
+
+`authors` is a list of text. `folder` is the plugin's own folder. `lane` and `lanes` say which execution lane the plugin runs
+in and how many lanes the server has.
+
+The reply helper of the C++ SDK, `server::Reply<>`, holds 1 KiB. On a server with many plugins the answer of
+`server::info` can be larger, and a call whose answer does not fit comes back `ERR_INVALID`. Read big answers into a buffer
+of your own, as shown under [Large answers](#large-answers).
+
+## Looking up a profile
+
+`server::profile_lookup` asks Mojang's services for the uuid and skin of a name, without stopping the server. It returns a
+request handle at once and calls your callback later, once, with the answer.
+
+```cpp
+static void profile_done(core::Ctx ctx) {
+    static char buffer[4096];
+    values::Value profile;
+    if (events::completion_value(ctx, buffer, sizeof buffer, profile) < 0 || profile.is_null()) {
+        log::log_info("profile: unknown name");
+        return;
+    }
+    const char* uuid = "";
+    int length = 0;
+    profile.find("uuid").as_str(uuid, length);
+    log::log_info("profile found");
+}
+
+static void whois(core::Ctx ctx) {
+    const auto name = commands::command_arg_str(ctx, "name");
+    server::profile_lookup(name.c_str(), profile_done);
+}
+```
+
+The answer is a map `{uuid, name, texture, signature}`, or null when the name is unknown or the services cannot be reached.
+`texture` and `signature` are empty when the account has no skin. With a skin the answer is about 2 KB, so read it into a
+buffer of 4 KB or more: the 1 KiB `server::Reply<>` is too small for it. The call answers `ERR_INVALID` for an empty name or
+when too many lookups are already waiting. A request handle can be dropped with the SDK's request cancel (in C++,
+`worlds::world_request_cancel`), after which the callback never runs.
+
+## The administration interface
+
+`server::call` runs an administration operation by name. It takes the operation name, an argument value (or null) and a
+`Reply` to read the answer from. Most arguments are a map, and the answer is whatever the operation says it returns.
+
+```cpp
+static void freeze(core::Ctx ctx) {
+    values::ValueBuffer<64> args;
+    args.map().key("frozen").boolean(true).end();
+    server::Reply<> reply;
+    if (server::call("tick.set_frozen", &args, reply) == 0) {
+        commands::command_reply(ctx, "<gray>Ticking is frozen.");
+    }
+    values::ValueBuffer<64> who;
+    who.map().key("who").string("Steve").end();
+    if (server::call("access.is_banned", &who, reply) == 0 && reply.value.bool_or(false)) {
+        commands::command_reply(ctx, "<red>Steve is banned.");
+    }
+}
+```
+
+An unknown operation name, or arguments the operation cannot read, answers `ERR_INVALID`. The `datapacks.*` operations
+answer `ERR_DENIED` unless the plugin asks for the `datapacks` capability in `plugin.toml`, see
+[Manifest and layout](/docs/server/wasm-plugin-toml). Everything here runs on the plugin's turn and never blocks.
+
+### Finding the operations at run time
+
+The `ops` operation takes no arguments and answers a list of every operation name, sorted, with `ops` last.
+
+```cpp
+static void list_ops(core::Ctx) {
+    server::Reply<> reply;
+    if (server::call("ops", nullptr, reply) != 0) {
+        return;
+    }
+    values::ValueIter it = reply.value.iter();
+    values::Value item;
+    while (it.next(item)) {
+        const char* text = nullptr;
+        int length = 0;
+        char name[64];
+        if (!item.as_str(text, length) || length >= 64) {
+            continue;
+        }
+        for (int i = 0; i < length; ++i) {
+            name[i] = text[i];
+        }
+        name[length] = 0;
+        log::log_info(name);
+    }
+}
+```
+
+The list includes the `datapacks.*` names whether or not the plugin has the capability. The operations are grouped below
+by what they do.
+
+### Settings
+
+`settings.*` reads and changes a few settings of the running server. Values travel as text; booleans are `true` and `false`.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `settings.keys` | none | A list of every key |
+| `settings.get` | `{key}` | The value as text, or null for an unknown key |
+| `settings.set` | `{key, value}` | A bool: whether the value was accepted. False for a read only key or a value that does not fit |
+
+`value` is best given as a string. A whole number, a real or a bool is converted to text for you, but a real turns into
+text with six decimals.
+
+A change lasts until the server stops. These keys are writable:
+
+| Key | Meaning |
+|---|---|
+| `motd` | What the server list shows. Replaces the configured entry |
+| `max_players` | The player limit the server list shows. The limit applied at login stays the configured one |
+| `gamemode` | The default game mode of every world: `survival`, `creative`, `adventure` or `spectator` |
+| `difficulty` | `peaceful`, `easy`, `normal` or `hard`, for every world |
+| `idle_timeout` | Minutes before an idle player is kicked, 0 for never |
+| `pause_when_empty_seconds` | Seconds with nobody online before ticking pauses, 0 never pauses |
+| `pause_allowed` | `false` forbids the pause altogether |
+| `spawn_protection` | The block radius around spawn that only operators may change |
+| `respawn_world` | The name of a loaded world where a player with no spawn point comes back |
+| `autosave` | The switch behind `/save-on` and `/save-off` |
+| `whitelist` | Turns the whitelist on or off |
+| `enforce_allowlist` | Whether players who are not on the whitelist are removed when it changes |
+| `hide_online_players` | Hides the player count from the server list |
+| `allow_flight` | Whether players who hover without being able to fly are left alone instead of kicked |
+| `force_game_mode` | Whether every player is put back in the default game mode on each join |
+| `accept_transfers` | Whether clients sent here by another server's transfer are let in |
+| `status_replies` | Whether the server answers server list pings. Off makes it look unreachable in the list, joins by address still work |
+| `entity_broadcast_range` | The entity tracking range as a percentage, 10 to 1000 |
+| `status_heartbeat_interval` | Seconds between status heartbeats, 0 or more |
+| `operator_user_permission_level` | The permission level of operators, 1 to 4 |
+| `view_distance`, `simulation_distance` | Chunks, 2 to 32, for every world |
+
+These keys can be read but not written: `port`, `bind`, `online_mode`, `enforce_secure_profile`, `bedrock_port`,
+`level_type`, `initial_enabled_packs`, `initial_disabled_packs` (comma separated), `allow_nether`, `allow_end`,
+`generate_structures`, `max_world_size`, `max_chained_neighbor_updates`, `rcon_enabled`, `rcon_port`, `api_enabled`,
+`api_port`, `management_enabled`, `management_host`, `management_port` and `management_tls`.
+
+With nobody online for `pause_when_empty_seconds` the tick loop only serves connections, and logs when it pauses and when
+it resumes. A plugin that needs a heartbeat with nobody online sets `pause_when_empty_seconds` to `0` or `pause_allowed`
+to `false`.
+
+### Ticking
+
+The machinery behind `/tick`.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `tick.rate` | none | The tick rate, a real |
+| `tick.set_rate` | `{rate}` | Null. The rate is a number above 0, held between 1 and 10000 |
+| `tick.frozen` | none | Whether ticking is frozen |
+| `tick.set_frozen` | `{frozen}` | Null. Unfreezing also drops any pending steps |
+| `tick.step` | `{count}` | A bool. Runs `count` ticks while frozen. False when ticking is not frozen |
+| `tick.sprint` | `{count}` | A bool. Runs `count` ticks as fast as possible |
+| `tick.stop_sprint` | none | A bool: whether a sprint was running |
+| `tick.pace` | none | A map `{tps_1m, tps_5m, tps_15m, mean_tick_ms}` |
+| `tick.times` | none | A list of the last hundred tick durations in nanoseconds. The list is a ring: the entries are not ordered by age |
+| `tick.paused` | none | Whether ticking paused because nobody is online |
+
+`count` must be a whole number above 0, and `rate` a number above 0, or the call answers `ERR_INVALID`.
+
+### Server links
+
+The links in the client's pause menu. Clients read the list when they join.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `links.list` | none | A list of `{kind, label, url}` |
+| `links.set` | `{links}`, a list of `{kind, label, url}` | Null. Replaces the whole list |
+
+A `kind` is `bug_report`, `community_guidelines`, `support`, `status`, `feedback`, `community`, `website`, `forums`, `news` or
+`announcements`. A link without one of those kinds shows its `label` instead, as a JSON text component such as
+`{"text":"Rules"}` (plain text works too). Every link needs a `url`, and only `http://` and `https://` addresses are sent to
+clients. A link without a `url` makes the call `ERR_INVALID`.
+
+### Access lists and statistics
+
+These read the same records as the whitelist, ban and operator commands. `who` is a uuid or a player name, and the player
+does not have to be online.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `access.is_banned` | `{who}` | A bool: whether the account is banned. False for someone the server has never seen |
+| `access.is_whitelisted` | `{who}` | A bool |
+| `access.is_operator` | `{who}` | A bool |
+| `access.known` | `{who}` | `{uuid, name, first_seen, last_seen}` (times in milliseconds since the epoch), or null when the server has never seen them |
+| `access.statistic` | `{uuid, key}` | An integer. 0 for a counter that was never raised |
+| `access.set_statistic` | `{uuid, key, value}` | A bool: false for a player the server does not know |
+| `access.last_death` | `{uuid}` | `{dimension, x, y, z}`, or null when the player has not died |
+
+A statistic `key` is the stored key, such as `minecraft:custom/minecraft:jump` or `minecraft:mined/minecraft:stone`.
+`access.known` answers `ERR_INVALID` for an empty `who`, and the statistic operations for an empty `uuid` or `key`.
+
+### Stopwatches
+
+The stopwatches of the `/stopwatch` command. An `id` is a namespaced id such as `example:round`.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `stopwatches.list` | none | A list of ids |
+| `stopwatches.create` | `{id}` | A bool. False when it already exists |
+| `stopwatches.restart` | `{id}` | A bool. False when it does not exist |
+| `stopwatches.remove` | `{id}` | A bool. False when it does not exist |
+| `stopwatches.elapsed` | `{id}` | The seconds it has run, a real, or null when it does not exist |
+
+### Data packs
+
+These need the `datapacks` capability. Packs are enabled and disabled with the `/datapack` command.
+
+| Operation | Arguments | Answer |
+|---|---|---|
+| `datapacks.list` | none | A list of `{id, enabled, required, compatibility, source}`. `compatibility` is `compatible`, `too_old`, `too_new` or `unknown`; `source` is `built_in`, `feature` or `world` |
+| `datapacks.refresh` | none | Null. Rescans the packs folder for new packs |
+| `datapacks.resource` | `{name}` | The file as bytes, or null. `name` is a path in the combined contents of the enabled packs, `data/<namespace>/<folder>/<file>` |
+| `datapacks.resources` | `{prefix}` | A list of the paths that start with the prefix |
+| `datapacks.resource_pack` | `{name}` | The id of the pack that provides that path, or null |
+| `datapacks.functions` | none | A list of every function id |
+| `datapacks.function_tags` | none | A list of every function tag id |
+| `datapacks.scheduled` | none | A list of `{name, trigger_time}` sorted by time. `trigger_time` is the game time in ticks |
+| `datapacks.schedule` | `{function, delay, replace}` | A bool. Schedules a function (`example:tick`) or a tag (`#example:tick`) `delay` ticks from now. `replace` (false by default) first removes the same entry. False for an unknown function or a delay of 0 |
+| `datapacks.unschedule` | `{name}` | An integer: how many entries were removed |
+
+```cpp
+static void schedule(core::Ctx) {
+    values::ValueBuffer<128> args;
+    args.map().key("function").string("example:tick").key("delay").integer(100).key("replace").boolean(true).end();
+    server::Reply<> reply;
+    server::call("datapacks.schedule", &args, reply);
+}
+```
+
+### Large answers
+
+`server::Reply<>` holds 1 KiB, which suits most answers but not `datapacks.functions` on a server with many data packs, the
+list of plugins in `server::info`, or a profile with a skin. Give the call a buffer of your own and read the value from it:
+
+```cpp
+static char g_big[32768];
+
+static void functions(core::Ctx ctx) {
+    bs_val raw;
+    if (bs_server_call("datapacks.functions", nullptr, 0, g_big, sizeof g_big, nullptr, 0, &raw) != 0) {
+        commands::command_reply(ctx, "<red>Could not list the functions.");
+        return;
+    }
+    const values::Value list{raw};
+    core::Args args;
+    char text[24];
+    core::format_i64(list.count(), text);
+    args.add("n", text);
+    commands::command_reply(ctx, "{n} functions", &args);
+}
+```
+
+An answer that does not fit the buffer comes back as `ERR_INVALID`, so size the buffer for the worst case.
+
+## Things that catch people out
+
+- Setting changes last until the server stops. Put the ones you want permanent in the server's own configuration, see
+  [Server settings](/docs/server/server-settings).
+- `max_players` through `settings.set` changes what the server list shows, not who can join.
+- `tick.step` works only while ticking is frozen: freeze first.
+- `access.is_banned` and the other checks answer false for a name nobody has seen, not an error. Use `access.known` to tell
+  an unknown player from a player who is simply not banned.
+- Lists of ids and paths in `datapacks.*` can be long. Use a big buffer, see [Large answers](#large-answers).
+- Without the `datapacks` capability every `datapacks.*` operation is `ERR_DENIED`, even though `ops` lists it.
+- `server::broadcast` with no flag fails with `ERR_INVALID` rather than sending nothing.
+
+## Where to go next
+
+| Page | What is there |
+|---|---|
+| [Commands](/docs/server/wasm-commands) | Registering commands and running a command line from a plugin |
+| [Players](/docs/server/wasm-players) | Everything addressed to one player |
+| [Values](/docs/server/wasm-values) | Building the argument maps and reading the answers |
+| [Services](/docs/server/wasm-services) | Calls between plugins |
+| [Manifest and layout](/docs/server/wasm-plugin-toml) | Asking for the `datapacks` capability |

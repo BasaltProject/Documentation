@@ -1,0 +1,204 @@
+---
+title: Go (TinyGo)
+description: Write a Basalt plugin in Go with TinyGo: small modules and plain Go code, with an allocator that never frees.
+group: Languages
+---
+
+Choose Go when you want to write the plugin in Go: closures work as handlers, strings and slices behave as usual, and a
+greeter compiles to about 4.5 KB. Plugins are built with TinyGo, not the standard Go compiler, and that brings the one
+cost you must know about before you pick it: the memory allocator never gives memory back. Everything the plugin
+allocates stays allocated until the plugin is reloaded, and a plugin that does so on every callback eventually reaches the
+server's memory limit and is switched off, see [Things to know](#things-to-know). There are also no goroutines.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `tinygo` and a `go` already on your `PATH` when you have both, and otherwise downloads TinyGo
+0.44 and Go 1.26 (about 180 and 64 MB, 1.5 GB unpacked) into a per-user cache on the first build, on Linux, macOS and
+Windows. See [Kiln](/docs/server/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang go
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  go.mod
+  main.go
+  resources/config.toml
+  resources/lang/en_us.toml
+```
+
+There is no `src/` folder: the Go package is the project folder, `package main`, and every `.go` file in it is part of the
+plugin. `go.mod` is plain (`module basalt.plugin/greeter`); Kiln supplies the SDK through a generated `go.work` that lives
+under `build/.kiln/go/`, outside your own files. The module is written to `build/plugin.wasm`.
+
+An editor needs that same workspace to resolve the SDK imports. Point it at the file, for example with
+`GOWORK=$PWD/build/.kiln/go/go.work` in the environment of the editor, after the first build.
+
+## The entry point
+
+A package-level `init` function calls `core.Init` with the function that registers everything, and `main` stays empty:
+
+```go
+func init() { core.Init(setup) }
+
+func main() {}
+```
+
+The server runs Go's package initialisation first, and then calls `setup` once after the module loads. That is where you
+register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `main.go`.
+
+```go
+package main
+
+import (
+	"basaltmc.org/sdk/server/commands"
+	"basaltmc.org/sdk/server/core"
+	"basaltmc.org/sdk/server/events"
+	"basaltmc.org/sdk/server/log"
+	"basaltmc.org/sdk/server/players"
+)
+
+func init() { core.Init(setup) }
+
+func main() {}
+
+func setup() {
+	log.LogInfo("greeter loaded")
+	events.On("player.join", core.Normal, onJoin)
+	commands.Command("greeter hello [times: int 1..5]", "", hello)
+}
+
+func onJoin(ctx core.Ctx) {
+	player := events.EventPlayer(ctx)
+	if player == 0 {
+		return
+	}
+	name, _ := players.PlayerName(player)
+	players.Send(player, "<green>Welcome, {name}!", core.NewArgs().Add("name", name))
+}
+
+func hello(ctx core.Ctx) {
+	times, ok := commands.CommandArgI64(ctx, "times")
+	if !ok {
+		times = 1
+	}
+	for i := int64(0); i < times; i++ {
+		commands.CommandReply(ctx, "<yellow>Hello from greeter!", nil)
+	}
+}
+```
+
+`events.On` listens to an event, see [Events](/docs/server/wasm-events); `commands.Command` registers a command from a spec
+such as `greeter hello [times: int 1..5]`, see [Commands](/docs/server/wasm-commands). The text is
+[MiniMessage](/docs/server/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Go spelling is in [The SDK](/docs/server/wasm-sdk).
+
+- **Where things live**: one package per area, `basaltmc.org/sdk/server/<area>`, imported by its own name. Functions are
+  the C++ name in PascalCase: `players::send` is `players.Send`, `players::player_name` is `players.PlayerName`,
+  `commands::command_reply` is `commands.CommandReply`, `events::event_player` is `events.EventPlayer`.
+- **Strings in** are `string`.
+- **Strings out** come with a flag: `(string, bool)`, with `false` when the call failed.
+- **Optional arguments** are `nil` pointers: pass `nil` for no `*core.Args`. A number that may be absent comes back as
+  `(int64, bool)`.
+- **Handles** are `core.Player` and `core.Ctx`, both `int32`. `0` is never a valid handle. `players.PlayersOnline()`
+  returns a `[]core.Player`.
+- **`Args`** is `core.NewArgs().Add(key, value)`, which returns the `*Args` so pairs chain.
+- **Constants** are `core.Lowest` to `core.Highest` for priorities and `core.Debug` to `core.Error` for levels.
+- **Handlers** are `func(core.Ctx)`: named functions, method values or closures, which can capture what they need.
+
+## Working with values
+
+Structured data is a **value**, see [Values](/docs/server/wasm-values). `values.NewValueWriter()` builds a document and its
+methods chain; a call that returns a value gives you `(values.Value, int32)`, a value to read and a status that is `0` when
+the call worked. This keeps a count of joins in a JSON document (it needs the `storage`
+[capability](/docs/server/wasm-plugin-toml#capabilities), see
+[Configuration and storage](/docs/server/wasm-storage#json-documents)):
+
+```go
+import (
+	"basaltmc.org/sdk/server/server"
+	"basaltmc.org/sdk/server/values"
+)
+
+func recordJoin(who string) {
+	var total int64
+	if doc, status := server.DataRead("joins"); status == 0 {
+		if found, ok := doc.Find("total"); ok {
+			total, _ = found.AsInt()
+		}
+	}
+
+	doc, err := values.NewValueWriter().
+		BeginMap().
+		Key("total").Int(total + 1).
+		Key("last").String(who).
+		End().
+		Finish()
+	if err == nil {
+		server.DataWrite("joins", doc)
+	}
+}
+```
+
+The writer has `Null`, `Bool`, `Int`, `Float`, `String`, `Bytes`, `BeginList`, `BeginMap`, `End` and `Key`; `Finish()`
+returns the bytes and an error when the writer failed. For reading, `Find` (a map), `At` (a list), `Count` and `Iter()`
+walk a document, and `AsInt`, `AsFloat`, `AsBool`, `AsString` and `AsBytes` return `(value, ok)` with `ok` false when the
+value has another kind. The status of a failed call is one of the [result codes](/docs/server/wasm-execution-model#result-codes).
+
+## Building
+
+```bash
+kiln build
+```
+
+runs `tinygo build` for `wasm-unknown` with `-opt=z` and no scheduler, writes `build/plugin.wasm` and then checks it. The
+plugin above is about 4.5 KB (about 9 KB with the join counter) and builds in about a second once the toolchain and its
+caches are in place. `kiln pack` writes `build/greeter-0.1.0.bspkg` for the server's `plugins/` folder, see
+[Kiln](/docs/server/wasm-kiln#pack).
+
+## Proxy plugins
+
+The same language writes proxy plugins: `kiln new <id> --lang go --target proxy`, with `basaltmc.org/sdk/proxy/<area>` in
+place of `basaltmc.org/sdk/server/<area>` (`basaltmc.org/sdk/proxy/events`). Proxy plugins are packed as `.bppkg`, see
+[Proxy plugins](/docs/proxy/wasm-plugins).
+
+## Things to know
+
+- **Memory is never freed.** Kiln builds with TinyGo's leaking allocator, so every string, slice, `Args` and value the
+  plugin creates stays in memory until the plugin is reloaded with `/plugins reload`. In the plugin on this page one
+  player joining and one `/greeter hello` use about half a kilobyte that is not given back, and about 2 KB once the join
+  counter is added. Memory grows in doubling steps, and when it passes the plugin memory limit (`memory-mb` under
+  `[plugins]` in the [server settings](/docs/server/server-settings), 32 by default) the plugin is switched off. That is
+  fine for a plugin that reacts to joins and commands, and not for one that builds strings in a task every few ticks.
+  Keep callbacks light, avoid per-tick work that allocates, and do repeated work at a long period.
+- **No goroutines.** There is no scheduler, so a `go` statement fails to compile. Do waiting with the
+  [task calls](/docs/server/wasm-tasks) of the SDK.
+- **Standard library is a subset.** `strings`, `strconv`, `sort`, `math` and the other pure-Go packages work. `fmt` works
+  but is large: using `fmt.Sprintf` once grew the plugin above from 9 KB to 70 KB, and `strconv` is the lighter way to turn
+  a number into text. Nothing that needs an operating system (files, network, processes) is available.
+- **A panic is a trap.** An index out of range or an explicit `panic` stops the callback and counts as a failure (three in a
+  row switch the plugin off), see [Execution model](/docs/server/wasm-execution-model).
+
+## Where to go next
+
+| | |
+|---|---|
+| [The SDK](/docs/server/wasm-sdk) | How calls, handles and errors work in every language |
+| [Values](/docs/server/wasm-values) | The structured data format in full |
+| [Kiln](/docs/server/wasm-kiln) | Creating, building and packing |
+| [Performance](/docs/server/wasm-performance) | Measured numbers and how to keep a tick short |
+
+The same greeter, a leaderboard and a shop are a full example in the
+[ServerPlugin-Example](https://github.com/BasaltProject/ServerPlugin-Example) repository, on the branch `go`.

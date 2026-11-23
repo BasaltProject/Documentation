@@ -1,0 +1,404 @@
+---
+title: Structures, noise and data fixing
+description: Copy and paste structure templates, sample terrain noise without generating chunks, upgrade old saved data and read the game's block and registry tables.
+group: Plugin API
+---
+
+This page is for the parts of the `worlds` area that deal with building blocks bigger than one block and with data that
+does not live in a loaded chunk: structure templates you capture from the world and place again (rotated, mirrored, partly
+decayed), the terrain noise the generator uses, the upgrade of data saved by an older game version, and the read-only
+tables of game data (blocks, items, biomes, tags). The calls are written as `worlds::structure_place` and so on; other
+languages use their own casing, see [The SDK](/docs/server/wasm-sdk). Blocks, chunks and worlds themselves are on
+[Worlds and blocks](/docs/server/wasm-worlds).
+
+None of the calls on this page needs a capability. The `worldgen` capability only guards creating and removing worlds
+and writing raw stored chunks, see [Creating and removing worlds](/docs/server/wasm-worlds#creating-and-removing-worlds).
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace core = basalt::server::core;
+namespace values = basalt::server::values;
+namespace worlds = basalt::server::worlds;
+
+namespace {
+
+char g_template[16384];
+
+void copy_tower(core::Ctx ctx) {
+    const int32_t world = worlds::world_default();
+    const int length = worlds::structure_capture(world, 0, 64, 0, 5, 4, 5, 0, g_template, sizeof g_template);
+    if (length < 0 || length > static_cast<int>(sizeof g_template)) {
+        basalt::server::commands::command_reply(ctx, "<red>Nothing to copy, or too big.");
+        return;
+    }
+    worlds::structure_put("tower:small", g_template, length, 0);
+    basalt::server::commands::command_reply(ctx, "<green>Copied.");
+}
+
+void paste_tower(core::Ctx ctx) {
+    const int length = worlds::structure_get("tower:small", g_template, sizeof g_template);
+    if (length <= 0 || length > static_cast<int>(sizeof g_template)) {
+        basalt::server::commands::command_reply(ctx, "<red>No tower saved.");
+        return;
+    }
+    values::ValueBuffer<128> spec;
+    spec.map()
+        .key("world").string("world")
+        .key("x").integer(40).key("y").integer(64).key("z").integer(40)
+        .key("rotation").integer(1)
+        .end();
+    const int rc = worlds::structure_place(g_template, length, spec.data(), spec.finish());
+    basalt::server::commands::command_reply(ctx, rc == 0 ? "<green>Placed." : "<red>It did not fit.");
+}
+
+} // namespace
+
+void plugin_init() {
+    basalt::server::commands::command("copytower", "", copy_tower);
+    basalt::server::commands::command("pastetower", "", paste_tower);
+}
+```
+
+## Structure templates
+
+A template is a box of blocks (and, if you want them, entities) with a palette, in the same format as the game's own
+structure files. It travels as an NBT compound without a root name, in bytes. You get one by capturing a box of a world,
+keep it under an id such as `tower:small`, and place it anywhere later. The server also lists the templates the game
+ships with, so one id space covers both.
+
+| Call | Does |
+|---|---|
+| `worlds::structure_list` | The id of every template, as a list of strings: game data, saved ones and those kept in memory |
+| `worlds::structure_get` | The template with that id as NBT bytes. `ERR_ABSENT` for an id that is not known |
+| `worlds::structure_put` | Keeps NBT bytes as the template with that id. `ERR_INVALID` for malformed NBT or an empty id |
+| `worlds::structure_remove` | Forgets a template. `ERR_ABSENT` when it was not there |
+| `worlds::structure_file` | The path of the generated file that holds the template, as text; the id itself when it is only in memory. `ERR_ABSENT` for an unknown id |
+| `worlds::structure_capture` | The blocks of a box of a world as template NBT |
+| `worlds::structure_scan` | Lists the blocks and jigsaws a placement would put down, without touching the world |
+| `worlds::structure_place` | Places template NBT into a world |
+
+`structure_put` and `structure_remove` take `flags`. With `disk` (32) `put` also writes the template into the world's
+generated folder, so it survives a restart, and `remove` also deletes that file. Without it the template lives in
+memory only. In C++ the SDK has no constant for it, so write the number.
+
+### Capturing a box
+
+`worlds::structure_capture(world, x, y, z, size_x, size_y, size_z, flags, buffer, cap)` copies the box that starts at
+the corner (x, y, z) and extends `size_x`, `size_y`, `size_z` blocks, as template NBT. Pass `entities` (2048) in `flags`
+to take the entities in the box too. The result is the length of the NBT, which may be larger than your buffer, in which
+case nothing was written and you can call again with a larger one. `ERR_ABSENT` when the box is not loaded, or a size is
+not positive.
+
+A captured template is sized by what it holds, so give the buffer room for it: a box of a few thousand blocks can take
+many kilobytes.
+
+### Looking inside a template
+
+`worlds::structure_scan(nbt, nlen, spec, slen, buffer, cap)` answers what a placement would put where, and leaves the
+world alone. `spec` is a map, and every key in it is optional:
+
+| Key | Meaning |
+|---|---|
+| `x`, `y`, `z` | Where the template's origin would go |
+| `rotation` | 0 to 3 quarter turns clockwise |
+| `mirror` | 0 none, 1 left to right, 2 front to back |
+| `pivot_x`, `pivot_z` | The column the template turns around |
+| `block` | Only blocks with this id, such as `minecraft:jigsaw` |
+| `absolute` | `true` (the default) applies the rotation, mirror and origin; `false` keeps the positions as they are stored in the template |
+
+The answer is a map:
+
+- `size`: `[x, y, z]`, the size of the template.
+- `blocks`: a list of `{x, y, z, state, nbt}`, where `state` is a state id and `nbt` the block entity data as bytes (empty
+  when the block has none).
+- `jigsaws`: a list of maps for the jigsaw blocks in the template, each with `x`, `y`, `z`, `front`, `top`, `rollable`,
+  `name`, `pool`, `target`, `final_state`, `placement_priority` and `selection_priority`.
+
+```cpp
+void scan_jigsaws(const char* nbt, int length) {
+    values::ValueBuffer<128> spec;
+    spec.map().key("block").string("minecraft:jigsaw").key("absolute").boolean(false).end();
+    static char out[4096];
+    worlds::structure_scan(nbt, length, spec.data(), spec.finish(), out, sizeof out);
+}
+```
+
+### Placing a template
+
+`worlds::structure_place(nbt, nlen, spec, slen)` places template NBT. The loaded chunks it covers change; the call
+returns 0, `ERR_ABSENT` when the placement failed, or `ERR_INVALID` for malformed NBT or a bad spec. `spec` is a map:
+
+| Key | Meaning |
+|---|---|
+| `world` | The name of the world to place into (required: a name, not a handle) |
+| `x`, `y`, `z` | Where the origin of the template goes |
+| `rotation` | 0 to 3 quarter turns clockwise (default 0) |
+| `mirror` | 0 none, 1 left to right, 2 front to back (default 0) |
+| `integrity` | A number from 0 to 1: 1 places every block, a lower value leaves some out as if decayed (default 1) |
+| `seed` | The seed that picks which blocks `integrity` leaves out |
+| `entities` | Whether to place the template's entities (default true) |
+| `palette` | Which palette to use when the template has several; -1 picks one at random (default -1) |
+
+A rotation or mirror out of range, or a `world` that is missing or unknown, is `ERR_INVALID`.
+
+## Noise and density
+
+The terrain generator is driven by noise and density functions. These calls evaluate them directly for a seed, without
+generating a chunk, which is how you predict where land will be, or build your own terrain.
+
+### One-off questions
+
+`worlds::noise_query(spec, slen, buffer, cap)` takes a map with an `op`, a `settings` (a noise settings id, default
+`minecraft:overworld`), a `seed` (an integer, default 0) and the arguments of that operation, and answers a value.
+`ERR_ABSENT` when the settings, function or noise are not known, or the operation is not one of these:
+
+| `op` | Other keys | Answers |
+|---|---|---|
+| `shape` | none | A map `{min_y, height, sea_level, default_block, default_fluid, legacy_random_source, disable_mob_generation}`; the two defaults are state ids |
+| `density` | `function`, `x`, `y`, `z` | A number. `function` is `final_density`, `continents`, `erosion`, `depth`, `ridges`, `temperature` or `vegetation` |
+| `density_tree` | `json`, `x`, `y`, `z` | A number: the density function given as JSON text, evaluated at a point |
+| `noise` | `id`, `x`, `y`, `z` | A number: the named noise at a point (coordinates may be fractions) |
+| `noise_range` | `id` | `[min, max]`, the smallest and largest value that noise can return |
+| `height` | `x`, `z`, `ocean_floor?` | An integer: the height of the terrain at that column; with `ocean_floor` true, the floor under the water |
+| `column` | `x`, `z` | Bytes: the state ids of a whole column as little-endian 32-bit integers, lowest block first |
+
+```cpp
+int terrain_height(int x, int z) {
+    values::ValueBuffer<128> spec;
+    spec.map()
+        .key("op").string("height")
+        .key("settings").string("minecraft:overworld")
+        .key("seed").integer(12345)
+        .key("x").integer(x).key("z").integer(z)
+        .end();
+    char out[32];
+    const int length = worlds::noise_query(spec.data(), spec.finish(), out, sizeof out);
+    values::Value answer;
+    if (length > 0 && length <= static_cast<int>(sizeof out) && answer.open(out, length)) {
+        return static_cast<int>(answer.i64_or(0));
+    }
+    return 0;
+}
+```
+
+### A noise you keep
+
+When you sample the same noise many times, build it once and keep the handle.
+
+| Call | Does |
+|---|---|
+| `worlds::noise_create` | Builds a noise from a map and returns its handle. `ERR_ABSENT` for an unknown id, `ERR_INVALID` when the map has neither an `id` nor `parameters` |
+| `worlds::noise_sample` | Writes the noise value at a point into the `double` you pass, and returns 0. `ERR_STALE` for a released handle |
+| `worlds::noise_info` | `[min, max]`, the smallest and largest value the noise can return |
+| `worlds::noise_release` | Drops the noise. Its handle turns stale |
+
+The map for `noise_create` describes the noise in one of two ways, and carries a `seed`:
+
+- `id`: the id of a noise from the game's data, such as `minecraft:jagged`.
+- `parameters`: a map `{base_amplitude, base_octave, octave_count, normalize, amplitudes}` describing your own noise. The
+  defaults are 1.0, 0, 1 and 1. `normalize` is 0 for none, 1 for on and 2 for the legacy kind, and `amplitudes` is a list
+  of numbers. It is used only when there is no `id`.
+- `seed`: a map `{low, high, legacy, nether}`. `low` and `high` are integers, `legacy` and `nether` booleans. Leave a key
+  out for 0 or false.
+
+```cpp
+double noise_at(double x, double z) {
+    static int32_t noise = 0;
+    if (noise <= 0) {
+        values::ValueBuffer<128> spec;
+        spec.map()
+            .key("id").string("minecraft:jagged")
+            .key("seed").map().key("low").integer(12345).key("high").integer(0).end()
+            .end();
+        noise = worlds::noise_create(spec.data(), spec.finish());
+        if (noise <= 0) {
+            return 0.0;
+        }
+    }
+    double value = 0.0;
+    worlds::noise_sample(noise, x, 0.0, z, &value);
+    return value;
+}
+```
+
+The server releases the noises a plugin still holds when the plugin stops, but release them yourself when you are done.
+
+## Fixing old data
+
+Saved data carries the version of the game that wrote it. `worlds::datafix_call(op, args, alen, buffer, cap)` runs the
+same fixers the server applies to its own worlds, so a plugin that reads old files or old exports can bring them up to
+date. `args` is a map; the NBT in and out is an NBT compound without a root name, in bytes. An unknown `op` or an
+unsupported `type` is `ERR_ABSENT`; a missing argument or NBT that cannot be read is `ERR_INVALID`.
+
+| `op` | Keys | Answers |
+|---|---|---|
+| `types` | none | The list of data types that can be fixed |
+| `supports` | `type` | A boolean |
+| `steps` | `type` | The steps for that type: `[{version, sub_version, name}]` |
+| `missing` | `type`, `from`, `to` | The name of the first step in that range that cannot be run, or an empty string when every step can |
+| `upgrade` | `type`, `nbt`, `from`, `to` | The fixed NBT, as bytes |
+| `step` | `type`, `name`, `version_key`, `nbt` | The NBT after one named step, as bytes. `version_key` is the step's `version * 10 + sub_version` |
+| `legacy_state` | `id` | `{name, properties}`: the 1.13 name and properties of a block from before 1.13, whose `id` is the block number times 16 plus its data value (air when unmapped) |
+| `modern_state` | `id` | `{name, properties}`: the current name and properties of that same old id, run through the whole chunk fixer |
+
+`from` and `to` are data versions, the numbers the game uses to tell versions apart; the current one is the
+`data_version` table below.
+
+The data types are `chunk`, `player`, `entity_chunk`, `level`, `structure`, `poi_chunk`, `options`, `hotbar`,
+`world_gen_settings`, `debug_profile`, `stats` and `advancements`, and the saved-data files `random_sequences`, `raids`,
+`map`, `map_index`, `scoreboard`, `tickets`, `world_border`, `custom_boss_events` and `structure_feature_indices`. For a
+saved-data file, the NBT is the compound inside the file's `data` entry. `types` answers the list for the running
+server.
+
+```cpp
+void legacy_block(core::Ctx) {
+    values::ValueBuffer<64> args;
+    args.map().key("id").integer((1 << 4) | 1).end();   // block 1, data 1: granite
+    char out[256];
+    const int length = worlds::datafix_call("legacy_state", args.data(), args.finish(), out, sizeof out);
+    values::Value state;
+    if (length > 0 && length <= static_cast<int>(sizeof out) && state.open(out, length)) {
+        const char* name = nullptr;
+        int size = 0;
+        state.find("name").as_str(name, size);
+        // name holds minecraft:granite, not NUL terminated
+    }
+}
+```
+
+Putting NBT into a request means putting bytes into a value. `ValueBuffer<N>` has a fixed size, so for a larger document
+give a `values::ValueWriter` a buffer of your own:
+
+```cpp
+void upgrade(const unsigned char* nbt, int nbt_length) {
+    static char request[8192];
+    values::ValueWriter args(request, sizeof request);
+    args.map()
+        .key("type").string("entity_chunk")
+        .key("nbt").bytes(nbt, nbt_length)
+        .key("from").integer(3000).key("to").integer(4000)
+        .end();
+    static char out[8192];
+    const int length = worlds::datafix_call("upgrade", request, args.finish(), out, sizeof out);
+    // length bytes of fixed NBT are in out when 0 < length <= sizeof out
+}
+```
+
+For a single item, entity, block state or name there is a shorter way: the `fix_nbt` and `fix_name` tables below.
+
+## Game data tables
+
+`worlds::worlds_data(query, args, alen, buffer, cap)` reads a read-only table of game data by name. The tables come
+straight from the server's registries, so they match the version that is running. `args` is a map, or empty (pass
+`nullptr` and 0) for a table that needs none. `worlds_data("tables")` lists every table name. A table or entry the server
+does not have is `ERR_ABSENT`; missing arguments are `ERR_INVALID`. The answer is a value whose size you cannot know in
+advance, so read it into a buffer you can enlarge, see [The long tail](/docs/server/wasm-worlds#the-long-tail).
+
+A **state id** in the arguments below is a block state number, see
+[Blocks](/docs/server/wasm-worlds#blocks); a **block** is a block id such as `minecraft:oak_stairs`.
+
+**Blocks**
+
+| Table | Arguments | Answers |
+|---|---|---|
+| `blocks` | none | Every block as `{id, first_state, state_count}`: the states of a block are the numbers from `first_state` up |
+| `block_properties` | `block` | `[{name, values}]`, each property with its possible values; an empty list for an unknown block |
+| `state_flags` | `state` | An integer of facts about the state, see below |
+| `block_hardness` | `block` | `{destroy_time, explosion_resistance, requires_tool}`. `ERR_ABSENT` for an unknown block |
+| `block_info` | `state` | A list of numbers, see below |
+| `block_shape` | `state` | The collision boxes: six integers per box (the low corner, then the high corner) in 32nds of a block |
+| `block_outline` | `state`, `x`, `z` | The outline boxes in blocks, six numbers per box, offset for the column the way the game does for plants |
+| `block_visual` | `state` | The visual boxes in blocks, six numbers per box |
+| `block_entity_types` | none | `[{block, type}]`: every block that owns a block entity and the type's id |
+| `block_sounds` | `state` | A list of text: volume, pitch, then the ids of the break, step, place, hit and fall sounds |
+| `block_instrument` | `state` | The note block instrument that sounds over that state, such as `harp` |
+| `tool_facts` | `item` (empty for a bare hand), `state` | `[right_tool, mining_speed]`: 1 or 0 for whether that tool gets the drops, then how fast it mines |
+| `transform_state` | `state`, `rotation` (0 to 3), `mirror` (0 to 2) | The state id that state becomes when mirrored, then turned `rotation` quarter turns clockwise |
+
+`state_flags` is a sum of bits:
+
+| Bit | Value | Means |
+|---|---|---|
+| 0 | 1 | Blocks motion |
+| 1 | 2 | Occludes (solid render) |
+| 2 | 4 | Full cube |
+| 3 | 8 | Replaceable |
+| 4 | 16 | Has a fluid |
+| 5 | 32 | Has collision |
+| 6 | 64 | Conducts redstone |
+| 7 | 128 | Ticks randomly |
+| 8 | 256 | Air |
+| 9 to 12 | `(flags >> 9) & 15` | Light emission |
+| 13 to 17 | `(flags >> 13) & 31` | Light opacity |
+| 18 | 262144 | The block has a block entity |
+
+`block_info` answers eleven numbers in this order: friction, speed factor, jump factor, push reaction (a code), map
+colour (as `0xRRGGBB`), ignite odds, burn odds, instrument index, then three flags as 1 or 0: ignited by lava, is a
+signal source, has an analog output signal. An empty list for a state that does not exist.
+
+**Points of interest, game rules and events**
+
+| Table | Arguments | Answers |
+|---|---|---|
+| `poi_type` | `state` | The point of interest type the state is (`armorer`, `home`), or an empty string |
+| `poi_tickets` | `type` | How many tickets that type offers |
+| `game_rules` | none | `[{id, type, default}]`: every game rule, its type (`boolean` or `int`) and the value a new world starts with, as text |
+| `game_event_frequency` | `event` | The strength 1 to 15 a sculk sensor gives that game event; 0 for one it does not listen to |
+
+**Registries**
+
+| Table | Arguments | Answers |
+|---|---|---|
+| `biomes` | none | Every biome id in registry order; the numbers `world_biomes_read` and `world_biomes_write` use index this list |
+| `items`, `entity_types` | none | Every id, in registry order |
+| `tags` | `registry` (`blocks`, `items`, `fluids` or `entity_types`) | `[{tag, members}]`, each tag with the list of ids in it |
+| `registry` | `registry` | The ids of a registry by name, such as `damage_type` or `particle_type` |
+| `registry_data` | `registry`, `id` | One entry of a registry the clients receive (`damage_type`, `instrument`, `jukebox_song` and the like) as NBT bytes. `ERR_ABSENT` when there is none |
+
+**Data versions**
+
+| Table | Arguments | Answers |
+|---|---|---|
+| `data_version` | none | The data version the server writes |
+| `fix_nbt` | `kind` (`chunk`, `block_entity`, `entity` or `item`), `nbt` (bytes), `from_version` | The NBT upgraded from that version, as bytes |
+| `fix_name` | `kind` (`block_state`, `item` or `biome`), `text`, `from_version` | The text upgraded from that version. A `block_state` is written like `minecraft:oak_stairs[facing=east]` |
+
+Text or NBT from the current version or a newer one comes back unchanged. An unknown `kind` is `ERR_ABSENT`. Block
+states are only fixed from data version 2832 (Minecraft 1.18) on; older text comes back as it was.
+
+```cpp
+void rename(core::Ctx) {
+    values::ValueBuffer<128> args;
+    args.map()
+        .key("kind").string("block_state")
+        .key("text").string("minecraft:grass")
+        .key("from_version").integer(3000)
+        .end();
+    char out[128];
+    const int length = worlds::worlds_data("fix_name", args.data(), args.finish(), out, sizeof out);
+    // out holds a string value with the current name of the block
+    (void)length;
+}
+```
+
+## Things that catch people out
+
+- `structure_place` names the world by **name** in its `spec`, while `structure_capture` takes a world **handle**.
+- `structure_capture` writes nothing when the answer is larger than your buffer: check the returned length before you
+  use the bytes.
+- `structure_put` without the `disk` flag keeps the template in memory only. It is gone after a restart.
+- `structure_place` changes only chunks that are loaded. Make sure the chunks under the placement are loaded first, see
+  [Chunks](/docs/server/wasm-worlds#chunks).
+- Noise answers depend on the `seed`, not on any world. A noise created with `noise_create` has the seed you gave it,
+  not the seed of your world; read the world's seed with `world_get(world, "seed")`.
+- A noise handle is yours and goes stale after `noise_release`.
+- The `datafix_call` and `worlds_data` answers are values of unknown size: use a buffer you can enlarge.
+
+## Where to go next
+
+| Page | For |
+|---|---|
+| [Worlds and blocks](/docs/server/wasm-worlds) | Blocks, chunks, light, biomes, effects, world properties and creating worlds |
+| [Values](/docs/server/wasm-values) | The structured data format of the maps and lists above |
+| [Entities](/docs/server/wasm-entities) | The entities a captured template can carry |

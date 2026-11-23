@@ -1,0 +1,516 @@
+---
+title: Events
+description: Listen to server events from a plugin, read and change their fields, cancel them, filter and observe them, and raise events of your own.
+group: Plugin API
+---
+
+An event is a named moment, such as `player.join` or `block.break`, with a set of named fields. Some events are questions
+the server asks before it acts, and a plugin can answer no. Others are news about something that already happened. The
+server defines more than two hundred of them, every name and field can be listed at run time (see
+[Finding events and fields](#finding-events-and-fields)), and plugins can add events of their own.
+
+```cpp
+#include <basalt/server.hpp>
+
+namespace bs = basalt::server;
+
+static void protect_deep_layers(bs::core::Ctx ctx) {
+    long long y = 0;
+    if (bs::events::event_field_i64(ctx, "y", &y) == 0 && y < 0) {
+        bs::events::event_cancel_with(ctx, "<red>The deep layers are protected.");
+    }
+}
+
+void plugin_init() {
+    bs::events::on("block.break", bs::core::kNormal, protect_deep_layers);
+}
+```
+
+Calls on this page are written in their C++ spelling, `events::on` for instance. Other languages use their own casing,
+see [The SDK](/docs/server/wasm-sdk).
+
+## Listening
+
+`events::on(name, priority, handler)` registers a handler for an event. It returns 0 when the listener is registered and
+`ERR_INVALID` when the event does not exist or the priority is not one of the five below, so check the result in
+`plugin_init`.
+
+The handler receives a `ctx`, the handle of this one occurrence of the event. It answers every `events::event_*` call and
+stops being valid when the handler returns. In C++ a handler is a plain function (or a lambda that captures nothing), so
+state that outlives a call lives in a `static` variable.
+
+Handlers added with `events::on` are **decision** listeners: they run while the server waits for the answer, they may
+cancel the event when it can be cancelled, and they may change its mutable fields. The next section explains what that
+means and how to listen without being part of the decision.
+
+## Decisions and observers
+
+When an event happens the server calls its listeners in two rounds:
+
+1. Every decision listener, from the lowest priority to the highest. They can cancel the event and change fields.
+2. Every post listener, in the same priority order. They see what the decision rounds ended with and can change nothing.
+
+A post listener is how a plugin asks "did this really happen?" without voting. It is registered with the extended
+registration, described [below](#the-extended-registration).
+
+| | Decision listener | Post listener |
+|---|---|---|
+| Runs | Inside the decision, before the server acts | After every decision listener, on a copy of the event |
+| May cancel | Yes, when the event can be cancelled | No |
+| May change fields | Yes, the mutable ones | No |
+| Receives an event another listener cancelled | Only when asked for (`kEventCancelled`) | Only when asked for (`kEventCancelled`) |
+
+What a plugin can and cannot change follows from three facts the server declares for every event:
+
+- **Whether the event can be cancelled.** Events that ask a question (`block.break`, `player.chat`, `player.command`,
+  `player.move`) can. Events that report news (`player.join`, `entity.death`, `world.load`) cannot: by the time you hear
+  about them they are done.
+- **Which fields are mutable.** Only those. Editing `message` on `player.chat` changes what is sent. Fields that describe
+  the situation, such as the position of a break, cannot be edited.
+- **Nothing in a post listener.** Edits and cancels there are refused.
+
+Cancelling a cancellable event is the plugin's whole veto: the server then does not do the thing. A news event is not
+a dead end for plugins either, because some of them carry mutable fields the server reads after the listeners ran, such
+as the join message of `player.join` or the experience of `player.death`.
+
+## Priorities
+
+Five priorities order the listeners of one event across all plugins:
+
+| Priority | C++ | Runs |
+|---|---|---|
+| Lowest | `core::kLowest` | First |
+| Low | `core::kLow` | |
+| Normal | `core::kNormal` | The usual choice |
+| High | `core::kHigh` | |
+| Highest | `core::kHighest` | Last |
+
+Lowest runs first and highest runs last, so the highest priority has the last word. Listeners of the same priority run
+in the order they were registered. Pick `kNormal` unless the order matters: run later (`kHigh`, `kHighest`) when your
+decision should take into account what others decided or edited, and earlier when you want to edit a field before the
+others read it.
+
+## Reading an event
+
+The `events` calls that read the event the handler was called for:
+
+| Call | Reads |
+|---|---|
+| `events::event_name(ctx)` | The event name |
+| `events::event_player(ctx)` | The player handle of events that have `player_name` and `player_uuid`. 0 for other events, and 0 when that player is no longer online |
+| `events::event_field_str(ctx, field)` | A text field, into a 256 byte buffer. `ERR_ABSENT` when the event has no such field or it is unset, `ERR_INVALID` when the field is not text |
+| `events::event_field_i64(ctx, field, &out)` | A whole number field. A boolean field reads as 1 or 0. `ERR_INVALID` for text and decimals |
+| `events::event_get(ctx, field, buffer, capacity, value)` | Any field as a [value](/docs/server/wasm-values): null, boolean, whole number, decimal or text. `ERR_ABSENT` when the event has no such field |
+| `events::event_fields(ctx, buffer, capacity, value)` | Every field with its current value, as one map |
+| `events::event_cancelled(ctx)` | 1 when the event is cancelled so far, 0 when not |
+| `events::event_is_post(ctx)` | 1 inside a post listener, 0 inside a decision listener |
+
+The text reader returns a `Text<256>`: `ok()` says whether the call worked and `c_str()` gives the text. A longer text is
+cut at 256 bytes, so for something that can be long, such as a chat message, use `events::event_get` with a bigger buffer.
+The `Value` it fills points into that buffer, which has to stay alive while you read it, and a buffer that is too small
+answers `ERR_INVALID`.
+
+```cpp
+static void arrived(bs::core::Ctx ctx) {
+    const bs::core::Player player = bs::events::event_player(ctx);
+    const auto from = bs::events::event_field_str(ctx, "from_world");
+    if (player == 0 || !from.ok()) {
+        return;
+    }
+    bs::core::Args args;
+    args.add("from", from.c_str());
+    bs::players::send(player, "<gray>You came from {from}.", &args);
+}
+
+void plugin_init() {
+    bs::events::on("player.world_change", bs::core::kNormal, arrived);
+}
+```
+
+A few things about fields:
+
+- The kind of a field belongs to the event: the coordinates of `block.break` are whole numbers, those of `player.move`
+  are decimals, `amount` of `entity.damage` is a decimal. `events::event_get` tells you which, and a [filter](#filters)
+  has to use the same kind.
+- A field the server left empty reads as null with `events::event_get` and as `ERR_ABSENT` with the typed readers.
+- `name` and `uuid` are accepted as short names for `player_name` and `player_uuid`, and `online` on a player event is the
+  number of players online (without the player who is leaving, on `player.quit`).
+- Everything the handler read is a copy. Hold on to the values you need, not to the `ctx`: any `events::event_*` call
+  with it after the handler returned answers `ERR_STALE`.
+
+## Cancelling an event
+
+| Call | Does |
+|---|---|
+| `events::event_cancel(ctx, true)` | Cancels the event. `ERR_INVALID` when the event cannot be cancelled |
+| `events::event_cancel(ctx, false)` | Lets it through again, undoing an earlier cancel and its message |
+| `events::event_cancel_with(ctx, text, &args)` | Cancels and keeps a message with the event. `text` follows the [text rules](/docs/server/wasm-text): `@key` is a lang key, anything else is MiniMessage. `ERR_ABSENT` when the lang key does not exist |
+| `events::event_cancel_message(ctx)` | The message given by `events::event_cancel_with`. `ERR_ABSENT` when there is none |
+
+Cancelling stops the event, and the listeners after you stop hearing about it unless they asked to receive cancelled
+events. The message is something the **server** shows in three places only:
+
+- `player.login`: it is the text the refused player sees.
+- `server.command`: it is printed on the console.
+- `server.remote_command`: it is the answer sent back to the remote console.
+
+For every other event the message is kept with the event, and other plugins can read it, but the server does not show it
+to anybody. Tell the player yourself, with [`players::send`](/docs/server/wasm-players), as often as you cancel:
+
+```cpp
+static void keep_closed(bs::core::Ctx ctx) {
+    bs::events::event_cancel_with(ctx, "<red>The server is closed for maintenance.");
+}
+
+void plugin_init() {
+    bs::events::on("player.login", bs::core::kNormal, keep_closed);
+}
+```
+
+## Changing an event
+
+`events::event_set(ctx, field, value, length)` replaces one field with an encoded [value](/docs/server/wasm-values).
+Only the fields the event lists as mutable accept it. It returns 0, or `ERR_INVALID` for a field that is not mutable or
+does not exist, a value that does not fit, a post listener or a plugin event.
+
+A value has to fit the field. A whole number sent to a decimal field is converted, and a decimal sent to a whole number
+field is accepted when it is a whole number. A field the server left empty takes any plain value, and null empties a
+field again.
+
+```cpp
+static void greet(bs::core::Ctx ctx) {
+    bs::values::ValueBuffer<64> text;
+    text.string("<yellow>A new face arrives");
+    bs::events::event_set(ctx, "message", text.data(), text.finish());
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, greet);
+}
+```
+
+When several listeners edit the same field, the last one to run wins. That is what priorities are for.
+
+## The extended registration
+
+`events::event_on_ex(name, priority, flags, filters, filters_length, handler)` is `events::on` with three more choices.
+It returns 0 or `ERR_INVALID` for an unknown event, a priority or flags it does not accept, a filter on a field the event
+does not have, or a filter that is not a map.
+
+| Flag | C++ | Meaning |
+|---|---|---|
+| `0` | | A decision listener, like `events::on` |
+| Post | `events::kEventPost` | Listen after every decision listener has run, on a copy of the event |
+| Cancelled | `events::kEventCancelled` | Also receive the event after another listener cancelled it. `ERR_INVALID` for an event that cannot be cancelled |
+
+Combine the flags with `|`. Pass `nullptr` and 0 for the filters when there are none.
+
+### Filters
+
+A filter is a [value](/docs/server/wasm-values) holding a map from field name to the value the field must have. The
+listener runs only for events where every field in the map matches. The server checks, so your handler is not called
+for the rest:
+
+```cpp
+static void no_drops(bs::core::Ctx ctx) {
+    bs::values::ValueBuffer<16> off;
+    off.boolean(false);
+    bs::events::event_set(ctx, "drop_items", off.data(), off.finish());
+}
+
+void plugin_init() {
+    bs::values::ValueBuffer<64> arena;
+    arena.map().key("world").string("arena").end();
+    bs::events::event_on_ex("block.break", bs::core::kNormal, 0, arena.data(), arena.finish(), no_drops);
+}
+```
+
+A filter compares the kind as well as the value: a whole number never equals a decimal, so `64` and `64.0` are
+different filters. Use the field's real name (`player_name`, not `name`).
+
+### Post listeners
+
+A post listener runs once everything else decided. It is the right place for bookkeeping: counting, logging, starting
+something that should only happen when the event was not cancelled.
+
+```cpp
+static long long g_broken = 0;
+
+static void count_break(bs::core::Ctx) { ++g_broken; }
+
+void plugin_init() {
+    bs::events::event_on_ex("block.break", bs::core::kNormal, bs::events::kEventPost, nullptr, 0, count_break);
+}
+```
+
+Because cancelled events are not delivered unless asked for, `count_break` counts only the breaks that went through.
+
+### Cancelled events
+
+Add `events::kEventCancelled` to also hear about events another listener cancelled:
+
+```cpp
+static void note_refused(bs::core::Ctx ctx) {
+    if (bs::events::event_cancelled(ctx) == 1) {
+        bs::log::log_info("a block break was refused");
+    }
+}
+
+void plugin_init() {
+    bs::events::event_on_ex("block.break", bs::core::kHighest, bs::events::kEventPost | bs::events::kEventCancelled,
+                            nullptr, 0, note_refused);
+}
+```
+
+As a decision listener the same flag lets a plugin overrule: a handler that runs late with `kEventCancelled` can call
+`events::event_cancel(ctx, false)` to let an event through that an earlier plugin refused.
+
+## Finding events and fields
+
+The server declares every event with its fields and which of them are mutable, and a plugin can ask. That is the
+reference to use when the table [below](#the-most-useful-events) does not have what you need.
+
+| Call | Gives |
+|---|---|
+| `events::event_names(buffer, capacity, value)` | A list with the name of every server event, sorted. About 5 KB, so give it a buffer of 8 KB or more |
+| `events::event_describe(name, buffer, capacity, value)` | A map describing one event. `ERR_ABSENT` for an unknown name |
+
+The map from `events::event_describe` has this shape:
+
+```
+{ name: "block.break",
+  cancellable: true,
+  custom: false,
+  fields: [ { name: "player_name", mutable: false },
+            { name: "x", mutable: false },
+            ...
+            { name: "drop_items", mutable: true } ] }
+```
+
+`custom` is true for the events of plugins. A small helper that asks whether an event can be cancelled:
+
+```cpp
+static bool can_cancel(const char* event) {
+    char buffer[2048];
+    bs::values::Value info;
+    return bs::events::event_describe(event, buffer, sizeof buffer, info) == 0 &&
+           info.find("cancellable").bool_or(false);
+}
+```
+
+The description does not carry the kind of each field. To learn it, read the field in a listener with
+`events::event_get` and look at `Value::kind()`, or read them all at once with `events::event_fields`.
+
+## Your own events
+
+An event name that contains a colon belongs to plugins: `arena:round_start`, `shop:purchase`. Any plugin can raise one
+and any plugin can listen. Start the name with your plugin id, so that two plugins do not use the same one by accident.
+
+| Call | Does |
+|---|---|
+| `events::event_emit(name, value, length)` | Raises the event with a [value](/docs/server/wasm-values) of any shape as its payload. Returns how many listeners ran, 0 when nobody listens |
+| `events::event_payload(ctx, buffer, capacity, value)` | Inside a listener, reads the payload. `ERR_INVALID` for a server event |
+
+```cpp
+static void on_round(bs::core::Ctx ctx) {
+    char buffer[64];
+    bs::values::Value payload;
+    if (bs::events::event_payload(ctx, buffer, sizeof buffer, payload) != 0) {
+        return;
+    }
+    const long long round = payload.find("round").i64_or(0);
+    bs::log::log_info(round == 3 ? "round three" : "another round");
+}
+
+static void start_round(bs::core::Ctx) {
+    bs::values::ValueBuffer<64> payload;
+    payload.map().key("round").integer(3).end();
+    bs::events::event_emit("arena:round_start", payload.data(), payload.finish());
+}
+
+void plugin_init() {
+    bs::events::event_on_ex("arena:round_start", bs::core::kNormal, 0, nullptr, 0, on_round);
+}
+```
+
+The rules for plugin events:
+
+- A listener is registered with `events::event_on_ex`, with a priority and nothing else: no filters and no flags. A
+  plugin event has no fields, and cannot be cancelled or changed.
+- Listeners run in priority order, each in the plugin that registered it.
+- A listener of the emitting plugin does not run while the plugin is inside a callback, because the callbacks of one
+  plugin never nest. Plugin events are for plugins to talk to each other. Inside one plugin, call a function.
+- An emit from inside a listener of a plugin event can raise another, up to eight events deep. A ninth is refused with
+  `ERR_INVALID`, and so is a name without a colon.
+- `events::event_names` lists only the events of the server. `events::event_describe` also describes a plugin event
+  once somebody listens to it, with `custom` set to true.
+
+To ask another plugin for an answer instead of telling it something, use a service, see
+[Services](/docs/server/wasm-services).
+
+## Starting and stopping
+
+`plugin.enable` and `plugin.disable` are lifecycle events with no fields. They are listened to with `events::on` only
+(the extended registration refuses them) and they are not in `events::event_names`.
+
+| Event | Runs |
+|---|---|
+| `plugin.enable` | Once, after `plugin_init` finished. The place for work that needs the server to be ready |
+| `plugin.disable` | When the plugin is stopped, for example by `/plugins reload` |
+
+Several listeners run in priority order, lowest first.
+
+```cpp
+static void ready(bs::core::Ctx) { bs::log::log_info("the plugin is ready"); }
+
+void plugin_init() {
+    bs::events::on("plugin.enable", bs::core::kNormal, ready);
+}
+```
+
+## The most useful events
+
+A short list by category. The tables show whether the event can be cancelled and which fields it has, with the mutable
+ones in the last column. They come from the server's own event table, so `events::event_describe` gives the same answer.
+
+### Player events
+
+Every player event has `player_name`, `player_uuid` and `world`, which the table leaves out. Only `player.login` has no
+`world`, because the player is not in a world yet.
+
+| Event | Cancel | Other fields | Mutable |
+|---|---|---|---|
+| `player.login` | yes | `address`, `message` | `message` |
+| `player.join` | no | `message`, `silent` | `message`, `silent` |
+| `player.quit` | no | `message`, `silent` | `message`, `silent` |
+| `player.chat` | yes | `message`, `format`, `recipients` | all three |
+| `player.command` | yes | `command` | `command` |
+| `player.death` | no | `x`, `y`, `z`, `cause`, `message`, `silent`, `drops`, `exp`, `keep_inventory`, `keep_level`, `show_messages` | `message`, `silent`, `drops`, `exp`, `keep_inventory`, `keep_level` |
+| `player.move` | yes | `from_x`, `from_y`, `from_z`, `x`, `y`, `z` | |
+| `player.teleport` | yes | `from_x`, `from_y`, `from_z`, `x`, `y`, `z`, `cause` | |
+| `player.world_change` | no | `from_world` | |
+| `player.respawn` | no | `x`, `y`, `z` | `x`, `y`, `z` |
+| `player.interact` | yes | `action`, `x`, `y`, `z`, `block`, `item`, `hand`, `face` | |
+| `player.item_drop` | yes | `item`, `count` | |
+| `player.item_pickup` | yes | `item`, `count`, `entity_id` | |
+| `player.gamemode_change` | yes | `gamemode`, `from_gamemode`, `cause` | |
+| `player.food_change` | yes | `food`, `from_food`, `item` | `food` |
+| `player.sneak` | no | `sneaking` | |
+| `player.kick` | yes | `reason`, `cause` | `reason` |
+
+For `player.chat`, `format` is a MiniMessage line with `{player}` and `{message}` in it, empty for the server's default,
+and `recipients` is `*` for everyone or the names of the players who should get the message, separated by commas.
+Setting `silent` on `player.join` or `player.quit` hides the join or quit message.
+
+### Block events
+
+| Event | Cancel | Fields | Mutable |
+|---|---|---|---|
+| `block.break` | yes | `player_name`, `player_uuid`, `world`, `x`, `y`, `z`, `block`, `drop_items` | `drop_items` |
+| `block.place` | yes | `player_name`, `player_uuid`, `world`, `x`, `y`, `z`, `block`, `multi`, `second_x`, `second_y`, `second_z` | |
+| `block.damage` | yes | `player_name`, `player_uuid`, `world`, `x`, `y`, `z`, `block`, `face`, `insta_break`, `item` | |
+| `block.drops` | yes | `player_name`, `player_uuid`, `world`, `x`, `y`, `z`, `block`, `drops` | `drops` |
+| `block.explode` | yes | `world`, `x`, `y`, `z`, `power`, `cause`, `entity_id` | |
+| `block.ignite` | yes | `world`, `x`, `y`, `z`, `cause`, `player_name` | |
+| `block.piston` | yes | `world`, `x`, `y`, `z`, `extending`, `direction`, `moved` | |
+| `block.dispense` | yes | `world`, `x`, `y`, `z`, `item`, `face` | |
+
+`block` is the block id, such as `minecraft:stone`.
+
+### World events
+
+| Event | Cancel | Fields |
+|---|---|---|
+| `world.load` | no | `world` |
+| `world.save` | no | `world` |
+| `world.chunk_load` | no | `world`, `chunk_x`, `chunk_z`, `generated` |
+| `world.chunk_unload` | no | `world`, `chunk_x`, `chunk_z` |
+| `world.weather_change` | yes | `world`, `raining`, `thundering`, `from_raining`, `from_thundering` |
+| `world.time_skip` | yes | `world`, `time`, `from_time`, `cause` |
+| `world.game_rule_change` | yes | `world`, `rule`, `value`, `from_value`, `player_name` |
+| `world.difficulty_change` | yes | `world`, `difficulty`, `from_difficulty`, `player_name` |
+| `world.spawn_change` | no | `world`, `x`, `y`, `z`, `from_x`, `from_y`, `from_z` |
+
+None of these has a mutable field.
+
+### Entity events
+
+| Event | Cancel | Fields | Mutable |
+|---|---|---|---|
+| `entity.damage` | yes | `entity_id`, `entity_type`, `world`, `cause`, `amount`, `attacker_name`, `attacker_id`, `direct_id` | `amount` |
+| `entity.death` | no | `entity_id`, `entity_type`, `world`, `x`, `y`, `z`, `killer_name`, `killer_id` | |
+| `entity.spawn` | yes | `entity_type`, `world`, `x`, `y`, `z`, `reason`, `spawner_x`, `spawner_y`, `spawner_z` | |
+| `entity.drops` | no | `entity_id`, `entity_type`, `world`, `x`, `y`, `z`, `drops`, `exp`, `killer_id` | `drops`, `exp` |
+| `entity.heal` | yes | `entity_id`, `entity_type`, `world`, `amount`, `cause`, `fast_regen` | `amount` |
+| `entity.target` | yes | `entity_id`, `entity_type`, `world`, `target_id`, `previous_id`, `reason` | `target_id` |
+| `entity.teleport` | yes | `entity_id`, `entity_type`, `world`, `x`, `y`, `z`, `to_x`, `to_y`, `to_z`, `cause` | |
+| `entity.shoot` | yes | `entity_id`, `entity_type`, `world`, `projectile`, `power` | |
+
+Players are entities too: `entity.damage` is raised when a player is hurt, with the player's entity id.
+
+### Inventory and item events
+
+| Event | Cancel | Fields |
+|---|---|---|
+| `inventory.click` | yes | `player_name`, `player_uuid`, `world`, `slot`, `button`, `mode`, `item` |
+| `inventory.open` | yes | `player_name`, `player_uuid`, `world`, `kind`, `x`, `y`, `z` |
+| `inventory.close` | no | `player_name`, `player_uuid`, `world`, `kind`, `reason` |
+| `inventory.drag` | yes | `player_name`, `player_uuid`, `world`, `type`, `slots` |
+| `item.spawn` | yes | `world`, `x`, `y`, `z`, `entity_id`, `item`, `count`, `cause` |
+| `item.despawn` | yes | `world`, `x`, `y`, `z`, `entity_id`, `item`, `count` |
+
+### Server events
+
+| Event | Cancel | Fields | Mutable |
+|---|---|---|---|
+| `server.tick` | no | `tick` | |
+| `server.tick_end` | no | `tick`, `duration_ms`, `remaining_ms` | |
+| `server.load` | no | `worlds`, `plugins` | |
+| `server.stop` | no | `players` | |
+| `server.ping` | no | `address`, `motd`, `online`, `max_players` | `motd`, `max_players` |
+| `server.command` | yes | `source`, `command` | `command` |
+| `server.remote_command` | yes | `sender`, `address`, `command` | `command` |
+| `server.broadcast` | yes | `message` | `message` |
+
+`server.tick` and `server.tick_end` fire every tick, and `player.move` fires with every movement of every player. A
+listener on one of them runs many times a second, so keep it short, and filter or count instead of doing real work in
+it. For work on a timer, use [a task](/docs/server/wasm-tasks).
+
+### Plugin events
+
+| Event | Cancel | Fields |
+|---|---|---|
+| `plugin.enable` | no | none |
+| `plugin.disable` | no | none |
+| `<name>:<topic>` | no | none, the payload is read with `events::event_payload` |
+
+## Things that catch people out
+
+- A handler has to return quickly. A plugin that is stuck for about a quarter of a second is interrupted, and three
+  failures in a row switch it off until `/plugins reload`. Slow work belongs in a [task](/docs/server/wasm-tasks).
+- No handler can make the server wait for an answer later. Decide inside the handler, cancel or edit there, and start
+  anything slow from a task.
+- While one callback of your plugin runs, no other callback of the same plugin starts. An event your own call causes, for
+  instance a player leaving because you kicked them, is not delivered to your own listeners, though other plugins hear
+  it. The log says that a re-entrant call was skipped.
+- The cancel message is shown by the server only for `player.login`, `server.command` and `server.remote_command`. For the
+  rest, answer the player yourself.
+- A filter needs the real field name and the right kind. `{"player_name": ...}` works, `{"name": ...}` is
+  `ERR_INVALID`, and a filter with `64` never matches a decimal field.
+- `events::kEventCancelled` on an event that cannot be cancelled is `ERR_INVALID`, and so is any filter or flag on a
+  plugin event.
+- Listening to a name the server does not know is `ERR_INVALID`, and nothing else tells you. Check the result of every
+  registration.
+- A text field read with `events::event_field_str` is cut at 256 bytes.
+- A plugin that registers more than 1024 handlers in total runs out of handler slots in the C and C++ SDKs, see
+  [Tasks and time](/docs/server/wasm-tasks#things-that-catch-people-out).
+
+## Where to go next
+
+| To | Read |
+|---|---|
+| Add commands that players type | [Commands](/docs/server/wasm-commands) |
+| Run something later or on a timer | [Tasks and time](/docs/server/wasm-tasks) |
+| Send messages, titles and sounds to the player in `ctx` | [Players](/docs/server/wasm-players) |
+| Show forms, dialogs and chest menus, which answer through their own callbacks | [Menus](/docs/server/wasm-menus) |
+| Build the values used by filters, `events::event_set` and payloads | [Values](/docs/server/wasm-values) |

@@ -1,0 +1,360 @@
+---
+title: Menus, forms and dialogs
+description: Show players chest menus, container windows, merchant trades, signs, forms and dialogs, and read what they click or answer.
+group: Plugin API
+---
+
+Anything a plugin puts in front of a player as a window lives here: a shop built from a chest, a furnace-shaped window you
+fill yourself, a trade list, a sign editor, a form with text fields and a dialog the client draws. Pick by what you need:
+
+| You want | Use |
+|---|---|
+| A chest of buttons, the same for every player | A [chest menu](#chest-menus) |
+| Buttons in a window that is not a chest (a hopper, a furnace...), or that you want to change when clicked | A [container menu](#container-menus) |
+| A window of any kind filled for one player, optionally editable | A [plugin window](#plugin-windows) |
+| A list of trades | A [merchant window](#merchants) |
+| The sign editor | [Signs](#signs) |
+| Text, toggles, sliders and choices | A [form](#forms) |
+| A dialog of your own design, or one the game ships | A [dialog](#dialogs) |
+
+```cpp
+#include <basalt/server.hpp>
+
+using namespace basalt::server;
+
+static int g_shop = 0;
+
+static void picked(core::Ctx ctx) {
+    const core::Player player = menus::menu_click_player(ctx);
+    players::send(player, "<green>You picked the diamond.");
+}
+
+static void open_shop(core::Ctx ctx) {
+    if (g_shop == 0) {
+        g_shop = menus::menu_create("<dark_gray>Shop", 3);
+        menus::menu_set(g_shop, 13, "minecraft:diamond", "<aqua>Gem", "<gray>100 coins\n<gray>Click to buy", picked);
+    }
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    menus::menu_open(g_shop, player);
+}
+
+void plugin_init() {
+    commands::command("shop", "", open_shop);
+}
+```
+
+Names are the C++ spelling, `area::function`. Other languages use their own casing, see
+[The SDK](/docs/server/wasm-sdk). The container menu, plugin window and merchant calls have no helper in the SDK's
+namespaces: in C and C++ they are the plain imports `basalt_container_menu_create`, `basalt_window_open` and so on, which
+take the encoded value described in [Values](/docs/server/wasm-values) and an item stack described in
+[Items](/docs/server/wasm-items). The tables below name them without the `basalt_` prefix.
+
+Item stacks in windows (an id, a count, a name, lore, enchantments, components) are the values described in
+[Items](/docs/server/wasm-items). Text in titles, names and lore is MiniMessage. Windows need a client that can show
+them: a connection that cannot show windows answers `ERR_ABSENT` to the container menu, plugin window and merchant calls.
+
+## Chest menus
+
+A chest menu is a window the plugin owns and every player who opens it shares. Make it once, when the plugin loads, and open
+it for whoever needs it.
+
+| Call | Does |
+|---|---|
+| `menus::menu_create` | Makes a menu from a title and a number of rows, 1 to 6, and returns its handle |
+| `menus::menu_set` | Puts an item in a slot and says what runs when a player clicks it |
+| `menus::menu_open` | Opens the menu for a player |
+| `menus::menu_click_player` | Inside a click callback, the player who clicked |
+
+`menus::menu_set` takes the menu, the slot (0 to `rows * 9 - 1`), the item id, a name, the lore and the handler. The name and
+lore are MiniMessage, already translated: run a lang key through `text::translate` first. Lore lines are separated by a
+newline character. An empty name keeps the item's own. Setting a slot again replaces its item and its handler, and players
+who have the menu open see the change at once.
+
+The menu is read only. A click never moves an item; it only runs the handler of that slot, with `menus::menu_click_player`
+telling you who clicked. Opening a menu a player already has open replaces it. Every menu a plugin made is closed when the
+plugin unloads.
+
+## Container menus
+
+A container menu is a chest menu with more control: the window can be of another kind, items are full stacks (with
+enchantments and components), and a click handler can see the click and change what the slot shows.
+
+| Call | Does |
+|---|---|
+| `container_menu_create` | Makes a menu from `{title, rows, kind}` and returns its handle. `rows` is 1 to 6 and `kind` defaults to `chest` |
+| `items::menu_slot` | Puts a stack in a slot with a click handler. The SDK's helper over `container_menu_set` |
+| `container_menu_set` | The raw form: a slot, an item value (null clears the slot and its handler) and a handler token (0 for none) |
+| `container_menu_clear` | Empties every slot and drops the handlers |
+| `container_menu_open` | Shows the menu to a player, replacing the window they had open |
+| `container_menu_close` | Closes it for that player, or answers `ERR_ABSENT` when they did not have it open |
+| `container_menu_click_info` | Inside a click callback, the click as `{player, slot, button, mode}` |
+| `container_menu_click_result` | Replaces the stack shown in the clicked slot (null clears it) |
+| `container_menu_click_cancel` | Whether the click is cancelled |
+
+```cpp
+static int g_vault = 0;
+
+static void vault_click(core::Ctx ctx) {
+    const core::Player player = menus::menu_click_player(ctx);
+    players::send(player, "<gray>Slot clicked");
+    const items::Item emerald("minecraft:emerald", 1, "<green>Taken");
+    basalt_container_menu_click_result(ctx, emerald.data(), emerald.length());
+}
+
+static void open_vault(core::Ctx ctx) {
+    if (g_vault == 0) {
+        values::ValueBuffer<128> spec;
+        spec.map().key("title").string("<gold>Vault").key("rows").integer(1).end();
+        g_vault = basalt_container_menu_create(spec.data(), spec.finish());
+        items::menu_slot(g_vault, 4, "minecraft:diamond", 1, "<aqua>Reward", vault_click);
+    }
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    basalt_container_menu_open(g_vault, player);
+}
+```
+
+What a click callback can rely on:
+
+- `container_menu_click_info` reads button 0 and mode `pickup`. The slot is the slot of the menu, never one of the player's
+  own.
+- A click is always cancelled. The player cannot take the item. `container_menu_click_cancel` with true is accepted,
+  with false it answers `ERR_DENIED`.
+- `container_menu_click_result` changes the menu itself, not only the click: the new stack stays in that slot for everyone
+  who has the menu open. It is applied after the callback returns.
+- Only a menu of kind `chest` runs click handlers. A menu of any other kind shows its items and nothing more.
+- The click info and the result are valid only inside the callback.
+
+## Plugin windows
+
+A plugin window is a container opened for one player, built from a spec, without a menu behind it.
+
+| Call | Does |
+|---|---|
+| `window_open` | Opens a window from a spec and returns its container id (a positive number) |
+| `window_info` | Describes the window the player has open, or answers `ERR_ABSENT` when there is none |
+| `window_update` | Changes the title or the numeric properties of the open window |
+| `window_close` | Closes it, or answers `ERR_ABSENT` when there is none |
+| `events::player_close_window` | Closes whatever window the player has open. It succeeds for any player who is online |
+
+The spec of `window_open` is a map:
+
+| Key | Meaning |
+|---|---|
+| `kind` | `chest` (the default), `barrel`, `shulker_box`, `hopper`, `dispenser`, `dropper`, `furnace`, `blast_furnace`, `smoker`, `brewing_stand`, `crafter`, `anvil`, `grindstone`, `loom`, `cartography_table`, `stonecutter`, `smithing`, `enchanting`, `beacon`, `lectern`, `merchant` or `crafting` |
+| `size` | Chest only. The number of slots, rounded up to whole rows of 9. 27 by default |
+| `title` | The window title, MiniMessage |
+| `items` | A list with one item value (or null) per slot |
+| `editable` | Whether the player can move items. True by default. With false the window is read only |
+
+```cpp
+static void open_sorter(core::Ctx ctx) {
+    values::ValueBuffer<512> spec;
+    spec.map().key("kind").string("hopper").key("title").string("<green>Sorter").key("items").list();
+    spec.map().key("id").string("minecraft:coal").key("count").integer(7).end();
+    spec.end().end();
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    basalt_window_open(player, spec.data(), spec.finish());
+}
+```
+
+`window_info` answers a map: `container_id`, `kind`, `slots`, `plugin` (whether a plugin opened it), `world`, and a `block`
+map `{x, y, z}` when the window belongs to a block.
+
+`window_update` takes a map with `title` (reopens the screen under the new title, the contents stay) and `properties`, a map
+from the property id written as a decimal string to a number: furnace progress, enchantment costs, the anvil cost. It
+answers `ERR_ABSENT` when no window is open or a property is not accepted.
+
+To read or fill the items of an open window, use an inventory handle of the window, see [Items](/docs/server/wasm-items).
+What a player does in a window arrives as the `inventory.*` events, see [Events](/docs/server/wasm-events).
+
+## Merchants
+
+`merchant_open` opens a trading window with trades you describe. The spec is a map with a `title` (MiniMessage) and a list
+of `offers`. Each offer is:
+
+| Key | Meaning |
+|---|---|
+| `buy` | The first item the player pays. Required |
+| `buy2` | A second item, or null for none |
+| `sell` | What the player gets. Required |
+| `uses`, `max_uses` | How many times it was used, and how many times it can be |
+| `xp` | Experience the trade gives |
+| `price_multiplier`, `demand`, `special_price` | The price adjustment fields of a villager trade |
+
+```cpp
+static void open_trader(core::Ctx ctx) {
+    values::ValueBuffer<1024> spec;
+    spec.map().key("title").string("<gold>Trader").key("offers").list();
+    spec.map().key("buy").map().key("id").string("minecraft:emerald").key("count").integer(2).end();
+    spec.key("sell").map().key("id").string("minecraft:bread").key("count").integer(6).end();
+    spec.key("max_uses").integer(8).key("xp").integer(3).end();
+    spec.end().end();
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    basalt_merchant_open(player, spec.data(), spec.finish());
+}
+```
+
+An offer without `buy` or `sell` makes the spec `ERR_INVALID`. To show the trades of a villager that already exists, open
+it by entity id with `events::player_open_inventory`, kind `trades` and the spec `{entity: id}`, see
+[Entities](/docs/server/wasm-entities).
+
+## Signs
+
+`events::player_open_inventory` with the kind `sign` opens the sign editor for the sign at a position. Its spec is
+`{x, y, z, front}`, with `front` true (the default) for the front text and false for the back.
+
+```cpp
+static void edit_sign(core::Player player) {
+    values::ValueBuffer<64> spec;
+    spec.map().key("x").integer(10).key("y").integer(64).key("z").integer(-3).key("front").boolean(true).end();
+    events::player_open_inventory(player, "sign", spec.data(), spec.finish());
+}
+```
+
+It answers `ERR_ABSENT` when the editor could not be opened, for instance when a `player.sign_open` listener cancelled it.
+The text the player types arrives as the `player.sign_change` event, see [Events](/docs/server/wasm-events). To show text on
+a sign that exists only for that player, use the `sign_text` operation of
+[Players](/docs/server/wasm-players#operations) before opening the editor.
+
+## Forms
+
+A form is a dialog built from a map: a title, some text, input fields and buttons. When the player presses a button, your
+callback receives the button and every answer. Forms are the quick way to ask a player for a few values.
+
+```cpp
+static void answered(core::Ctx ctx) {
+    char buffer[512];
+    values::Value answer;
+    if (events::completion_value(ctx, buffer, sizeof buffer, answer) < 0) {
+        return;
+    }
+    const core::Player player = static_cast<core::Player>(answer.find("player").i64_or(0));
+    if (answer.find("button").i64_or(1) != 0) {
+        return;
+    }
+    const char* team = "";
+    int length = 0;
+    answer.find("values").find("team").as_str(team, length);
+    char name[64] = {};
+    for (int i = 0; i < length && i < 63; ++i) {
+        name[i] = team[i];
+    }
+    core::Args args;
+    args.add("team", name);
+    players::send(player, "<green>Team {team} created.", &args);
+}
+
+static void open_form(core::Ctx ctx) {
+    values::ValueBuffer<512> form;
+    form.map().key("title").string("<gold>Register").key("body").string("Pick a name for your team.");
+    form.key("buttons").list().string("Create").string("Cancel").end();
+    form.key("fields").list();
+    form.map().key("key").string("team").key("type").string("text").key("label").string("Team name")
+        .key("initial").string("Reds").end();
+    form.map().key("key").string("size").key("type").string("slider")
+        .key("min").integer(2).key("max").integer(10).key("step").integer(1).end();
+    form.end().end();
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    events::form_open(player, form.data(), form.finish(), answered);
+}
+```
+
+| Call | Does |
+|---|---|
+| `events::form_open` | Shows a form and returns a request handle. The handler runs once, with the answer |
+| `events::form_close` | Closes the player's open form and drops its answer, or answers `ERR_ABSENT` when there is none |
+| `events::completion_value` | Inside the handler, reads the answer as a value |
+
+The form map:
+
+| Key | Meaning |
+|---|---|
+| `title` | The dialog title |
+| `body` | A text, or a list of texts, shown above the fields. Up to 64 |
+| `buttons` | A list of button labels. One button, `OK`, when missing. Up to 64 |
+| `fields` | A list of input maps, up to 64, each with a unique `key` |
+
+Titles, body lines, button labels and field labels are MiniMessage, or a lang key when they start with `@`. A lang key that
+does not exist makes the form `ERR_INVALID`.
+
+Every field has a `key`, a `type` and a `label` (the `key` when missing):
+
+| `type` | Extra keys | Answer |
+|---|---|---|
+| `text` (the default) | `initial` | A string |
+| `toggle` | `initial` (bool, false) | A bool |
+| `slider` | `min` (0), `max` (1), `step`, `initial` (halfway) | A real number. A `max` below `min` makes the form invalid |
+| `choice` | `options` (a list of strings, required), `initial` (the first one) | The chosen option as a string. Option texts are shown as they are, without lang keys |
+
+The answer is a map `{player, button, values}`: `player` is a player handle, `button` is the number of the button pressed
+counting from 0, and `values` maps each field `key` to its answer.
+
+A player has at most one form from your plugin: opening a second one replaces the first, and the first never answers. The
+handler does not run when the player closes the form with escape, leaves, or when you cancel the request (the SDK's request
+cancel, `worlds::world_request_cancel` in C++). Keep that in mind before you wait for an answer.
+
+## Dialogs
+
+A dialog is the game's own dialog screen, written as the SNBT text of a dialog (the same format a data pack uses) or named
+by the id of a dialog the game ships. Use a dialog when a form cannot say what you need: several columns of buttons, a
+notice, a confirmation, actions that run commands.
+
+| Call | Does |
+|---|---|
+| `events::dialog_show` | Shows a dialog and returns a request handle. The handler runs on the first custom click the player makes in it |
+| `events::dialog_clear` | Closes the dialog the player has open and drops the waiting handler |
+
+The dialog is a string. If it starts with `{` it is the whole dialog as SNBT, otherwise it is the id of a registry dialog,
+such as `minecraft:server_links`. A button reaches your plugin when its action is a custom one:
+`{type:"minecraft:dynamic/custom", id:"example:reset"}`. The handler then runs once, and `events::completion_value` gives a map
+`{player, id, payload}`: the player handle, the `id` of the action, and the `payload` as SNBT text (empty when there is
+none).
+
+```cpp
+static void confirmed(core::Ctx ctx) {
+    char buffer[512];
+    values::Value click;
+    if (events::completion_value(ctx, buffer, sizeof buffer, click) < 0) {
+        return;
+    }
+    const core::Player player = static_cast<core::Player>(click.find("player").i64_or(0));
+    players::send(player, "<green>Confirmed.");
+}
+
+static void open_dialog(core::Ctx ctx) {
+    const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
+    events::dialog_show(player,
+                        "{type:\"minecraft:confirmation\",title:\"Reset your stats?\","
+                        "yes:{label:\"Reset\",action:{type:\"minecraft:dynamic/custom\",id:\"example:reset\"}},"
+                        "no:{label:\"Keep\"}}",
+                        confirmed);
+}
+```
+
+A dialog answers `ERR_ABSENT` when the server could not show it and `ERR_INVALID` for text that does not parse. Showing a
+second dialog to the same player replaces the first handler. Every custom click also fires the `player.custom_click` event
+for all listeners, see [Events](/docs/server/wasm-events). Dialog text is the text component format of the game, not
+MiniMessage.
+
+## Things that catch people out
+
+- One chest menu or container menu is one shared window. Two players who open it see the same items. For contents that
+  differ per player, open a plugin window with its own items, or keep one menu per player.
+- Menus are read only and their clicks are always cancelled. If a player should be able to move items, use a plugin window
+  with `editable` true and watch the `inventory.*` events.
+- A chest menu handler learns who clicked and nothing else. For the slot and button, use a container menu.
+- The handler of a form or a dialog may never run: the player can close the window. Never block waiting for it, and do not
+  keep state that only the handler would clean up.
+- Form buttons count from 0.
+- A form answers once. To ask again, open a new form.
+- Click handlers must return quickly, as every callback. Hand slow work to a task, see [Tasks](/docs/server/wasm-tasks).
+- Menus are closed when the plugin unloads or reloads, and the handles of its menus are gone with it.
+
+## Where to go next
+
+| Page | What is there |
+|---|---|
+| [Items](/docs/server/wasm-items) | Item stacks, inventory handles and what is in an open window |
+| [Events](/docs/server/wasm-events) | `inventory.click`, `inventory.close`, `player.sign_change`, `player.custom_click` |
+| [Players](/docs/server/wasm-players) | Sending text, titles and sounds, and the generic player interface |
+| [HUD](/docs/server/wasm-hud) | The sidebar, the boss bar and other things drawn on the screen |
