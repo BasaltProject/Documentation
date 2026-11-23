@@ -1,13 +1,12 @@
 ---
 title: Kiln
-description: The plugin command line: creating, building, checking and packaging plugins, and how it finds or downloads a compiler.
+description: Install and update Kiln, create and package plugins, and manage compiler toolchains.
 group: Plugin basics
 ---
 
 Kiln is the one tool a plugin author needs. It creates a project, builds it with the compiler of its language, checks the
-result against what the server accepts and packs it. It is a single native executable with no runtime of its own:
-[download it](https://github.com/BasaltProject/Kiln/releases) from the releases page, which also carries a `SHA256SUMS`
-file, make it executable and put it on your `PATH` as `kiln`.
+result against what the server accepts and packs it. It is a native executable with installers and a portable option.
+The server does not need Kiln or a compiler to load a finished plugin package.
 
 | Command | Does |
 |---|---|
@@ -16,10 +15,105 @@ file, make it executable and put it on your `PATH` as `kiln`.
 | `kiln check [plugin\|module.wasm]` | Verifies the manifest and the module without running anything |
 | `kiln pack [plugin]` | Checks, then writes the package into `build/` |
 | `kiln toolchain list\|install\|path\|clean` | Manages the compilers Kiln downloads |
+| `kiln update [--check]` | Installs a newer release, or checks without installing |
+| `kiln update --auto on\|off\|status` | Configures automatic updates |
 | `kiln --version` | Prints the version |
 
 `[plugin]` is the plugin folder and defaults to the current one. Every command that takes `--target server|proxy` works on
 a [proxy plugin](/docs/proxy/wasm-plugins) with `--target proxy`, or with `target = "proxy"` in `plugin.toml`.
+
+## Installation
+
+Download Kiln from the [releases page](https://github.com/BasaltProject/Kiln/releases). Installers start with
+`Kiln-Installer-`; portable executables start with `Kiln-`. Replace `<version>` with the release number and choose the
+CPU of the machine running Kiln, not the machine that will run your plugin.
+
+| Platform | Installer |
+|---|---|
+| Windows x64 | `Kiln-Installer-<version>-Windows-x64.msi` |
+| macOS Intel | `Kiln-Installer-<version>-macOS-x64.pkg` |
+| macOS Apple Silicon | `Kiln-Installer-<version>-macOS-arm64.pkg` |
+| Debian / Ubuntu | `Kiln-Installer-<version>-Linux-x64.deb` or `Linux-arm64.deb` |
+| Fedora / RPM distributions | `Kiln-Installer-<version>-Linux-x64.rpm` or `Linux-arm64.rpm` |
+| FreeBSD x64 | `Kiln-Installer-<version>-FreeBSD-x64.pkg` |
+
+The Windows MSI installs for the current user, adds Kiln to the user `PATH` and provides removal through Windows
+Settings. Reopen your terminal after installing. The macOS package installs in `/usr/local/bin`. Install Linux and
+FreeBSD packages with the system package manager. These Windows and macOS installers have no platform signing
+certificate or Apple notarization; the OS may show an unknown-publisher warning. Kiln's update signatures are separate.
+
+### User installation on Unix
+
+The `.sh` asset uses the same `Kiln-Installer-<version>-<platform>` name. It needs `curl` and `openssl`. Download and
+inspect the script, then run it with `sh` to install in `~/.local/bin`. Add that directory to your `PATH`.
+Use `--prefix /absolute/path` to choose another prefix and `--auto-update` to enable automatic updates at installation.
+The script verifies the release signature, checksum and executable version before installing. Use a separate prefix
+from a native package installation.
+
+### Portable executable
+
+Download the executable for your platform, compare its SHA-256 checksum with `SHA256SUMS`, and put it on your `PATH`
+as `kiln` (`kiln.exe` on Windows). On Unix, make it executable with `chmod +x kiln`. It does not need an installer.
+The `.msi`, `.pkg`, `.deb`, `.rpm` and `.sh` files are installers, not portable executables.
+
+Confirm the installation:
+
+```bash
+kiln --version
+```
+
+## Updating Kiln
+
+```bash
+kiln update --check
+kiln update
+```
+
+`--check` reports a newer stable release without installing it. Without that flag, a portable installation verifies
+and replaces its executable. An MSI installation starts the Windows upgrade after Kiln exits and prints the log
+location. A macOS package installation opens Installer, where you complete the upgrade and approve any required
+administrator access.
+
+For `.deb`, `.rpm`, FreeBSD packages and other package-manager installations, Kiln reports the release and its download
+page. Install the newer package through the same manager. Kiln does not overwrite package-owned files or add a
+package repository. This also applies to installations managed by tools such as Homebrew.
+
+### Automatic updates
+
+```bash
+kiln update --auto on
+kiln update --auto status
+kiln update --auto off
+```
+
+Automatic updates are off by default. When enabled, Kiln checks at most once every 24 hours after a successful
+`new`, `build`, `check`, `pack` or `toolchain` command. It applies a portable update or starts the native installer;
+system-managed Unix installations receive an update notice. There is no background service, and an update does not
+interrupt the command that triggered it. An update failure does not change that command's successful exit status.
+
+`--offline` and `--no-download` forbid manual update downloads and suppress automatic checks. Automatic checks also
+skip CI environments where `CI` is set, or when `KILN_NO_UPDATE=1` is set. These controls let you keep build jobs on a
+chosen version of Kiln and its bundled SDK.
+
+### Configuration and recovery
+
+`kiln update --auto status` prints the configuration path. The setting is `automatic = true` or `false` in
+`updates.toml`:
+
+| Platform | Configuration directory |
+|---|---|
+| Linux / FreeBSD | `$XDG_CONFIG_HOME/basalt/kiln`, or `~/.config/basalt/kiln` |
+| macOS | `~/Library/Application Support/basalt/kiln/config` |
+| Windows | `%LOCALAPPDATA%/basalt/kiln/config` |
+
+`KILN_CONFIG_HOME` overrides this directory. Update downloads and check timestamps use the same per-user cache selected
+by `KILN_HOME` or `--cache-dir` for toolchains.
+
+Kiln verifies the manifest against its bundled release public key, then checks the selected asset's SHA-256 digest.
+Portable updates check that the downloaded executable reports the expected version before replacing the current
+file. A portable installation named `kiln` keeps `kiln.previous` (`kiln.exe.previous` on Windows). To restore it, exit
+Kiln and replace the current executable with that previous file. For native installations, use the installer or
+package manager's downgrade procedure.
 
 ## Create
 
@@ -141,4 +235,5 @@ kiln build
 kiln pack
 ```
 
-Keep the cache folder between runs so the toolchain is not downloaded every time.
+Keep the cache folder between runs so the toolchain is not downloaded every time. Pin the Kiln release used by the
+job to control the SDK version; automatic update checks are suppressed when `CI` is set.

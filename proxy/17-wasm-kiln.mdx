@@ -1,10 +1,105 @@
 ---
 title: Kiln
-description: Create proxy plugin projects, manage toolchains, validate modules and build .bppkg packages.
+description: Install and update Kiln, manage toolchains, validate proxy modules and build .bppkg packages.
 group: Plugin basics
 ---
 
-Kiln is the native command line for creating, compiling, checking and packaging plugins. Download it from the Kiln repository's releases, verify its checksum, make it executable and put it on your PATH. The proxy does not need the compiler or Kiln installed to load a finished package.
+Kiln is the native command line for creating, compiling, checking and packaging plugins. Install it on the development
+machine using a native installer or a portable executable. The proxy does not need a compiler or Kiln to load a
+finished package.
+
+## Installation
+
+Download Kiln from the [releases page](https://github.com/BasaltProject/Kiln/releases). Installers start with
+`Kiln-Installer-`; portable executables start with `Kiln-`. Replace `<version>` with the release number and choose the
+CPU of the machine running Kiln, not the machine that will run your plugin.
+
+| Platform | Installer |
+|---|---|
+| Windows x64 | `Kiln-Installer-<version>-Windows-x64.msi` |
+| macOS Intel | `Kiln-Installer-<version>-macOS-x64.pkg` |
+| macOS Apple Silicon | `Kiln-Installer-<version>-macOS-arm64.pkg` |
+| Debian / Ubuntu | `Kiln-Installer-<version>-Linux-x64.deb` or `Linux-arm64.deb` |
+| Fedora / RPM distributions | `Kiln-Installer-<version>-Linux-x64.rpm` or `Linux-arm64.rpm` |
+| FreeBSD x64 | `Kiln-Installer-<version>-FreeBSD-x64.pkg` |
+
+The Windows MSI installs for the current user, adds Kiln to the user `PATH` and provides removal through Windows
+Settings. Reopen your terminal after installing. The macOS package installs in `/usr/local/bin`. Install Linux and
+FreeBSD packages with the system package manager. These Windows and macOS installers have no platform signing
+certificate or Apple notarization; the OS may show an unknown-publisher warning. Kiln's update signatures are separate.
+
+### User installation on Unix
+
+The `.sh` asset uses the same `Kiln-Installer-<version>-<platform>` name. It needs `curl` and `openssl`. Download and
+inspect the script, then run it with `sh` to install in `~/.local/bin`. Add that directory to your `PATH`.
+Use `--prefix /absolute/path` to choose another prefix and `--auto-update` to enable automatic updates at installation.
+The script verifies the release signature, checksum and executable version before installing. Use a separate prefix
+from a native package installation.
+
+### Portable executable
+
+Download the executable for your platform, compare its SHA-256 checksum with `SHA256SUMS`, and put it on your `PATH`
+as `kiln` (`kiln.exe` on Windows). On Unix, make it executable with `chmod +x kiln`. It does not need an installer.
+The `.msi`, `.pkg`, `.deb`, `.rpm` and `.sh` files are installers, not portable executables.
+
+Confirm the installation:
+
+```bash
+kiln --version
+```
+
+## Updating Kiln
+
+```bash
+kiln update --check
+kiln update
+```
+
+`--check` reports a newer stable release without installing it. Without that flag, a portable installation verifies
+and replaces its executable. An MSI installation starts the Windows upgrade after Kiln exits and prints the log
+location. A macOS package installation opens Installer, where you complete the upgrade and approve any required
+administrator access.
+
+For `.deb`, `.rpm`, FreeBSD packages and other package-manager installations, Kiln reports the release and its download
+page. Install the newer package through the same manager. Kiln does not overwrite package-owned files or add a
+package repository. This also applies to installations managed by tools such as Homebrew.
+
+### Automatic updates
+
+```bash
+kiln update --auto on
+kiln update --auto status
+kiln update --auto off
+```
+
+Automatic updates are off by default. When enabled, Kiln checks at most once every 24 hours after a successful
+`new`, `build`, `check`, `pack` or `toolchain` command. It applies a portable update or starts the native installer;
+system-managed Unix installations receive an update notice. There is no background service, and an update does not
+interrupt the command that triggered it. An update failure does not change that command's successful exit status.
+
+`--offline` and `--no-download` forbid manual update downloads and suppress automatic checks. Automatic checks also
+skip CI environments where `CI` is set, or when `KILN_NO_UPDATE=1` is set. These controls let you keep build jobs on a
+chosen version of Kiln and its bundled SDK.
+
+### Configuration and recovery
+
+`kiln update --auto status` prints the configuration path. The setting is `automatic = true` or `false` in
+`updates.toml`:
+
+| Platform | Configuration directory |
+|---|---|
+| Linux / FreeBSD | `$XDG_CONFIG_HOME/basalt/kiln`, or `~/.config/basalt/kiln` |
+| macOS | `~/Library/Application Support/basalt/kiln/config` |
+| Windows | `%LOCALAPPDATA%/basalt/kiln/config` |
+
+`KILN_CONFIG_HOME` overrides this directory. Update downloads and check timestamps use the same per-user cache selected
+by `KILN_HOME` or `--cache-dir` for toolchains.
+
+Kiln verifies the manifest against its bundled release public key, then checks the selected asset's SHA-256 digest.
+Portable updates check that the downloaded executable reports the expected version before replacing the current
+file. A portable installation named `kiln` keeps `kiln.previous` (`kiln.exe.previous` on Windows). To restore it, exit
+Kiln and replace the current executable with that previous file. For native installations, use the installer or
+package manager's downgrade procedure.
 
 ## Create
 
@@ -51,11 +146,13 @@ A server package uses `.bspkg`; renaming that extension cannot change imports or
 | Command | Purpose |
 |---|---|
 | `kiln toolchain list` | Inspect toolchains. |
-| `kiln toolchain install` | Install a needed compiler ahead of a build. |
-| `kiln toolchain path` | Inspect its location. |
+| `kiln toolchain install <language\|id>` | Install a needed compiler ahead of a build. |
+| `kiln toolchain path <language\|id>` | Inspect its location. |
 | `kiln toolchain clean` | Remove cached toolchain state. |
 
-The first build may download a pinned compiler when a suitable local tool is unavailable. Language pages explain the relevant compiler and runtime proposals. `kiln --help` and each command's help describe selectors supported by your installed version.
+The first build may download a pinned compiler when a suitable local tool is unavailable. Language pages explain the
+relevant compiler and runtime proposals. `KILN_HOME` or `--cache-dir <directory>` selects the toolchain cache;
+`--offline` and `--no-download` forbid downloading missing toolchains.
 
 ## Continuous integration
 
