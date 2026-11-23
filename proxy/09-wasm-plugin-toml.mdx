@@ -90,9 +90,9 @@ lobby = ["network", "commands"]
 ```
 
 Each key is a plugin `id` and each value a list of `commands`, `network` and `packets` (any other name makes the file
-invalid). Running console commands needs both the `commands` capability in the manifest and `commands` in the grant for
-that `id`; without either, the call answers `ERR_DENIED`. The `network` and `packets` capabilities enable their calls as
-soon as the plugin declares them. Plugin data and the store need only their capability in the manifest.
+invalid). The `commands`, `network` and `packets` capabilities each need both halves: the capability in the manifest and the same
+name in the grant for that `id`. Without either, the call answers `ERR_DENIED`. Plugin data and the store need only their
+capability in the manifest.
 
 A plugin author should ask for as little as possible, and say in the plugin's own documentation which grant it needs.
 `[plugins.allow]` is read when the proxy starts, so changing it needs a restart.

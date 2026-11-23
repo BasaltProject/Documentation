@@ -162,8 +162,9 @@ of `<basalt/server.h>` (or `<basalt/proxy/events.h>` per area). Proxy plugins ar
   no `strlen`, `printf` or `malloc`. `bs_length(text)` measures a string. Use fixed arrays, on the stack or `static`.
 - **The stack is 128 KiB.** Big buffers are fine, but not arrays of hundreds of kilobytes on the stack. Put those in
   `static` storage.
-- **At most 1024 callbacks.** Each listener, command, task and menu slot you register takes one entry for the life of the
-  module. Registering beyond that returns `BASALT_ERR_INVALID`.
+- **At most 1024 callbacks.** Each listener, command, repeating task and menu slot you register keeps one entry for the
+  life of the module. A callback that runs once (`bs_after`, `bs_wait`, a completion) gives its entry back when it has
+  run. Registering beyond the limit returns `BASALT_ERR_INVALID`.
 - **Answers must fit your buffer.** A call that returns a value (`bs_data_read`, `bs_event_get`, ...) fails with
   `BASALT_ERR_INVALID` when the answer is larger than the buffer you gave it, so size buffers for the biggest answer you
   expect. Documents can be up to 1 MiB.

@@ -220,8 +220,8 @@ void plugin_init() {
 }
 ```
 
-Prefer this shape for anything that goes on for a long time or never ends. A chain registers a new callback for every
-step, and the C and C++ SDKs have room for 1024 registrations in a module's lifetime, see
+Prefer this shape for anything that goes on for a long time or never ends. A chain schedules a new task for every step,
+and one repeating task does the same work with a single registration, see
 [the things that catch people out](#things-that-catch-people-out).
 
 ## Handing work to the owner of a place
@@ -254,9 +254,10 @@ matching world-level handoff.
 
 - A callback is a plain function in C++. A lambda with a capture does not convert to one, so keep state in `static`
   variables.
-- Every call that takes a callback uses one of the 1024 handler slots of the C and C++ SDKs, and a slot is not given back,
-  not even when the same function is registered again. A chain that schedules itself over and over runs out. Use one
-  `tasks::every` for repeating work. A call that cannot get a slot returns `ERR_INVALID`.
+- The C and C++ SDKs have 1024 handler slots. A callback that runs once (`tasks::after`, `server::wait`, `server::at`
+  and the completion of a request) gives its slot back when it has run, or when you cancel it, so a chain that schedules
+  itself over and over does not run out. A repeating task keeps its slot for as long as the plugin is loaded, and so does
+  every listener and command, so register those once. A call that cannot get a slot returns `ERR_INVALID`.
 - `tasks::after` accepts 0, `server::wait` needs 1 or more, and `tasks::every` needs a period of 1 or more. A value
   outside that is `ERR_INVALID`, so a task with a computed delay deserves a check on the result.
 - Cancelling a task or request that already ran answers `ERR_ABSENT`. It is safe to cancel without checking.

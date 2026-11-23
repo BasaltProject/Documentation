@@ -44,10 +44,9 @@ void plugin_init() {
 ```
 
 Names are the C++ spelling, `area::function`. Other languages use their own casing, see
-[The SDK](/docs/server/wasm-sdk). The container menu, plugin window and merchant calls have no helper in the SDK's
-namespaces: in C and C++ they are the plain imports `basalt_container_menu_create`, `basalt_window_open` and so on, which
-take the encoded value described in [Values](/docs/server/wasm-values) and an item stack described in
-[Items](/docs/server/wasm-items). The tables below name them without the `basalt_` prefix.
+[The SDK](/docs/server/wasm-sdk). The container menu, plugin window and merchant calls live in the `items` namespace and
+take a spec built with the value writer described in [Values](/docs/server/wasm-values), and item stacks described in
+[Items](/docs/server/wasm-items).
 
 Item stacks in windows (an id, a count, a name, lore, enchantments, components) are the values described in
 [Items](/docs/server/wasm-items). Text in titles, names and lore is MiniMessage. Windows need a client that can show
@@ -81,15 +80,17 @@ enchantments and components), and a click handler can see the click and change w
 
 | Call | Does |
 |---|---|
-| `container_menu_create` | Makes a menu from `{title, rows, kind}` and returns its handle. `rows` is 1 to 6 and `kind` defaults to `chest` |
-| `items::menu_slot` | Puts a stack in a slot with a click handler. The SDK's helper over `container_menu_set` |
-| `container_menu_set` | The raw form: a slot, an item value (null clears the slot and its handler) and a handler token (0 for none) |
-| `container_menu_clear` | Empties every slot and drops the handlers |
-| `container_menu_open` | Shows the menu to a player, replacing the window they had open |
-| `container_menu_close` | Closes it for that player, or answers `ERR_ABSENT` when they did not have it open |
-| `container_menu_click_info` | Inside a click callback, the click as `{player, slot, button, mode}` |
-| `container_menu_click_result` | Replaces the stack shown in the clicked slot (null clears it) |
-| `container_menu_click_cancel` | Whether the click is cancelled |
+| `items::container_menu_create` | Makes a menu from the spec `{title, rows, kind}` and returns its handle. `rows` is 1 to 6 and `kind` defaults to `chest` |
+| `items::container_menu_set` | Puts a stack (an `items::Item` or a value you built) in a slot, with an optional click handler |
+| `items::menu_slot` | The short form of the same: a slot, an item id, a count, a name and a click handler |
+| `items::container_menu_clear_slot` | Empties one slot and drops its handler |
+| `items::container_menu_clear` | Empties every slot and drops the handlers |
+| `items::container_menu_open` | Shows the menu to a player, replacing the window they had open |
+| `items::container_menu_close` | Closes it for that player, or answers `ERR_ABSENT` when they did not have it open |
+| `items::container_menu_click_info` | Inside a click callback, the click as `{player, slot, button, mode}`, read into a `Reply` |
+| `items::container_menu_click_result` | Replaces the stack shown in the clicked slot |
+| `items::container_menu_click_clear` | Empties the clicked slot |
+| `items::container_menu_click_cancel` | Whether the click is cancelled |
 
 ```cpp
 static int g_vault = 0;
@@ -98,28 +99,28 @@ static void vault_click(core::Ctx ctx) {
     const core::Player player = menus::menu_click_player(ctx);
     players::send(player, "<gray>Slot clicked");
     const items::Item emerald("minecraft:emerald", 1, "<green>Taken");
-    basalt_container_menu_click_result(ctx, emerald.data(), emerald.length());
+    items::container_menu_click_result(ctx, emerald);
 }
 
 static void open_vault(core::Ctx ctx) {
     if (g_vault == 0) {
         values::ValueBuffer<128> spec;
         spec.map().key("title").string("<gold>Vault").key("rows").integer(1).end();
-        g_vault = basalt_container_menu_create(spec.data(), spec.finish());
+        g_vault = items::container_menu_create(spec);
         items::menu_slot(g_vault, 4, "minecraft:diamond", 1, "<aqua>Reward", vault_click);
     }
     const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
-    basalt_container_menu_open(g_vault, player);
+    items::container_menu_open(g_vault, player);
 }
 ```
 
 What a click callback can rely on:
 
-- `container_menu_click_info` reads button 0 and mode `pickup`. The slot is the slot of the menu, never one of the player's
+- `items::container_menu_click_info` reads button 0 and mode `pickup`. The slot is the slot of the menu, never one of the player's
   own.
-- A click is always cancelled. The player cannot take the item. `container_menu_click_cancel` with true is accepted,
+- A click is always cancelled. The player cannot take the item. `items::container_menu_click_cancel` with true is accepted,
   with false it answers `ERR_DENIED`.
-- `container_menu_click_result` changes the menu itself, not only the click: the new stack stays in that slot for everyone
+- `items::container_menu_click_result` changes the menu itself, not only the click: the new stack stays in that slot for everyone
   who has the menu open. It is applied after the callback returns.
 - Only a menu of kind `chest` runs click handlers. A menu of any other kind shows its items and nothing more.
 - The click info and the result are valid only inside the callback.
@@ -130,10 +131,10 @@ A plugin window is a container opened for one player, built from a spec, without
 
 | Call | Does |
 |---|---|
-| `window_open` | Opens a window from a spec and returns its container id (a positive number) |
-| `window_info` | Describes the window the player has open, or answers `ERR_ABSENT` when there is none |
-| `window_update` | Changes the title or the numeric properties of the open window |
-| `window_close` | Closes it, or answers `ERR_ABSENT` when there is none |
+| `items::window_open` | Opens a window from a spec and returns its container id (a positive number) |
+| `items::window_info` | Describes the window the player has open, into a `Reply`, or answers `ERR_ABSENT` when there is none |
+| `items::window_update` | Changes the title or the numeric properties of the open window |
+| `items::window_close` | Closes it, or answers `ERR_ABSENT` when there is none |
 | `events::player_close_window` | Closes whatever window the player has open. It succeeds for any player who is online |
 
 The spec of `window_open` is a map:
@@ -153,14 +154,14 @@ static void open_sorter(core::Ctx ctx) {
     spec.map().key("id").string("minecraft:coal").key("count").integer(7).end();
     spec.end().end();
     const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
-    basalt_window_open(player, spec.data(), spec.finish());
+    items::window_open(player, spec);
 }
 ```
 
-`window_info` answers a map: `container_id`, `kind`, `slots`, `plugin` (whether a plugin opened it), `world`, and a `block`
+`items::window_info` answers a map: `container_id`, `kind`, `slots`, `plugin` (whether a plugin opened it), `world`, and a `block`
 map `{x, y, z}` when the window belongs to a block.
 
-`window_update` takes a map with `title` (reopens the screen under the new title, the contents stay) and `properties`, a map
+`items::window_update` takes a map with `title` (reopens the screen under the new title, the contents stay) and `properties`, a map
 from the property id written as a decimal string to a number: furnace progress, enchantment costs, the anvil cost. It
 answers `ERR_ABSENT` when no window is open or a property is not accepted.
 
@@ -169,7 +170,7 @@ What a player does in a window arrives as the `inventory.*` events, see [Events]
 
 ## Merchants
 
-`merchant_open` opens a trading window with trades you describe. The spec is a map with a `title` (MiniMessage) and a list
+`items::merchant_open` opens a trading window with trades you describe. The spec is a map with a `title` (MiniMessage) and a list
 of `offers`. Each offer is:
 
 | Key | Meaning |
@@ -190,7 +191,7 @@ static void open_trader(core::Ctx ctx) {
     spec.key("max_uses").integer(8).key("xp").integer(3).end();
     spec.end().end();
     const core::Player player = players::player_by_name(commands::command_source_name(ctx).c_str());
-    basalt_merchant_open(player, spec.data(), spec.finish());
+    items::merchant_open(player, spec);
 }
 ```
 
@@ -291,7 +292,7 @@ counting from 0, and `values` maps each field `key` to its answer.
 
 A player has at most one form from your plugin: opening a second one replaces the first, and the first never answers. The
 handler does not run when the player closes the form with escape, leaves, or when you cancel the request (the SDK's request
-cancel, `worlds::world_request_cancel` in C++). Keep that in mind before you wait for an answer.
+cancel, `core::request_cancel` in C++). Keep that in mind before you wait for an answer.
 
 ## Dialogs
 

@@ -435,7 +435,7 @@ callback.
 
 | Operation | Arguments | Answer |
 |---|---|---|
-| `add_goal` | `key`, `priority`, `flags` (optional) | Whether it was added. `flags` is a comma list of `move`, `look`, `jump` and `target`, in lowercase |
+| `add_goal` | `key`, `priority`, `flags` (optional) | Whether it was added. `flags` is a comma list of `move`, `look`, `jump` and `target`, matched without regard to case |
 | `remove_goal` | `key` | How many goals were retired. Vanilla goals are named by their class in snake case without `Goal` (`panic`, `look_at_player`) |
 | `remove_goals` | `flags` (optional) | How many were retired: every goal that locks one of the flags, or all of them with no flags |
 | `has_goal` | `key` | Whether a live goal has that key |
@@ -553,7 +553,7 @@ operations work through the same `entities::call`, and your plugin answers the `
   `ERR_ABSENT` only for a name the server does not know at all.
 - Send an integer to an integer property and a decimal to a decimal one. A value of the wrong kind can be refused with
   `ERR_INVALID`.
-- Goal flags are lowercase (`move`, not `MOVE`). A flag the server does not know is ignored.
+- A goal flag the server does not know is ignored, so check the spelling of `move`, `look`, `jump` and `target`.
 - Plugin goals are asked many times per second. Answer `can_use` from a cheap check and keep slow work out of the
   callback, as a callback has to return quickly like any other.
 - A snapshot is raw NBT, not a value. Pass the bytes straight to `entities::restore` or `entities::spawn_nbt`.

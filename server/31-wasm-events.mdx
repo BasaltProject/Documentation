@@ -502,8 +502,8 @@ it. For work on a timer, use [a task](/docs/server/wasm-tasks).
 - Listening to a name the server does not know is `ERR_INVALID`, and nothing else tells you. Check the result of every
   registration.
 - A text field read with `events::event_field_str` is cut at 256 bytes.
-- A plugin that registers more than 1024 handlers in total runs out of handler slots in the C and C++ SDKs, see
-  [Tasks and time](/docs/server/wasm-tasks#things-that-catch-people-out).
+- The C and C++ SDKs have 1024 handler slots, and every listener keeps one for as long as the plugin is loaded, so
+  register each listener once, see [Tasks and time](/docs/server/wasm-tasks#things-that-catch-people-out).
 
 ## Where to go next
 

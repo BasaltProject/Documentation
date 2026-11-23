@@ -116,14 +116,6 @@ everything:
 | C# | `Plugin.Init()` |
 | Java | `public static void init()` of `Main` |
 
-## Calls without a helper in C and C++
-
-Most calls have a helper in every language. A few areas (recipes, loot and trades, container menus, windows and
-merchants, and some rarely used calls such as `service_list`) are thinner in the C and C++ SDKs, which stop at the plain
-call. In those two languages you call the plain function: `basalt_` followed by the name, with every text argument
-followed by its length (`bs_text_len(text)` measures a string) and every value as a pointer and a length. The pages that
-need this show it in their examples.
-
 ## Errors
 
 A call that can fail reports it with one of the [result codes](/docs/server/wasm-execution-model#result-codes). How it

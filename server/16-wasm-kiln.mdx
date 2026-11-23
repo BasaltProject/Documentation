@@ -50,7 +50,9 @@ with it. `-v` shows the compiler commands. When the build succeeds Kiln runs the
 ## Check
 
 `kiln check` is meant to catch, before a server does, the mistakes that make a plugin fail to load. For the manifest it
-checks that `id`, `version`, `api` and `abi` are present and valid and that `main` ends in `.wasm`. For the built module
+checks that `id`, `version`, `api` and `abi` are present and valid, that `main` ends in `.wasm`, and that every entry of
+`[capabilities]` is a known name of the right type (`network` and `files` are lists of text, the others are `true` or
+`false`), with the same messages the server prints. For the built module
 it checks:
 
 - every function the module imports exists in the plugin API, is a function and has exactly the expected shape. A
@@ -69,8 +71,7 @@ build/plugin.wasm: import basalt.player_sendd is not part of ABI 1
 A passing check prints `ok`. `kiln check some.wasm` verifies a module on its own.
 
 <x-docs.callout type="note" title="What check does not do">
-Kiln does not run your plugin. It proves the plugin can be loaded, not that it behaves: try it on a server. The server
-also validates the manifest when it loads the plugin, and refuses a capability name it does not know.
+Kiln does not run your plugin. It proves the plugin can be loaded, not that it behaves: try it on a server.
 </x-docs.callout>
 
 ## Pack

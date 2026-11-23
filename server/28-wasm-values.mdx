@@ -108,7 +108,8 @@ while (entries.next(key, key_length, item)) {
 
 A call that returns a value tells you the length it needs. If your buffer was too small the call writes nothing and you
 retry with a larger one. In C and C++ you pass a second, larger spare buffer to the helper (`call_value`) and it does the
-retry; in Rust, Go, Java, Kotlin, C# and AssemblyScript the SDK grows its own buffer, and Zig lets you choose either way. A size that is big enough for the usual answer saves the second
+retry, or you read into a `Reply<N>`, which takes its room as a size (1024 bytes by default, `Reply<8192>` for a long
+answer) and answers `ERR_INVALID` when the answer does not fit; in Rust, Go, Java, Kotlin, C# and AssemblyScript the SDK grows its own buffer, and Zig lets you choose either way. A size that is big enough for the usual answer saves the second
 call.
 
 ## Limits

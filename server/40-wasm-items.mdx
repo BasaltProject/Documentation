@@ -11,9 +11,8 @@ and plugin-owned windows and click menus are on [Menus](/docs/server/wasm-menus)
 
 The calls live in the `items` area. Other languages use their own casing for the same names, see
 [The SDK](/docs/server/wasm-sdk). In C++ the SDK has an `Inventory` class and an `Item` builder for the common
-calls (`items::Inventory::of_player(player)`, `inventory.give(...)`). The registry and enchantment calls described below
-have no wrapper in C++, so there you call them by their plain C name, which is the area name with a `basalt_` prefix.
-None of these calls needs a capability in `plugin.toml`.
+calls (`items::Inventory::of_player(player)`, `inventory.give(...)`), and the registry and enchantment calls are plain
+functions of the `items` namespace. None of these calls needs a capability in `plugin.toml`.
 
 ```cpp
 #include <basalt/server.hpp>
@@ -186,8 +185,8 @@ Both answer `ERR_INVALID` for an empty id, and `ERR_STALE` for a player that lef
 
 ## Registries
 
-`items::registry_get(kind, key, out, capacity)` reads item related registry data as a value. The `kind` picks what you
-get and `key` is the text after it.
+`items::registry_get(kind, key, reply)` reads item related registry data into a `values::Reply` (see
+[Values](/docs/server/wasm-values)). The `kind` picks what you get and `key` is the text after it.
 
 | Kind | Key | Answer |
 |---|---|---|
@@ -203,18 +202,20 @@ get and `key` is the text after it.
 An unknown kind answers `ERR_INVALID`.
 
 ```cpp
-char out[1024];
-const int length = bs_registry("item", "minecraft:bread", out, sizeof out);
-values::Value item;
-if (length > 0 && length <= static_cast<int>(sizeof out) && item.open(out, length)) {
-    const long long stack_size = item.find("max_stack_size").i64_or(64);
+values::Reply<> reply;
+if (items::registry_get("item", "minecraft:bread", reply) == 0) {
+    const long long stack_size = reply.value.find("max_stack_size").i64_or(64);
 }
 ```
+
+`Reply` takes its room as a size, 1024 bytes by default. The lists (`items`, `enchantments`, `tags`) are long, so ask for a
+bigger one, declared `static`, such as `static values::Reply<65536> reply;`. An answer that does not fit is
+`ERR_INVALID`.
 
 ### Enchantment level values
 
 Enchantments describe numbers that depend on the level (a damage bonus, a cost) as small formulas.
-`items::enchantment_level_value(spec, length, level)` evaluates one at a level and returns the number, or 0.0 for a
+`items::enchantment_level_value(spec, level)` evaluates one at a level and returns the number, or 0.0 for a
 malformed spec. The `spec` value is a bare number, or a map with a `type` and the fields of that type:
 
 | `type` | Fields |
@@ -230,7 +231,7 @@ malformed spec. The `spec` value is a bare number, or a map with a `type` and th
 ```cpp
 values::ValueBuffer<128> spec;
 spec.map().key("type").string("linear").key("base").number(1.0).key("per_level_above_first").number(0.5).end();
-const double bonus = basalt_enchantment_level_value(spec.data(), spec.finish(), 3);   // 2.0
+const double bonus = items::enchantment_level_value(spec, 3);   // 2.0
 ```
 
 ## Gotchas

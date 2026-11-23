@@ -155,11 +155,12 @@ area). Proxy plugins are packed as `.bppkg`, see [Proxy plugins](/docs/proxy/was
   normally needs, and plain structs and fixed arrays do the rest.
 - **The stack is 128 KiB.** Keep big buffers in `static` storage. `Reply<>` is 1 KiB and `Text<256>` is about 260 bytes,
   fine on the stack.
-- **At most 1024 callbacks.** Each listener, command, task and menu slot you register takes one entry for the life of the
-  module. Registering beyond that fails.
+- **At most 1024 callbacks.** Each listener, command, repeating task and menu slot you register keeps one entry for the
+  life of the module. A callback that runs once (`tasks::after`, `server::wait`, a completion) gives its entry back when
+  it has run. Registering beyond the limit fails.
 - **`Reply<>` holds 1 KiB.** `server::data_read` and the other calls that return a value into it fail with `ERR_INVALID`
-  when the answer is larger. For a bigger answer call the C function of the same name with your own buffer, for example
-  `bs_data_read(name, buffer, size, &root)`, and read the result as a `values::Value`.
+  when the answer is larger. `Reply` takes the room as a size, so `Reply<8192>` is a reply that holds 8 KiB: declare it
+  `static` when it is large.
 - **`players::players_online` fills nothing when the array is too small.** It then returns how many players are online,
   so check the result against your array size and call again with a bigger array.
 - **Integers are explicit.** `long` is 32 bits on `wasm32`; the SDK uses `long long` for anything the server holds as

@@ -82,9 +82,9 @@ players reached, 0 when only the console was asked. No flag at all is `ERR_INVAL
 `authors` is a list of text. `folder` is the plugin's own folder. `lane` and `lanes` say which execution lane the plugin runs
 in and how many lanes the server has.
 
-The reply helper of the C++ SDK, `server::Reply<>`, holds 1 KiB. On a server with many plugins the answer of
-`server::info` can be larger, and a call whose answer does not fit comes back `ERR_INVALID`. Read big answers into a buffer
-of your own, as shown under [Large answers](#large-answers).
+The reply helper of the C++ SDK, `server::Reply<>`, holds 1 KiB unless you give it a size. On a server with many plugins
+the answer of `server::info` can be larger, and a call whose answer does not fit comes back `ERR_INVALID`. Ask for a
+bigger `Reply`, as shown under [Large answers](#large-answers).
 
 ## Looking up a profile
 
@@ -113,9 +113,9 @@ static void whois(core::Ctx ctx) {
 
 The answer is a map `{uuid, name, texture, signature}`, or null when the name is unknown or the services cannot be reached.
 `texture` and `signature` are empty when the account has no skin. With a skin the answer is about 2 KB, so read it into a
-buffer of 4 KB or more: the 1 KiB `server::Reply<>` is too small for it. The call answers `ERR_INVALID` for an empty name or
-when too many lookups are already waiting. A request handle can be dropped with the SDK's request cancel (in C++,
-`worlds::world_request_cancel`), after which the callback never runs.
+buffer of 4 KB or more: the default 1 KiB `server::Reply<>` is too small for it, so use `server::Reply<4096>`. The call
+answers `ERR_INVALID` for an empty name or when too many lookups are already waiting. A request handle can be dropped with
+the SDK's request cancel (in C++, `core::request_cancel`), after which the callback never runs.
 
 ## The administration interface
 
@@ -313,27 +313,26 @@ static void schedule(core::Ctx) {
 ### Large answers
 
 `server::Reply<>` holds 1 KiB, which suits most answers but not `datapacks.functions` on a server with many data packs, the
-list of plugins in `server::info`, or a profile with a skin. Give the call a buffer of your own and read the value from it:
+list of plugins in `server::info`, or a profile with a skin. `Reply` takes its room as a size, so ask for as much as the
+answer can need. A big reply is better declared `static`, because the stack is small:
 
 ```cpp
-static char g_big[32768];
+static server::Reply<32768> g_big;
 
 static void functions(core::Ctx ctx) {
-    bs_val raw;
-    if (bs_server_call("datapacks.functions", nullptr, 0, g_big, sizeof g_big, nullptr, 0, &raw) != 0) {
+    if (server::call("datapacks.functions", nullptr, g_big) != 0) {
         commands::command_reply(ctx, "<red>Could not list the functions.");
         return;
     }
-    const values::Value list{raw};
     core::Args args;
     char text[24];
-    core::format_i64(list.count(), text);
+    core::format_i64(g_big.value.count(), text);
     args.add("n", text);
     commands::command_reply(ctx, "{n} functions", &args);
 }
 ```
 
-An answer that does not fit the buffer comes back as `ERR_INVALID`, so size the buffer for the worst case.
+An answer that does not fit the reply comes back as `ERR_INVALID`, so size it for the worst case.
 
 ## Things that catch people out
 
@@ -343,7 +342,7 @@ An answer that does not fit the buffer comes back as `ERR_INVALID`, so size the 
 - `tick.step` works only while ticking is frozen: freeze first.
 - `access.is_banned` and the other checks answer false for a name nobody has seen, not an error. Use `access.known` to tell
   an unknown player from a player who is simply not banned.
-- Lists of ids and paths in `datapacks.*` can be long. Use a big buffer, see [Large answers](#large-answers).
+- Lists of ids and paths in `datapacks.*` can be long. Use a big `Reply`, see [Large answers](#large-answers).
 - Without the `datapacks` capability every `datapacks.*` operation is `ERR_DENIED`, even though `ops` lists it.
 - `server::broadcast` with no flag fails with `ERR_INVALID` rather than sending nothing.
 

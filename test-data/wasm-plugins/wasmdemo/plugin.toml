@@ -1,0 +1,5 @@
+id = "wasmdemo"
+version = "1.0.0"
+api = 1
+abi = 1
+main = "plugin.wasm"

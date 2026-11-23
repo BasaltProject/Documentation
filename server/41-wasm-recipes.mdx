@@ -10,9 +10,11 @@ it to add a custom recipe, remove a vanilla one, build a shop out of trades, or 
 give.
 
 The calls live in the `items` area. Other languages use their own casing for the same names, see
-[The SDK](/docs/server/wasm-sdk). In C++, the SDK wraps inventories and a few helpers (`items::recipe_known`), and the
-calls on this page are made with their plain C name, which is the area name with a `basalt_` prefix. Functions that take
-text also take its length, and `bs_text_len(text)` gives it. None of these calls needs a capability in `plugin.toml`.
+[The SDK](/docs/server/wasm-sdk). In C++ text is passed as a `const char*`, a spec is a `values::ValueBuffer` you have
+filled, and a call that answers a value fills a `values::Reply` that you read afterwards (see
+[Values](/docs/server/wasm-values)). `Reply` takes its room as a size, 1024 bytes by default, and the long answers on this
+page (every recipe id, every loot table, a big roll) need a larger one such as `Reply<8192>`. An answer that does not fit
+is `ERR_INVALID`. None of these calls needs a capability in `plugin.toml`.
 
 ```cpp
 #include <basalt/server.hpp>
@@ -27,8 +29,8 @@ static const char* kWool = R"json({
 })json";
 
 void plugin_init() {
-    if (!items::recipe_known("example:string_wool")) {
-        basalt_recipe_add("example:string_wool", bs_text_len("example:string_wool"), kWool, bs_text_len(kWool));
+    if (!items::recipe_has("example:string_wool")) {
+        items::recipe_add("example:string_wool", kWool);
     }
 }
 ```
@@ -111,19 +113,19 @@ A shapeless one:
 | Call | What it does |
 |---|---|
 | `items::recipe_remove(id)` | Takes a recipe out of every lookup, the server's own included. 0, or `ERR_ABSENT` when there is none |
-| `items::recipe_has(id)` | 1 when a recipe has that id, else 0 (`items::recipe_known(id)` is the C++ shortcut that answers a boolean) |
-| `items::recipe_ids(out, capacity)` | Every recipe id as a list of strings: the datapack's first, then the added ones |
-| `items::recipe_get(id, out, capacity)` | A map that describes the recipe (its `id`, `group`, `result` and the fields of its type). `ERR_ABSENT` when there is none |
+| `items::recipe_has(id)` | Whether a recipe has that id, as a boolean (`items::recipe_known(id)` answers the same) |
+| `items::recipe_ids(reply)` | Every recipe id as a list of strings: the datapack's first, then the added ones. The list is long, so use a large `Reply` |
+| `items::recipe_get(id, reply)` | A map that describes the recipe (its `id`, `group`, `result` and the fields of its type). `ERR_ABSENT` when there is none |
 | `items::recipe_clear()` | Empties the recipe list |
 | `items::recipe_reset()` | Puts back the datapack's recipes and drops the added ones |
 | `items::recipe_reset_brewing()` | Drops the brewing recipes plugins added and brings back the ones the game ships |
 
 Adding the same id twice answers `ERR_INVALID`, so a plugin that adds recipes while starting should check
-`recipe_known` first, or remove the id before adding it.
+`recipe_has` first, or remove the id before adding it.
 
 ### What a station makes
 
-`items::recipe_station(kind, input, length, out, capacity)` asks what a crafting station would produce for some
+`items::recipe_station(kind, input, reply)` asks what a crafting station would produce for some
 ingredients, without anyone standing at it. The answer is a value. `ERR_ABSENT` means no recipe fits, `ERR_INVALID` an
 unknown kind or a bad input. Item values use the [item stack](/docs/server/wasm-items#the-item-stack) form, and an empty
 cell is null.
@@ -140,16 +142,9 @@ grid.map().key("width").integer(1).key("height").integer(1).key("items").list();
 grid.map().key("id").string("minecraft:oak_log").key("count").integer(1).end();
 grid.end().end();
 
-char buffer[512];
-char spare[2048];
-values::Value answer;
-const int status = values::call_value(
-    [&](char* out, int capacity) {
-        return basalt_recipe_station("crafting", 8, grid.data(), grid.finish(), out, capacity);
-    },
-    buffer, sizeof buffer, spare, sizeof spare, answer);
-if (status == 0) {
-    const long long planks = answer.find("result").find("count").i64_or(0);   // 4
+values::Reply<512> reply;
+if (items::recipe_station("crafting", grid, reply) == 0) {
+    const long long planks = reply.value.find("result").find("count").i64_or(0);   // 4
 }
 ```
 
@@ -159,20 +154,20 @@ The recipe book is the list of recipes a player has discovered, the ones the gam
 
 | Call | What it does |
 |---|---|
-| `items::recipe_book_get(player, out, capacity)` | The recipe ids the player has discovered, as a list of strings |
-| `items::recipe_book_set(player, ids, length, learn)` | `ids` is a list of recipe ids. With `learn` 1 they are discovered, with 0 forgotten. Answers how many actually changed |
-| `items::recipe_book_has(player, id)` | 1 when the player knows the recipe, else 0 |
+| `items::recipe_book_get(player, reply)` | The recipe ids the player has discovered, as a list of strings |
+| `items::recipe_book_set(player, ids, learn)` | `ids` is a list of recipe ids. With `learn` true (the default) they are discovered, with false forgotten. Answers how many actually changed |
+| `items::recipe_book_has(player, id)` | Whether the player knows the recipe, as a boolean |
 | `items::recipe_book_resend(player)` | Sends the recipe packet and the book to the player again. `ERR_ABSENT` when the connection has none |
 
 ```cpp
 values::ValueBuffer<128> ids;
 ids.list().string("example:string_wool").end();
-const int learned = basalt_recipe_book_set(player, ids.data(), ids.finish(), 1);
+const int learned = items::recipe_book_set(player, ids);
 ```
 
 ## Merchants with your own trades
 
-`items::merchant_open(player, spec, length)` opens a merchant window for a player with a trade list that you write. It is
+`items::merchant_open(player, spec)` opens a merchant window for a player with a trade list that you write. It is
 the villager trading screen without a villager: the player picks a trade, hands over the cost and takes the result. The
 spec is a map with a `title` (MiniMessage) and `offers`, a list of maps:
 
@@ -206,7 +201,7 @@ static void trader(core::Ctx ctx) {
         .end();
     spec.end().end();
 
-    basalt_merchant_open(player, spec.data(), spec.finish());
+    items::merchant_open(player, spec);
 }
 ```
 
@@ -219,12 +214,12 @@ you like with the items: give them, drop them, or show them.
 
 | Call | What it does |
 |---|---|
-| `items::loot_tables(out, capacity)` | Every loot table id as a list of strings |
-| `items::loot_roll(table, spec, length, out, capacity)` | Rolls a table by id and answers a list of item values |
-| `items::loot_roll_json(json, spec, length, out, capacity)` | The same for a table written as JSON text, in the format of a loot table file |
-| `items::loot_number(json, as_float, seed, out, capacity)` | Evaluates a number provider given as JSON text. `as_float` 1 picks a decimal provider, 0 a whole-number one. The answer is a whole number or a decimal |
-| `items::loot_apply(spec, length, out, capacity)` | Runs loot functions on a stack and answers the resulting item value |
-| `items::loot_enchant(spec, length, out, capacity)` | Enchants a stack the way an enchanting table level would, and answers the resulting item value |
+| `items::loot_tables(reply)` | Every loot table id as a list of strings. The list is long, so use a large `Reply` |
+| `items::loot_roll(table, spec, reply)` | Rolls a table by id and answers a list of item values. `spec` is a pointer to a roll spec, or `nullptr` for the defaults |
+| `items::loot_roll_json(json, spec, reply)` | The same for a table written as JSON text, in the format of a loot table file |
+| `items::loot_number(json, as_float, seed, reply)` | Evaluates a number provider given as JSON text. `as_float` true picks a decimal provider, false a whole-number one. The answer is a whole number or a decimal |
+| `items::loot_apply(spec, reply)` | Runs loot functions on a stack and answers the resulting item value |
+| `items::loot_enchant(spec, reply)` | Enchants a stack the way an enchanting table level would, and answers the resulting item value |
 
 `loot_roll` answers `ERR_ABSENT` when the table or the world is unknown, `ERR_INVALID` for a bad spec. `loot_roll_json`
 answers `ERR_ABSENT` when the JSON does not parse as a table.
@@ -251,21 +246,13 @@ static void zombie_drops(core::Ctx ctx) {
     values::ValueBuffer<64> roll;
     roll.map().key("luck").number(1.0).end();
 
-    const char* table = "minecraft:entities/zombie";
-    char buffer[1024];
-    char spare[8192];
-    values::Value drops;
-    const int status = values::call_value(
-        [&](char* out, int capacity) {
-            return basalt_loot_roll(table, bs_text_len(table), roll.data(), roll.finish(), out, capacity);
-        },
-        buffer, sizeof buffer, spare, sizeof spare, drops);
-    if (status != 0) {
+    static values::Reply<4096> drops;
+    if (items::loot_roll("minecraft:entities/zombie", &roll, drops) != 0) {
         commands::command_reply(ctx, "<red>That loot table is not available.");
         return;
     }
-    for (int i = 0; i < drops.count(); ++i) {
-        const values::Value stack = drops.at(i);
+    for (int i = 0; i < drops.value.count(); ++i) {
+        const values::Value stack = drops.value.at(i);
         const char* id = nullptr;
         int length = 0;
         if (!stack.find("id").as_str(id, length) || length > 63) {
@@ -306,8 +293,8 @@ spec.map().key("item").map().key("id").string("minecraft:diamond_sword").end().k
 
 ## Rolling villager trades
 
-`items::trades_roll(profession, level, spec, length, out, capacity)` answers the trades a villager of a profession offers
-at a level from 1 to 5, as a list of maps. The profession is an id such as `minecraft:farmer`, and `minecraft:` may be
+`items::trades_roll(profession, level, spec, reply)` answers the trades a villager of a profession offers
+at a level from 1 to 5, as a list of maps. `spec` is a pointer to the spec, or `nullptr`. The profession is an id such as `minecraft:farmer`, and `minecraft:` may be
 left out. The spec takes `world`, `x`, `y`, `z` and `seed` like a roll spec, plus:
 
 | Key | Meaning |

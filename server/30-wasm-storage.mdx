@@ -239,6 +239,8 @@ static void count_start() {
 |---|---|
 | `server::store_get(key, reply)` | Reads the value into `reply`, a [value](/docs/server/wasm-values) of the kind that was stored. `ERR_ABSENT` when the key is not set |
 | `server::store_set(key, value)` | Saves a whole number or a text under the key |
+| `server::store_set_f64(key, value)`, `server::store_set_bool(key, value)` | Saves a decimal or a boolean |
+| `server::store_set_null(key)` | Deletes the key |
 
 The store holds a boolean, a whole number, a decimal or a text; setting a key to null deletes it. A list, a map or bytes is
 `ERR_INVALID`, and so is an empty key. For anything bigger than a scalar use a [JSON document](#json-documents).
@@ -338,8 +340,9 @@ static void export_players(bs::core::Ctx ctx) {
 - `config_i64` does not accept a decimal and `config_str` does not accept a number: a mismatch is the default, not a
   conversion.
 - The typed config getters are exact about `-` and `_`. `config_value` is not.
-- Answers read through the SDK's `Reply` fit in about 1 KiB. A larger document, such as a long JSON file, comes back as
-  `ERR_INVALID`. Keep documents small, or read a big file with `server::file_read` and your own buffer.
+- A `Reply` holds 1 KiB unless you give it a size. A larger document, such as a long JSON file, comes back as
+  `ERR_INVALID` from a plain `Reply<>`: declare a bigger one, such as `Reply<8192>`, or read a big file with
+  `server::file_read` and your own buffer.
 - A JSON document is not saved until you write it. Anything only held in memory is lost on a reload.
 - Two files with the same name anywhere in the data folder stop the plugin from loading, `.toml` and `.json` alike.
 - Package updates never overwrite the operator's copies. A key added to `config.toml` in a later version is missing from the

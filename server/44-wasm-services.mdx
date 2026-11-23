@@ -157,7 +157,7 @@ text; `<plugin id>.<what>` keeps names from colliding.
 | `server::result(ctx, reply)` | Inside the handler: reads the call `{name, caller, args}` into `reply` |
 | `server::service_reply(ctx, value)` | Sets the answer. `ERR_INVALID` for a value that is malformed or too large |
 | `server::service_reply_null(ctx)` | Answers `null` |
-| `service_remove(handle)` | Stops offering a service. `ERR_ABSENT` for a handle that is unknown or already removed |
+| `server::service_remove(handle)` | Stops offering a service. `ERR_ABSENT` for a handle that is unknown or already removed |
 
 ## Calling a service
 
@@ -187,7 +187,7 @@ value before relying on an answer.
 |---|---|
 | `server::service_call(name, args, timeout, handler)` | Starts a call and returns a request handle |
 | `server::service_has(name)` | Whether some loaded plugin offers the service. Use it before calling an optional dependency |
-| `service_list(reply)` | A list of every service offered by a loaded plugin, sorted |
+| `server::service_list(reply)` | A list of every service offered by a loaded plugin, sorted |
 
 ## When things run
 
@@ -210,9 +210,9 @@ Calls between plugins cross plugin threads, so the server keeps them apart from 
   failures in a row switch it off until `/plugins reload`. A handler that traps makes the caller see `failed`.
 - A completion is a callback like any other: it has no memory of the code that started it. Keep what it needs in the
   request itself (send it as `args` and have the provider echo it back, as the bank does) or in a variable of your module.
-- In C++ the SDK reads an answer into about 1 KiB. A larger reply is `ERR_INVALID`: keep service values small, and send
-  bigger data through a file or [storage](/docs/server/wasm-storage).
-- `service_remove` and `service_list` are not in the C and C++ SDKs.
+- In C++ a `Reply<>` reads an answer into 1 KiB unless you give it a size. A larger reply is `ERR_INVALID`: use
+  `Reply<N>` with a bigger `N`, keep service values small, or send bigger data through a file or
+  [storage](/docs/server/wasm-storage).
 
 ## Where to go next
 

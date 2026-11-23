@@ -111,13 +111,11 @@ Who may run a command depends on the permission you register it with.
 | `commands::command` | `"some.node"` | Whoever holds that node |
 | `commands::command` | `""` | Everyone |
 | `server::command` | `"some.node"` | Whoever holds that node |
-| `server::command` | `""` | Whoever holds the default node, `basalt.plugin.<id>.<command>`, where `<id>` is the plugin id and `<command>` the first word of the spec |
+| `server::command` | `""` | Everyone |
 
-The console, command blocks and the remote console are not checked against nodes. The default operator group holds `*`,
-and the default group holds none of the plugin nodes, so a command on its default node is for operators and the console
-until the server owner grants the node to a group in `groups.toml`, see
-[Groups and permissions](/docs/server/groups-and-permissions). A plugin can grant a node to one player itself, see
-[Permissions](/docs/server/wasm-permissions).
+The console, command blocks and the remote console are not checked against nodes. A node you name is held by the groups
+the server owner gives it to in `groups.toml`, see [Groups and permissions](/docs/server/groups-and-permissions), and a
+plugin can grant a node to one player itself, see [Permissions](/docs/server/wasm-permissions).
 
 The permission belongs to the command name, the first word of the spec, and not to a subcommand. When several
 registrations share a name, give them all the same `permission`. A player who may not run a command does not see it in
@@ -163,8 +161,11 @@ The variables keep their starting value when an argument was not typed, which ma
 |---|---|
 | `commands::command_source_name(ctx)` | The name of whoever ran the command, as a `Text<256>` |
 | `commands::command_is_console(ctx)` | `true` when the sender is not a player: the console, a command block or the remote console |
+| `server::command_source_player(ctx)` | The sender's player handle, 0 for the console or a sender that is not an online player |
+| `server::command_source(ctx, reply)` | Describes the sender in a single value, see below |
 
-The source is a name, not a player handle. To act on the player, look them up:
+`commands::command_source_name` gives a name, not a player handle. To act on the player, look them up by name, or ask
+`server::command_source_player` for the handle:
 
 ```cpp
 static void spark(bs::core::Ctx ctx) {
@@ -181,11 +182,26 @@ void plugin_init() {
 }
 ```
 
-The ABI has one more call, `command_source`, that describes the sender in a single [value](/docs/server/wasm-values): the
-name, the console flag, the kind (`console`, `player`, `command_block`, `proxied` or `other`), the world and the position
-(`x`, `y`, `z`) of the sender, and for a command relayed through a proxy the sender that asked, as its kind, a colon and
-its name. See [The ABI](/docs/server/wasm-abi) for how to call it. `command_source_player` answers the sender's player
-handle directly, 0 for the console.
+`server::command_source(ctx, reply)` describes the sender in a single [value](/docs/server/wasm-values), read into a
+`Reply`: the name, the console flag, the kind (`console`, `player`, `command_block`, `proxied` or `other`), the world and
+the position (`x`, `y`, `z`) of the sender, and for a command relayed through a proxy the sender that asked, as its kind,
+a colon and its name. The keys are `name`, `console`, `kind`, `world`, `x`, `y`, `z` and `caller`.
+
+```cpp
+static void where_am_i(bs::core::Ctx ctx) {
+    bs::server::Reply<> source;
+    if (bs::server::command_source(ctx, source) != 0) {
+        return;
+    }
+    char x[24];
+    char z[24];
+    bs::core::format_i64(static_cast<long long>(source.value.find("x").f64_or(0.0)), x);
+    bs::core::format_i64(static_cast<long long>(source.value.find("z").f64_or(0.0)), z);
+    bs::core::Args args;
+    args.add("x", x).add("z", z);
+    bs::commands::command_reply(ctx, "<gray>You are at {x}, {z}", &args);
+}
+```
 
 ### Replying
 
@@ -277,8 +293,8 @@ refuse it, listen to [`player.command`](/docs/server/wasm-events#player-events).
 
 ## Things that catch people out
 
-- An empty permission means "everyone" for `commands::command` and "the default node" for `server::command`. Write the
-  node you mean.
+- An empty permission means "everyone", for `commands::command` and for `server::command`. Name a node to restrict a
+  command.
 - A spec is identified by its literals. Registering `warp list` twice, with the same or other arguments, is `ERR_INVALID`
   and the second callback is never used.
 - An `int` argument is 32 bits wide, so a range cannot go beyond about two billion. Range bounds are whole numbers, even

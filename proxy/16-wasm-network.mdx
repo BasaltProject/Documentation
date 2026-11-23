@@ -6,7 +6,7 @@ group: Plugins
 
 A proxy sits in the middle of every connection, and this page is about the parts of that middle a plugin can reach. **Plugin messages** are the channel Minecraft offers for custom data between a server and a client, which a plugin can listen to and answer. **Raw packets** go one level lower: a plugin can see each packet the proxy relays, change it, drop it, or send one of its own. The **antibot** is the proxy's defence against floods of fake players, which a plugin can read and steer.
 
-These are strong tools, so a plugin has to ask for them in its manifest and the proxy owner can list them under `[plugins.allow]`. Read [Capabilities](#capabilities) first.
+These are strong tools, so a plugin has to ask for them in its manifest and the proxy owner has to grant them under `[plugins.allow]`. Read [Capabilities](#capabilities) first.
 
 In tables the functions are written as `network::channel_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
 
@@ -25,14 +25,14 @@ network = ["proxy"]
 packets = true
 ```
 
-A plugin that did not declare the capability gets `ERR_DENIED` from the call. The proxy owner lists what each trusted plugin may use under `[plugins.allow]` in `config/proxy.toml`, and should grant only what a plugin needs:
+A call needs both halves: the capability in the manifest and the same name in the grant the proxy owner writes under `[plugins.allow]` in `config/proxy.toml`. Without either, the call answers `ERR_DENIED`. Grant only what a plugin you trust needs:
 
 ```toml
 [plugins.allow]
 myplugin = ["network", "packets"]
 ```
 
-The proxy checks the operator grant for `commands` (see [Backends, permissions and administration](/docs/proxy/wasm-admin#capabilities-and-the-operator-grant)), and `network` and `packets` take effect as soon as the manifest declares them.
+`commands`, which lets a plugin run console commands, is granted the same way, see [Backends, permissions and administration](/docs/proxy/wasm-admin#capabilities-and-the-operator-grant).
 
 ## What a call answers
 
@@ -42,7 +42,7 @@ The proxy checks the operator grant for `commands` (see [Backends, permissions a
 | `ERR_ABSENT` | An unknown packet name, nothing to remove, or the proxy could not hand the data over. |
 | `ERR_STALE` | A player who left, or a context from a callback that already returned. |
 | `ERR_INVALID` | A bad name, channel or address, a payload over the limit, an observer that tried to edit, or a context of another kind. |
-| `ERR_DENIED` | The capability is missing. |
+| `ERR_DENIED` | The capability or the grant is missing. |
 
 ## Plugin messages
 
@@ -276,7 +276,7 @@ Keep a packet listener short: read what you need, decide and return. A listener 
 
 ## Antibot
 
-The proxy runs an antibot that judges new connections, puts suspicious ones through a check in a waiting area, and switches to a stricter mode during an attack. A plugin can read that, mark players as trusted, ban addresses and watch what it does. These calls need the `network` capability.
+The proxy runs an antibot that judges new connections, puts suspicious ones through a check in a waiting area, and switches to a stricter mode during an attack. A plugin can read that, mark players as trusted, ban addresses and watch what it does. These calls need the `network` capability and its grant.
 
 They take player names and addresses, not handles, because a bot is rarely a connected player.
 
@@ -350,7 +350,7 @@ void plugin_init() {
 
 ## Things that catch people out
 
-- **Declare what you use.** A plugin that uses a call without declaring `network` or `packets` in its manifest gets `ERR_DENIED`.
+- **Both a capability and a grant.** A plugin that declares `network` or `packets` still gets `ERR_DENIED` until the owner lists it under `[plugins.allow]`.
 - **You cannot take over BungeeCord.** Use a channel of your own. The proxy keeps answering `BungeeCord` and `bungeecord:main`, and your plugin never sees them.
 - **Message listeners only see registered channels.** `message_on` delivers a message only if the plugin registered that channel with `channel_register`.
 - **Observers cannot edit.** Use `packet_on` to change or cancel a packet and `packet_watch` to look at the result.
