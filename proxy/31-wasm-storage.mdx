@@ -1,0 +1,127 @@
+---
+title: Configuration and storage
+description: Read plugin settings and persist global or per-player data across backend changes, reloads and restarts.
+group: Plugin API
+---
+
+Configuration is operator input; persistent state is what the plugin writes. The proxy keeps each plugin's data in its database, isolated by plugin id. It does not share a backend inventory database or automatically synchronise another proxy instance.
+
+## Choose a location
+
+| Need | API/location |
+|---|---|
+| Operator-defined values | resources/config.toml, read through config/events calls |
+| A value for a connected player | data area with a player handle |
+| An offline player's value | admin area with UUID/name holder |
+| A plugin-global value | admin area with null holder |
+| Temporary cache | Module memory; lost when the instance reloads |
+
+Declare `players_data = true` for player data and `storage = true` for plugin-global storage. These do not need operator grants in plugins.allow. Getters with defaults can hide a denied read by returning the fallback; check capability configuration when a value seems never to persist.
+
+```toml
+[capabilities]
+players_data = true
+storage = true
+```
+
+## Count joins
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void on_join(bs::core::Ctx ctx) {
+    const auto player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const long long visits = bs::data::data_get_i64(player, "visits", 0);
+    if (bs::data::data_set_i64(player, "visits", visits + 1) < 0) {
+        bs::log::log_warn("Could not save visits.");
+    }
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+}
+```
+
+The value follows this proxy player across backend changes because its persistent scope is the identity, not the backend name. A new plugin id has a different data namespace even if the code and key names match.
+
+## Read configuration
+
+```toml
+announce-period = 1200
+
+[routing]
+fallback = "lobby"
+```
+
+## Configuration calls
+
+`config::config_i64`, `config_f64`, `config_bool` and `config_str` read `config.toml` of the plugin with dotted keys, as
+on the server. `events::config_value(key, out, capacity)` writes any value, including lists (TOML arrays) and maps
+(tables), as an encoded [value](/docs/proxy/wasm-values), and returns the length it needs. An empty key gives the whole
+file. A dashed key is also found with underscores, the file `limits.toml` is readable under the key `limits`, and a key
+that does not exist answers `ERR_ABSENT`.
+
+## Player data
+
+`data::data_get_i64`, `data_set_i64`, `data_get_bool`, `data_set_bool`, `data_get_str`, `data_set_str` and `data_remove`
+keep values per player for this plugin, and need `players_data = true` in the manifest. On the proxy the key space is the
+player's UUID, kept in the proxy's database, so the values survive restarts and follow the player to any backend. A plugin
+may keep 1000 keys per player; the 1001st is refused with `ERR_INVALID`. The getters return your default when the key is
+missing, holds another type or the capability is missing. To read or write the data of a player who is offline, or to
+use the plugin's global store, see [Administration](/docs/proxy/wasm-admin); for float values see
+[Interaction](/docs/proxy/wasm-interaction).
+
+
+## The plugin store and player data
+
+A plugin can keep values in the proxy's own plugin database. There are two places, and both use the same calls.
+
+| Place | Holder you pass | Capability |
+|---|---|---|
+| The plugin's store, shared by every player | `nullptr` | `storage` |
+| The data of one player | The player's UUID text | `players_data` |
+
+| Function | What it does |
+|---|---|
+| `admin::data_value` | Reads a key as a value. `ERR_ABSENT` when it is not set. |
+| `admin::data_set_i64`, `data_set_f64`, `data_set_bool`, `data_set_str` | Writes a key. |
+| `admin::data_remove` | Deletes a key. |
+| `admin::store_top` | The best values of a numeric key across the store and every player. |
+
+```cpp
+proxy::admin::data_set_i64(nullptr, "restarts", 5);
+
+char buffer[64];
+proxy::values::Value restarts;
+if (proxy::admin::data_value(nullptr, "restarts", buffer, sizeof buffer, restarts) == 0) {
+    long long count = restarts.i64_or(0);
+}
+```
+
+A key is 1 to 128 bytes. A value is a boolean, integer, float or text of at most 65536 bytes (the C++ SDK's text setter takes texts up to about 4 KiB). A plugin can hold 1000 keys in its store and 1000 per player. Anything past that is `ERR_INVALID`. A float with no fraction reads back as an integer.
+
+**Players who are offline.** The holder of a player's data is their UUID text, as `players::player_uuid` gives it, whether the player is connected or not. A player the proxy has never seen a UUID for is held by name. This is the same data the player calls in [Players and backends](/docs/proxy/wasm-players) read and write, and it works for players who are not online. A holder is at most 64 bytes, and `server` is reserved for the store.
+
+`store_top` takes a key and a limit (1 to 1000; below 1 means 10) and gives a list of maps, highest first, taken from the store and from every player's data. Rows whose value is not a number are skipped. Each map holds:
+
+| Key | Meaning |
+|---|---|
+| `uuid` | The player's UUID text, or `server` for the plugin store. |
+| `name` | The player's name when connected, else the UUID. |
+| `value` | The number, as an integer or a float. |
+
+A leaderboard command reads this directly: `store_top("kills", 10, ...)`, then walk the list.
+
+
+## Durability and schema changes
+
+Save important changes when they happen rather than relying entirely on plugin.disable: a timed-out/broken plugin may not run a normal shutdown callback. Keep stored values compatible when updating the package, or use an explicit version key and bounded conversion logic. Reload loses unsaved module variables but preserves committed database values.
+
+Do not store a live context, player or request handle as durable state. Persist UUIDs or names and resolve them for a new session. For structured values returned by queries, use [Values](/docs/proxy/wasm-values); the existence of that encoding does not mean every storage call accepts arbitrary nested documents.
+
+The proxy's typed/global storage interface is different from server document-storage calls. Use the calls documented here instead of assuming server data_read/data_write exist under a changed namespace.

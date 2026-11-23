@@ -1,0 +1,116 @@
+---
+title: Groups, permissions and access
+description: Define proxy groups, assign players, control the whitelist and manage network bans.
+group: Administration
+---
+
+The proxy has its own permission groups and access database. They decide who can run proxy commands and who can enter the network. They do not grant permissions on Paper, Basalt Server or another backend; configure those independently.
+
+## Define groups
+
+`config/groups.toml` says what each group grants. Exactly one group is marked `default` and exactly one `operator`. The shipped definitions are:
+
+```toml
+[groups.default]
+default = true
+permissions = ["basalt.command.server"]
+
+[groups.operator]
+operator = true
+permissions = ["*"]
+```
+
+A normal player can select a server. An operator has every permission through `*`. The console is always allowed.
+
+To add a moderator without granting full control:
+
+```toml
+[groups.moderator]
+inherits = "default"
+permissions = [
+    "basalt.command.glist",
+    "basalt.command.send",
+    "basalt.command.kick",
+    "basalt.command.ban",
+    "basalt.command.pardon",
+    "basalt.command.banlist",
+]
+```
+
+Add this table to the file with the default and operator definitions, then `reload`.
+
+## Rules and inheritance
+
+Permissions are dotted names. A trailing `*` matches everything beneath it, and a leading `-` denies. The most specific applicable rule wins rather than the last line written. For example:
+
+```toml
+permissions = ["basalt.command.*", "-basalt.command.stop"]
+```
+
+This grants the command family and denies stopping the proxy. A node nobody grants is denied. `inherits` names another group; use it to build on the default group rather than repeating every player permission. Invalid group definitions are reported during loading.
+
+Being named `moderator` confers no privileges. The `operator` marker identifies the group `/op` assigns and is used by access policy; the permission list still determines commands.
+
+## Assign players
+
+Membership is state in `.basalt/players.db`, never a list of names in `groups.toml`.
+
+| Command | Effect |
+|---|---|
+| `group list` | List declared groups. |
+| `group get <player>` | Read the player's group. |
+| `group members <group>` | List recorded members. |
+| `group set <player> <group>` | Assign a defined group. |
+| `op <player>` | Assign the operator group. |
+| `deop <player>` | Return to the default group. |
+
+Run these in the console initially, for example `group set Alex moderator`. In game they require their corresponding `basalt.command.*` permission. Online players can be resolved directly; offline players normally need a previous login record. In offline mode a valid name can be resolved to its offline UUID, so do not use that mode to establish trusted identities on a public network.
+
+A player whose recorded group no longer exists falls back to the default. Reloading definitions does not delete membership records.
+
+## Command permissions
+
+Built-in command `name` asks for `basalt.command.name`. Change the node in [`commands.toml`](/docs/proxy/commands#configure-commands) if your roles use another naming scheme. The proxy's namespaced forms, such as `/basalt:send`, use the same permissions as their ordinary forms.
+
+Granting `basalt.command.server` permits selecting available servers; forced hosts are not a restriction on later moves. Use routing decisions or a plugin if access to a destination needs additional policy.
+
+Plugin commands with a declared permission use the proxy permission service. Plugins can also provide permission decisions and temporary overrides through the [administration API](/docs/proxy/wasm-admin#permissions). Those providers can affect the result, so a permission plugin's own configuration also matters.
+
+## Whitelist
+
+Enable the startup policy in `proxy.toml`:
+
+```toml
+[access]
+whitelist = true
+enforce-whitelist = true
+```
+
+Manage entries through commands:
+
+```bash
+whitelist add Alex
+whitelist list
+whitelist remove Alex
+whitelist on
+whitelist off
+```
+
+The entries persist in the database. `whitelist on/off` changes the running switch; a restart follows the configuration file. With `enforce-whitelist`, switching it on or removing an entry also kicks online players who no longer qualify. Operators are exempt from whitelist enforcement.
+
+## Bans and kicks
+
+| Command | Effect |
+|---|---|
+| `ban <player-or-ip> [reason]` | Store a network ban for a player UUID or literal IP. |
+| `pardon <player-or-ip>` | Remove the ban. |
+| `banlist` | Show stored player and address bans. |
+| `kick <player> [reason]` | Disconnect an online player without banning. |
+
+A player ban also disconnects that player if online. Address bans are checked on login; do not assume adding an address ban disconnects every existing session from it. Address bans take literal addresses, not the CIDR lists of `antibot.toml`.
+
+Proxy bans and whitelist entries are distinct from [antibot reputation bans](/docs/proxy/antibot). Use `pardon` for a stored access ban and `antibot unban <ip>` for an antibot origin ban.
+
+## Apply and preserve changes
+
+Reload group definitions after editing them. Commands update player state directly, so they never rewrite a configuration file you are editing. Keep `.basalt/players.db` with your backups, and keep backends private so players cannot bypass network access rules by joining a backend directly.

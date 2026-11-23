@@ -1,0 +1,108 @@
+---
+title: Commands
+description: Player and console commands, permissions, backend collisions, aliases, custom commands and message overrides.
+group: Administration
+---
+
+Use the proxy console without a slash, or a leading `/` in game. Built-in commands require `basalt.command.<name>`, unless you change their permission in `commands.toml`. The console is always allowed; the shipped default player group only grants `basalt.command.server`.
+
+## Command reference
+
+| Command | Purpose |
+|---|---|
+| `help` (`?`) | List commands the source can use. |
+| `list` | List online players on the proxy. |
+| `glist` | Show players per server, total online, server health and groups. |
+| `server` | Show your current server and available destinations. |
+| `server <server>` | Move yourself; players only. |
+| `send <player> <server>` | Request a backend move for an online player. |
+| `send all <server>` | Request a move for each online player. |
+| `status` | Show session, traffic, connection, translation and process counters. |
+| `plugins` (`pl`) | List loaded plugins. |
+| `reload` | Reload supported configuration and plugin instances. |
+| `stop` | Stop the proxy. |
+| `op <player>`, `deop <player>` | Assign the operator or default group. |
+| `group list`, `group get <player>` | List groups or inspect a membership. |
+| `group members <group>` | List members recorded in a group. |
+| `group set <player> <group>` | Assign a group. |
+| `whitelist on`, `whitelist off`, `whitelist list` | Change the running whitelist switch or list entries. |
+| `whitelist add <player>`, `whitelist remove <player>` | Change persistent whitelist entries. |
+| `ban <player-or-ip> [reason]` | Ban a player or literal IP. |
+| `pardon <player-or-ip>`, `banlist` | Remove or inspect access bans. |
+| `kick <player> [reason]` | Disconnect a player. |
+| `antibot [status]` | Inspect protection counters. |
+| `antibot list [bans\|reputation\|verified]` | Inspect tracked origins and verification. |
+| `antibot attack on\|off\|auto` | Force or restore automatic attack detection. |
+| `antibot ban <ip>`, `antibot unban <ip>` | Change temporary reputation bans. |
+| `antibot verify <name>`, `antibot unverify <name>` | Add or remove verification. |
+| `antibot verified <name>` | Test whether a name is verified. |
+
+`send` confirms a preparation request; the destination must still complete login. See [routing](/docs/proxy/backends-and-routing#moving-players) for refusals and recovery, [groups](/docs/proxy/groups-and-permissions) for access policy, and [antibot](/docs/proxy/antibot) for protection commands.
+
+## Proxy and backend commands
+
+A player command is handled by the proxy only when it is available to that player. Unknown or unavailable commands continue to the backend. An ordinary name also yields when the backend advertises a command of the same name.
+
+Every built-in command has a `basalt:` form that stays on the proxy. Use `/basalt:list` to query the network instead of a backend's `/list`, and `/basalt:reload` to reload the proxy instead of the game server. Namespaced forms use the same permission checks.
+
+Command availability is reflected in Java command completion where the protocol supports it. Backend command trees and proxy commands are combined for the player; adding an alias is not a way to bypass permissions.
+
+## Configure commands
+
+`config/commands.toml` changes registration rather than hardcoding role policy:
+
+```toml
+[commands.glist]
+permission = "network.staff"
+aliases = ["networkplayers"]
+
+[commands.stop]
+enabled = false
+
+[options]
+log-commands = true
+```
+
+| Key | Behaviour |
+|---|---|
+| `permission` | Replace the command's required permission; grant it in groups.toml. |
+| `aliases` | Add names to the existing command. |
+| `enabled = false` | Remove the command and aliases from registration rather than answering with a denial. |
+| `[options] log-commands` | Log commands players run; true by default. |
+
+A disabled proxy command does not disable a backend command with the same name. Reload after editing this file.
+
+## Custom text commands
+
+Simple answers need no plugin:
+
+```toml
+[custom.discord]
+aliases = ["dc"]
+message = ["<blue>Join us: https://discord.gg/example</blue>"]
+
+[custom.online]
+permission = "basalt.command.server"
+message = ["<gray>Players: <white>%basalt_server_online%</white></gray>"]
+```
+
+A custom command defaults to permission `basalt.command.<name>`, so grant `basalt.command.discord` to the default group for the example above. `permission` can select an already granted node. `message` is MiniMessage text, one string per line, with the proxy's supported placeholders.
+
+Configuration commands only return text. For arguments, conditions, routing or persistent logic, use a [WASM command](/docs/proxy/wasm-events#commands).
+
+## Rewording answers
+
+Proxy replies live under `[command]` in `messages.toml`, not a `[messages]` table in `commands.toml`:
+
+```toml
+[command]
+server-current = "<gray>You are on <white>%server%</white>. Available: %servers%</gray>"
+send-ok = "<green>Sending %player% to %server%.</green>"
+default-reason = "Please contact a moderator."
+```
+
+Use the placeholders documented beside each shipped key, such as `%player%`, `%server%`, `%reason%` and `%count%`. Empty or missing values keep the shipped message. Unknown message keys are rejected, which catches spelling errors. Reload applies message changes; see [messages](/docs/proxy/interface#messages).
+
+## Safe administration
+
+Give staff the particular commands they need. `basalt.command.*` includes stop, op, reload and protection administration, so it is broader than a moderation role. Keep the console available when testing permission changes, and use the namespaced form when an in-game command appears to reach the wrong process.

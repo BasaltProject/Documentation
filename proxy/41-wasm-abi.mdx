@@ -1,7 +1,7 @@
 ---
 title: ABI reference
 description: The exact contract between a proxy plugin module and the proxy, for plugins built without an SDK and for anyone who wants to know what a call really does.
-group: Plugins
+group: Plugin API
 ---
 
 Most plugins never read this page: the SDK of your language wraps every call below in a function with a name, a type and
@@ -71,11 +71,11 @@ result is an error code.
 **Text.** Text is MiniMessage. A text argument that starts with `@` is a key of the plugin's language file, anything
 else is literal. A text is cut at 4096 bytes. Named arguments for `{name}` fields travel as a packed list of little-endian
 `u32` values: the count, then for each entry the key length, the key bytes, the value length and the value bytes. A
-list with pointer 0 and length 0 means none. See [Text](/docs/server/wasm-text).
+list with pointer 0 and length 0 means none. See [Text](/docs/proxy/wasm-text).
 
 **Values.** Anything richer than a few scalars crosses as one encoded value: null, bool, int, float, string, bytes, list or
 map, nested. Going in it is `(ptr, len)`, coming out it is `(out, cap)` with the result above. The format and its limits are
-on [Values](/docs/server/wasm-values).
+on [Values](/docs/proxy/wasm-values).
 
 **Constants.** Log levels are 0 debug, 1 info, 2 warn and 3 error. Event priorities are 0 lowest, 1 low, 2 normal, 3 high
 and 4 highest, and lower runs first.
@@ -178,7 +178,7 @@ a decided event directly. The status of every call is in the guides for that are
 |---|---|---|
 | Events and decisions | `event_*`, `plugin_info`, `plugin_manifest` | [Events and decisions](/docs/proxy/wasm-events) |
 | Commands, tasks, config, player data | `command_*`, `task_*`, `config_*`, `data_*` | [Events and decisions](/docs/proxy/wasm-events#commands-tasks-config-and-player-data) |
-| Logging and text | `log`, `translate` | [Text](/docs/server/wasm-text) |
+| Logging and text | `log`, `translate` | [Text](/docs/proxy/wasm-text) |
 | Players and backends | `player_by_name`, `players_online`, `player_name`, `player_send`, `player_action_bar`, `player_uuid`, `player_server`, `player_ping`, `player_setting_*`, `player_has_permission`, `player_title`, `player_connect`, `player_kick`, `servers_list`, `server_address`, `players_on` | [Players and backends](/docs/proxy/wasm-players) |
 | HUD | `hud_*` | [HUD](/docs/proxy/wasm-hud) |
 | Interaction | `interaction_watch`, `dialog_*`, `resource_pack_*`, `cookie_*`, `player_transfer`, `players_by_uuid`, `players_count`, `players_broadcast`, `player_address`, `player_port`, `player_settings`, `player_data_get_f64`, `player_data_set_f64` | [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) |
@@ -187,4 +187,4 @@ a decided event directly. The status of every call is in the guides for that are
 | Completions | `value_result`, `request_cancel` | The page of the call that returns a request |
 
 The capabilities that gate calls, and the grant the operator adds, are on [plugin.toml](/docs/proxy/wasm-plugin-toml#capabilities).
-The server profile has its own list of imports, see the [server ABI reference](/docs/server/wasm-abi).
+The server profile has its own list of imports, see the [server ABI reference](/docs/proxy/wasm-abi).

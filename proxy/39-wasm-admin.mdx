@@ -1,12 +1,12 @@
 ---
 title: Backends, permissions and administration
 description: Register and ping backends at run time, run console commands, check and provide permissions, and keep plugin data from a proxy plugin.
-group: Plugins
+group: Plugin API
 ---
 
 This page is for plugins that look after the network itself: they open a backend for an event and close it again, ask whether a player may do something, decide that themselves, keep a counter in the proxy's own database, or run a console command on a schedule. Each part stands alone, so read the section you need.
 
-In tables the functions are written as `admin::servers_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+In tables the functions are written as `admin::servers_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/proxy/wasm-sdk).
 
 ## Capabilities and the operator grant
 
@@ -84,7 +84,7 @@ void plugin_init() {
 
 ## What a call answers
 
-Calls that give back a value write it into a buffer you provide and return the length the full answer needs, as everywhere else in the API (see [Values](/docs/server/wasm-values)). The errors:
+Calls that give back a value write it into a buffer you provide and return the length the full answer needs, as everywhere else in the API (see [Values](/docs/proxy/wasm-values)). The errors:
 
 | Result | Meaning here |
 |---|---|
@@ -149,7 +149,7 @@ The JSON calls are for text that already exists as a chat component. It must be 
 
 ## Permissions
 
-The proxy decides permissions through a chain of providers: its own groups first, then whatever plugins add. These calls ask the chain, change what it says, and let a plugin join it.
+The proxy decides permissions through providers ordered by priority, including built-in groups, plugin providers and overrides. These calls ask the chain, change what it says, and let a plugin join it.
 
 ### Asking
 
@@ -314,3 +314,9 @@ A leaderboard command reads this directly: `store_top("kills", 10, ...)`, then w
 | [Plugin messages, packets and antibot](/docs/proxy/wasm-network) | The other powers that need an operator grant. |
 | [plugin.toml](/docs/proxy/wasm-plugin-toml) | Capabilities in the manifest. |
 | [Configuration](/docs/proxy/configuration) | `proxy.toml`, including `[plugins.allow]`. |
+
+## Native administration versus plugin policy
+
+For the full plugin provider guide, see [Permissions](/docs/proxy/wasm-permissions). For static roles use [groups.toml](/docs/proxy/groups-and-permissions); for console syntax use [Commands](/docs/proxy/commands). Register a permission provider when decisions depend on plugin-owned data or backend context. A provider must leave unrelated questions undefined so another provider can answer, rather than denying the whole permission vocabulary.
+
+The [HTTP administration API](/docs/proxy/remote-api) is for external panels. It is separate from these in-process imports and has its own authentication and action switches.

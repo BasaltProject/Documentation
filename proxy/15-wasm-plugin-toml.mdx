@@ -1,7 +1,7 @@
 ---
-title: plugin.toml
+title: Manifest and layout
 description: The manifest of a proxy plugin, the capabilities it can ask for, and the configuration and language files that travel with it.
-group: Plugins
+group: Plugin basics
 ---
 
 Every plugin has a `plugin.toml` that says who it is, which module to run and what it needs. `kiln new` writes one for
@@ -111,7 +111,7 @@ greeter.bppkg
 ```
 
 The first time the package loads, the proxy copies `resources/` into `plugins/<id>/` and skips any file that is already
-there. The server owner edits those copies; updating the package never overwrites them, and deleting a copy brings the
+there. The proxy operator edits those copies; updating the package never overwrites them, and deleting a copy brings the
 packaged one back on the next load. Paths listed in `private` stay in the package and are not copied (a trailing `/`
 means a whole folder):
 
@@ -122,7 +122,7 @@ private = ["secrets.toml", "internal/"]
 
 ### Configuration
 
-`config.toml` holds the values the server owner can change. The plugin reads them by key, with a default for when the
+`config.toml` holds the values the proxy operator can change. The plugin reads them by key, with a default for when the
 key is missing, and nested tables are reached with dots:
 
 ```toml
@@ -161,7 +161,13 @@ A text that starts with `@` is one of these keys (`"@welcome"`, `"@shop.bought"`
 argument of that name. A key no file defines is shown as the key itself, without the `@`. The language is the plugin's,
 not the player's: to answer in the player's language, read their `locale` (see
 [Players and backends](/docs/proxy/wasm-players#reading-a-player)) and choose the key yourself. How text is written and
-translated is covered in [Text](/docs/server/wasm-text).
+translated is covered in [Text](/docs/proxy/wasm-text).
 
 Two `.toml` or `.json` files with the same name in different folders of one plugin keep it from loading, because a name
 has to mean one file.
+
+## Operator checklist
+
+Run `kiln check` before installing a new package. Confirm `target = "proxy"` and the `.bppkg` extension, then grant only the powers the plugin needs under `[plugins.allow]`. Host-grant changes require restart; resource/configuration edits and replacement packages take effect when the plugin is loaded again.
+
+The same folder can also contain [Java adapter jars](/docs/proxy/java-plugins). Their permissions are not controlled by a WASM manifest, so do not interpret a manifest grant as a sandbox for arbitrary jars.

@@ -1,0 +1,129 @@
+---
+title: Permissions
+description: Query proxy permissions, set overrides and groups, provide custom decisions and publish permission changes.
+group: Plugin API
+---
+
+The operator defines static roles in [groups.toml](/docs/proxy/groups-and-permissions). A plugin can query those decisions, provide dynamic rules or metadata, and change membership through the proxy's permission service. Backend permissions remain separate.
+
+## Permissions
+
+The proxy decides permissions through providers ordered by priority, including built-in groups, plugin providers and overrides. These calls ask the chain, change what it says, and let a plugin join it.
+
+### Asking
+
+| Function | What it does |
+|---|---|
+| `admin::permission_check` | Does this player (or the console) have this node? |
+| `admin::permission_meta` | The text option `key` of a player, such as `prefix` or `suffix`. |
+| `admin::permission_list` | Every node a player has right now, sorted, as a list of text. |
+
+`permission_check(who, node, server)` answers 1 (granted), 0 (denied) or `ERR_ABSENT` when nothing in the chain decided, which the proxy counts as denied. `who` is a player name, matched by exact spelling first and then ignoring case, or an empty string for the console. A player who is not connected is asked by name alone. `server` names a backend to ask about and defaults to the player's own; pass `nullptr` for the default.
+
+`permission_meta` returns the text, or a negative code when nothing provides it.
+
+### Changing
+
+| Function | What it does |
+|---|---|
+| `admin::permission_override` | Grants (1), denies (0) or removes (-1) a node for a player until the proxy stops. |
+| `admin::group_get` | The name of the player's group, empty when none. |
+| `admin::group_set` | Puts the player in a group. An empty group clears it. |
+
+An override is asked before the groups, works for players who are offline, and is gone when the proxy restarts. `group_set` answers `ERR_INVALID` when the player never joined the proxy or when the group is not defined in `groups.toml`. Groups are made there; plugins only move players between them.
+
+### Joining the chain
+
+A plugin can answer permission questions itself, for instance from its own database or a rank it keeps in player data.
+
+| Function | What it does |
+|---|---|
+| `admin::permission_provide` | Puts the plugin in the chain with a check callback, a meta callback or both. Returns a provider handle. |
+| `admin::permission_unprovide` | Takes it out again. |
+| `admin::permission_request` | Inside a callback: what is being asked. |
+| `admin::permission_answer` | Answers a check question: 1 grants, 0 denies, a negative value leaves it undefined. |
+| `admin::permission_answer_text` | Answers a meta question with text, up to 4096 bytes. |
+| `admin::permission_changed` | Tells the proxy that what the providers say has changed, so it rebuilds what it keeps from them. |
+
+`permission_provide(check, meta, priority)` takes either callback as `nullptr`, but not both. The priority puts the plugin above the proxy's own provider and sorts plugins among themselves, highest first. 0 means the plugin default, 100, and a negative priority is `ERR_INVALID`. The provider goes away with `permission_unprovide`, or when the plugin is switched off.
+
+In a callback, `permission_request` writes a map describing the question:
+
+| Key | Meaning |
+|---|---|
+| `kind` | `check` or `meta`. |
+| `name`, `uuid` | Who is asked about. `uuid` is empty when unknown. |
+| `console` | True when the question is about the console. |
+| `text` | The node of a check, or the key of a meta question. |
+| `context` | A map with `server`, `world` and any extra text entries the asker passed. |
+
+Here is a provider that grants every `perks.*` node to players who have a `vip` flag in the plugin's player data, and stays silent for everything else, so the next provider decides:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace proxy = basalt::proxy;
+
+static bool starts_with(const char* text, int length, const char* prefix) {
+    int i = 0;
+    for (; prefix[i] != 0; ++i) {
+        if (i >= length || text[i] != prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void on_check(proxy::core::Ctx ctx) {
+    char buffer[512];
+    proxy::values::Value question;
+    if (proxy::admin::permission_request(ctx, buffer, sizeof buffer, question) != 0) {
+        return;
+    }
+    const char* node = nullptr;
+    int node_length = 0;
+    if (!question.find("text").as_str(node, node_length) || !starts_with(node, node_length, "perks.")) {
+        return;
+    }
+    const char* uuid = nullptr;
+    int uuid_length = 0;
+    if (!question.find("uuid").as_str(uuid, uuid_length) || uuid_length == 0 || uuid_length > 63) {
+        return;
+    }
+    char holder[64];
+    for (int i = 0; i < uuid_length; ++i) {
+        holder[i] = uuid[i];
+    }
+    holder[uuid_length] = 0;
+
+    char stored[64];
+    proxy::values::Value vip;
+    if (proxy::admin::data_value(holder, "vip", stored, sizeof stored, vip) == 0 && vip.bool_or(false)) {
+        proxy::admin::permission_answer(ctx, 1);
+    }
+}
+
+void plugin_init() { proxy::admin::permission_provide(on_check, nullptr, 0); }
+```
+
+This plugin needs `players_data = true`, because it reads player data.
+
+How providers are asked is different from every other callback, and it shapes what you can do:
+
+- The proxy asks from any thread: a player's connection, the console, a command. The question is queued to the plugin's thread ahead of other work, and the asker **waits at most 25 ms**. An answer that comes later is ignored, `permission_answer` returns `ERR_STALE`, and the chain moves to the next provider, exactly as when a callback sets nothing.
+- Keep a provider fast and free of slow calls. Read from memory or a small stored value, as above.
+- A check made from inside any plugin callback (`admin::permission_check`, `players::player_has_permission`, the permission test of a plugin command) is answered by the proxy's own providers only, never by a plugin's. Callbacks do not nest.
+- `permission_answer` answers `ERR_INVALID` for a meta question, and `permission_answer_text` for a check question. The last answer set before the callback returns is the one that counts.
+
+
+## Provider policy
+
+Return an undefined result for nodes your provider does not own, so later providers can decide them. An unconditional denial is a decision, not a request to fall through. Provider priorities sort highest first; event priorities are a different concept.
+
+Notify the service after your plugin changes data affecting permissions. Do not repeatedly register another provider to refresh a cache. Unregister or let plugin teardown retire the provider when it is no longer valid.
+
+## Overrides and persistent membership
+
+Overrides are temporary for this process and differ from the persisted group assigned to a player. Use group_set only with a group defined by the operator. A reload of group definitions does not establish a new authenticated identity or grant permissions on a backend.
+
+For command registration use [Commands](/docs/proxy/wasm-commands); for persistent rank inputs use [Storage](/docs/proxy/wasm-storage).

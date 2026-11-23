@@ -1,0 +1,129 @@
+---
+title: AssemblyScript
+description: Write, build and package a Basalt Proxy plugin in AssemblyScript, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+AssemblyScript offers TypeScript-like syntax compiled into WebAssembly. It is not JavaScript running in a browser or Node: use its explicit numeric types, supported library and proxy SDK modules. Handlers are top-level functions, and the runtime adds module and memory overhead.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses the compiler of a `node_modules/assemblyscript` folder in your project when there is one, and
+otherwise downloads Node 22 and AssemblyScript 0.28 (about 57 and 23 MB, 301 MB unpacked) into a per-user cache on the
+first build, on Linux, macOS and Windows. A `node` of version 18 or newer on your `PATH` is used instead of the Node download.
+See [Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang assemblyscript --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/main.ts
+```
+
+`src/main.ts` is the root of your plugin. Other files are modules you `import` from it with relative paths. The module is
+written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time.
+
+## The entry point
+
+Write `export function init(): void` in `src/main.ts`. Kiln generates the exports the proxy needs and calls your `init`
+once, after the module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/main.ts`.
+
+```ts
+import * as bsCommands from "basalt-proxy/commands";
+import * as bsCore from "basalt-proxy/core";
+import * as bsEvents from "basalt-proxy/events";
+import * as bsLog from "basalt-proxy/log";
+import * as bsPlayers from "basalt-proxy/players";
+
+function onJoin(ctx: bsCore.Ctx): void {
+  const player = bsEvents.eventPlayer(ctx);
+  if (player == 0) return;
+  const name = bsPlayers.playerName(player);
+  bsPlayers.send(player, "<green>Welcome, {name}!", new bsCore.Args().add("name", name ? name : "player"));
+}
+
+function hello(ctx: bsCore.Ctx): void {
+  const times = bsCommands.commandArgI64(ctx, "times", 1);
+  for (let i: i64 = 0; i < times; i++) {
+    bsCommands.commandReply(ctx, "<yellow>Hello from greeter!");
+  }
+}
+
+export function init(): void {
+  bsLog.logInfo("greeter loaded");
+  bsEvents.on("player.join", bsCore.NORMAL, onJoin);
+  bsCommands.command("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`events.on` listens to an event, see [Events](/docs/proxy/wasm-events); `command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the AssemblyScript spelling is in
+[The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: one module per area, `basalt-proxy/<area>`, imported as a namespace
+  (`import * as bsPlayers from "basalt-proxy/players"`). Functions are the C++ name in camelCase: `players::send` is
+  `send`, `players::player_name` is `playerName`, `commands::command_reply` is `commandReply`, `events::event_player` is
+  `eventPlayer`, `log::log_info` is `logInfo`.
+- **Strings in** are `string`.
+- **Strings out** are `string | null`, `null` when the call failed.
+- **Optional arguments** are default parameters: `commandReply(ctx, text)` and `commandReply(ctx, text, args)`. Calls that
+  read a number take the fallback instead of returning an optional: `commandArgI64(ctx, "times", 1)`.
+- **Handles** are `Player` and `Ctx`, both `i32`. `0` is never a valid handle. `playersOnline()` returns a `Player[]`.
+- **`Args`** is `new bsCore.Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `bsCore.LOWEST` to `bsCore.HIGHEST` for priorities and `bsCore.DEBUG` to `bsCore.ERROR` for levels.
+- **Integers**: a proxy `i64` is an `i64`, not a `number`. Write `1` where an `i64` is expected and keep loop counters
+  typed (`let i: i64 = 0`).
+- **Handlers** are named top-level functions of type `(ctx: Ctx) => void`. Closures are not implemented in
+  AssemblyScript, so a handler cannot capture a local; keep state in module-level `let` variables.
+
+## Building
+
+```bash
+kiln build
+```
+
+runs the AssemblyScript compiler with `--optimizeLevel 3 --shrinkLevel 2 --noAssert` and the incremental runtime, writes
+`build/plugin.wasm` and then checks it. `kiln pack` writes
+`build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see [Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |

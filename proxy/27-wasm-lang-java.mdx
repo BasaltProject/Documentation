@@ -1,0 +1,158 @@
+---
+title: Java
+description: Write, build and package a Basalt Proxy plugin in Java, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+Java sources can compile to a WASM plugin through Kiln. They use the org.basaltmc.proxy SDK and ship as .bppkg, not a BungeeCord/Velocity jar. The Java-to-WASM toolchain and its emitted proposals have their own platform restrictions; the FreeBSD WAMR path does not accept its exception features.
+
+## What Kiln installs
+
+Nothing by hand. Java plugins are compiled by TeaVM, which turns your classes into C, and Zig, which compiles that C to
+WebAssembly. Kiln downloads TeaVM and the Eclipse Java compiler (about 30 MB together) on the first build, and Zig (about
+55 MB, 407 MB unpacked) unless you have one. It uses a `java` of version 17 or newer from your `PATH` to run them, and
+otherwise downloads a JRE 21 (about 50 MB). The cache is per-user, on Linux, macOS and Windows. See
+[Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang java --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/org/basaltmc/proxy/example/Main.java
+```
+
+Every `.java` file under `src/` is compiled together, as Java 17. Folders follow the package, as usual. The module is
+written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time. While it
+builds, Kiln shows the progress lines TeaVM prints.
+
+## The entry point
+
+Write a class `Main` in a file called `Main.java`, with a `public static void init()`. Kiln finds that file, reads its
+`package` line, and generates the exports the proxy needs and a call to `Main.init()`. `init` runs once, after the module
+loads; that is where you register listeners, commands and tasks. Other classes can have any name.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `Main.java`.
+
+```java
+package org.basaltmc.proxy.example;
+
+import org.basaltmc.proxy.commands.Arguments;
+import org.basaltmc.proxy.commands.Registry;
+import org.basaltmc.proxy.commands.Sender;
+import org.basaltmc.proxy.core.Args;
+import org.basaltmc.proxy.core.Priority;
+import org.basaltmc.proxy.events.EventBus;
+import org.basaltmc.proxy.log.Logger;
+import org.basaltmc.proxy.players.Directory;
+
+public final class Main {
+    private static void onJoin(int ctx) {
+        int player = EventBus.eventPlayer(ctx);
+        if (player == 0) {
+            return;
+        }
+        String name = Directory.playerName(player);
+        if (name == null) {
+            name = "player";
+        }
+        Directory.send(player, "<green>Welcome, {name}!", new Args().add("name", name));
+    }
+
+    private static void hello(int ctx) {
+        Long given = Arguments.i64(ctx, "times");
+        long times = given == null ? 1 : given;
+        for (long i = 0; i < times; i++) {
+            Sender.reply(ctx, "<yellow>Hello from greeter!");
+        }
+    }
+
+    public static void init() {
+        Logger.logInfo("greeter loaded");
+        EventBus.on("player.join", Priority.NORMAL, Main::onJoin);
+        Registry.register("greeter hello [times: int 1..5]", "", Main::hello);
+    }
+}
+```
+
+`EventBus.on` listens to an event, see [Events](/docs/proxy/wasm-events); `Registry.register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Java spelling is in [The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: a package per area, `org.basaltmc.proxy.<area>`, holding one class named for its job, not for the
+  area. Methods are the C++ name in camelCase, and are `static`. The classes are:
+
+  | Area | Package and class |
+  |---|---|
+  | `core` | `org.basaltmc.proxy.core`: `Args`, `Priority`, `Level`, `Handler` |
+  | `log` | `org.basaltmc.proxy.log.Logger` |
+  | `config` | `org.basaltmc.proxy.config.Settings` |
+  | `text` | `org.basaltmc.proxy.text.Translations` |
+  | `players` | `org.basaltmc.proxy.players.Directory` |
+  | `data` | `org.basaltmc.proxy.data.PlayerStore` |
+  | `events` | `org.basaltmc.proxy.events.EventBus` |
+  | `commands` | `org.basaltmc.proxy.commands`: `Registry` (register), `Arguments` (read arguments), `Sender` (reply, name, console) |
+  | `tasks` | `org.basaltmc.proxy.tasks.Scheduler` |
+  | `hud` | `org.basaltmc.proxy.hud.Displays` |
+  | `values` | `org.basaltmc.proxy.values.Documents`, with the nested `Writer` and `Value` |
+
+  So `players::send` is `Directory.send`, `players::player_name` is `Directory.playerName`, `commands::command_reply` is
+  `Sender.reply` and `config::config_i64` is `Settings.configI64`.
+- **Strings in** are `String`.
+- **Strings out** are `String`, `null` when the call failed. A number that may be absent is a `Long`, `null` when absent.
+- **Optional arguments** are overloads: `Sender.reply(ctx, text)` and `Sender.reply(ctx, text, args)`.
+- **Handles** are plain `int`. `0` is never a valid handle. `Directory.playersOnline()` returns an `int[]`.
+- **`Args`** is `new Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.LOWEST` to `Priority.HIGHEST` and `Level.DEBUG` to `Level.ERROR`.
+- **Handlers** are the functional interface `Handler`, `void run(int ctx)`: a method reference such as `Main::onJoin`, or a
+  lambda (`ctx -> { ... }`), which can capture effectively final variables.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles the sources with the Eclipse compiler, translates them to C with TeaVM, compiles that with Zig for WebAssembly,
+writes `build/plugin.wasm` and checks it. `kiln pack` writes `build/greeter-0.1.0.bppkg` for the proxy's
+`plugins/` folder, see [Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |
+
+The Java WASM toolchain uses exception features that the FreeBSD WAMR path does not accept. Choose another language when that platform must be supported. This limit concerns compiled WASM, not the separate Java jar adapters.

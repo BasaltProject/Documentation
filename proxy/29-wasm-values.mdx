@@ -1,0 +1,161 @@
+---
+title: Values
+description: Read and write structured proxy data, manage output buffers and understand the shared value encoding.
+group: Plugin API
+---
+
+Most calls take a handle, a number or a string. Some need more: the fields of a routing event, a backend ping result or a permission request. Those calls take or return a **value**: one piece of structured data that can hold nested
+lists and maps, written to and read from a buffer by the SDK.
+
+You do not decode bytes by hand. Every SDK has a **writer** to build a value and a **reader** to look inside one, and they
+all produce and understand the same format. This page shows how to use them and lists what a value can hold.
+
+## What a value holds
+
+| Kind | Examples |
+|---|---|
+| null | An unset field, an empty slot, "nothing" |
+| boolean | `true`, `false` |
+| integer | A 64-bit signed number: a count, a coordinate, a tick |
+| float | A 64-bit floating point number |
+| string | UTF-8 text |
+| bytes | Raw bytes: a packet body, saved NBT |
+| list | An ordered list of values |
+| map | Named entries, `key` to value. Keys are strings and unique, and keep the order they were written in |
+
+Lists and maps nest. A permission request is a map, a list of backends is a list of strings, and a dialog answer can contain nested fields.
+
+An integer and a float are different kinds: `1` is not `1.0`. The page of each area says which kind a field uses.
+
+## Writing a value
+
+The writer works on a buffer you provide, and its calls chain. Open a map or a list, add its contents and close it with
+`end`; before each entry of a map comes its `key`.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void write_example() {
+    bs::values::ValueBuffer<256> route;
+    route.map()
+        .key("server").string("lobby")
+        .key("priority").integer(10)
+        .key("tags").list().string("public").string("fallback").end()
+        .end();
+    const int length = route.finish();
+    if (length < 0) {
+        return;
+    }
+}
+```
+
+`finish` returns the length of the finished value, and then the buffer's `data()` and `length` are what you hand to a call that
+takes a value. A call that takes a value usually takes it as a pointer and a length, which the SDK of languages with
+arrays and strings turns into a single argument.
+
+A failed write (a map left open, a value too large for the buffer) never writes past the buffer: the writer remembers the
+failure, and `finish` reports it. In the languages with an allocator the writer can grow, so only a size limit applies.
+
+## Reading a value
+
+A call that returns a value fills a buffer and gives you a reader over it. The reader checks the whole value once when it
+opens it, and then reading is safe and cheap: a getter for the wrong kind answers "absent" instead of failing.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void on_login(bs::core::Ctx ctx) {
+    char buffer[512];
+    char spare[4096];
+    bs::values::Value fields;
+    const int status = bs::values::call_value(
+        [ctx](char* out, int capacity) {
+            return bs::events::event_get_value(ctx, "", out, capacity);
+        },
+        buffer, sizeof buffer, spare, sizeof spare, fields);
+    if (status < 0) {
+        return;
+    }
+    const bs::values::Value name = fields.find("player_name");
+    const char* text = nullptr;
+    int length = 0;
+    if (name.as_str(text, length)) {
+        bs::log::log_info("The event contains a player name.");
+    }
+}
+
+void plugin_init() {
+    bs::events::on("player.login", bs::core::kNormal, on_login);
+}
+```
+
+### Decoding
+
+| To get | Use |
+|---|---|
+| The kind of a value | `kind()`, which is one of absent, null, bool, int, float, string, bytes, list, map |
+| A scalar | `as_bool`, `as_i64`, `as_f64`, `as_str`, `as_bytes`, each answering whether the value had that kind |
+| A scalar or a default | `bool_or`, `i64_or`, `f64_or` |
+| The size of a list or a map | `count()` |
+| A list item | `at(index)` |
+| A map entry | `find("key")` |
+| Every item or entry | `iter()`, then `next(...)` until it answers false |
+
+An entry that does not exist, an index out of range and a getter for the wrong kind all give back an absent value, so a
+chain such as `fields.find("a").find("b").i64_or(0)` is safe.
+
+```cpp
+bs::values::ValueIter entries = fields.iter();
+const char* key = nullptr;
+int key_length = 0;
+bs::values::Value item;
+while (entries.next(key, key_length, item)) {
+    if (item.kind() == bs::values::Kind::kInt) {
+        long long number = 0;
+        item.as_i64(number);
+    }
+}
+```
+
+## Buffers and answers that do not fit
+
+A call that returns a value tells you the length it needs. If your buffer was too small the call writes nothing and you
+retry with a larger one. In C and C++ you can pass a second, larger spare buffer to the helper (`call_value`) and it does the
+retry, or you read into a `Reply<N>`, which takes its room as a size (1024 bytes by default, `Reply<8192>` for a long
+answer) and answers `ERR_INVALID` when the answer does not fit; in Rust, Go, Java, Kotlin, C# and AssemblyScript the SDK grows its own buffer, and Zig lets you choose either way. A size that is big enough for the usual answer saves the second
+call.
+
+## Limits
+
+A value that breaks any of these is refused with `ERR_INVALID`, on the way in and on the way out:
+
+| Limit | Value |
+|---|---|
+| The encoded value | 1 MiB |
+| Nesting of lists and maps | 16 levels |
+| Values in one document, containers included | 65 536 |
+| One map key | 256 bytes |
+
+A map with two entries of the same key is also invalid, so build a map from distinct keys.
+
+## The encoding
+
+The SDK hides it, and this is only for anyone writing their own binding. A value is a tag byte followed by its payload,
+and a document is exactly one value with nothing after it. Lengths and counts are unsigned LEB128, and integers are
+zigzag LEB128.
+
+| Tag | Kind | Payload |
+|---|---|---|
+| `0x00` | null | none |
+| `0x01` | false | none |
+| `0x02` | true | none |
+| `0x03` | integer | zigzag LEB128 of the 64-bit value |
+| `0x04` | float | 8 bytes, IEEE 754 double, little-endian |
+| `0x05` | string | LEB128 byte length, then the UTF-8 bytes |
+| `0x06` | bytes | LEB128 byte length, then the bytes |
+| `0x07` | list | LEB128 count, then that many values |
+| `0x08` | map | LEB128 count, then per entry: LEB128 key length, the key's UTF-8 bytes, a value |

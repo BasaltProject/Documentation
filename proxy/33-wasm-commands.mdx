@@ -1,0 +1,94 @@
+---
+title: Commands
+description: Register typed plugin commands, read arguments, check permissions and reply to players or the console.
+group: Plugin API
+---
+
+A proxy command is handled at the public connection rather than executed as a backend console line. Register a specification, permission and callback, then read arguments from the command context. These APIs are separate from the operator's built-in [command configuration](/docs/proxy/commands).
+
+## A complete command
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void greet(bs::core::Ctx ctx) {
+    const auto source = bs::commands::command_source_name(ctx);
+    bs::core::Args args;
+    args.add("name", source.c_str());
+    bs::commands::command_reply(ctx, "<green>Hello, {name}!</green>", &args);
+}
+
+void plugin_init() {
+    bs::commands::command("hello", "", greet);
+}
+```
+
+An empty permission opens this command to everyone. Use a named node for staff-only commands and grant it through groups.toml or a permission provider. The source may be the console, so do not dereference a player handle without checking it.
+
+## Register and read commands
+
+`commands::command(spec, permission, handler)` registers a command with a typed grammar:
+`"coins top [limit: int 1..25]"`, with the types `word`, `text`, `int`, `float` and `bool`. A player runs it with `/`, the
+console without; the proxy handles it itself and does not forward it to the backend. What differs:
+
+- `commands::command_source_name(ctx)` is the player's name, or `CONSOLE`. `commands::command_is_console(ctx)` tells them
+  apart, and `events::event_player(ctx)` gives the player handle (0 for the console).
+- `commands::command_reply(ctx, text, args)` sends a chat line to the player. For the console it goes to the proxy log
+  under the plugin's name.
+- A permission is checked through the proxy's own permission system (groups and overrides, see
+  [Administration](/docs/proxy/wasm-admin)); the console always passes. A player without it is told so and the handler
+  does not run.
+- A command whose words do not fit its spec answers the sender with a usage line and the handler does not run.
+- A name the proxy already uses, or the same words registered twice, is refused with `ERR_INVALID`. Several commands may
+  share a first word when their other words differ (`coins` and `coins top`).
+
+Typed arguments are read by name inside the handler:
+
+| Function | Does |
+|---|---|
+| `commands::command_arg_str(ctx, name)` | Any argument as text |
+| `commands::command_arg_i64(ctx, name, &out)` | An `int` argument |
+| `events::command_arg_f64(ctx, name, &out)` | A `float` argument; an `int` converts |
+| `events::command_arg_bool(ctx, name, &out)` | A `bool` argument |
+| `events::command_args(ctx, out, capacity)` | A map of every declared argument, with `null` for an optional one that was not given |
+
+Each returns 0 on success, `ERR_ABSENT` for an optional argument that was left out or a name that is not declared,
+`ERR_INVALID` when the argument has another type, and `ERR_STALE` outside a command callback.
+
+```cpp
+static void repeat(core::Ctx ctx) {
+    long long times = 1;
+    double scale = 1.0;
+    bool loud = false;
+    commands::command_arg_i64(ctx, "times", &times);
+    events::command_arg_f64(ctx, "scale", &scale);
+    if (events::command_arg_bool(ctx, "loud", &loud) != BASALT_OK) {
+        loud = false;
+    }
+}
+
+void plugin_init() {
+    commands::command("repeat <times: int 1..5> [scale: float] [loud: bool]", "", repeat);
+}
+```
+
+
+## Arguments and validation
+
+Use angle brackets for required arguments and square brackets for optional ones. `word` is one token, `text` consumes trailing text, and int/float/bool arguments have their corresponding readers. Numeric ranges constrain accepted input before the callback runs. Read omitted optional values with an explicit fallback rather than using an uninitialised output.
+
+Command contexts expire at callback return. To continue later, copy the argument values and source identity, then resolve any player again. An event getter requiring event-specific fields is not a substitute for a command argument reader.
+
+## Completions and collisions
+
+Proxy commands appear in supported client command trees. Backend command trees may contain the same ordinary first word, so choose plugin names deliberately and test through the actual backend. Do not assume a successful console command proves an in-game collision is resolved as intended.
+
+A plugin command cannot replace a reserved built-in name. Command permissions and usage checks must remain part of registration; do not rely only on hiding an entry in completion.
+
+## Console operations
+
+Registering a command needs no console-execution grant. Running arbitrary lines as the console uses admin::console_run and requires both the commands manifest capability and operator grant. That operation is privileged and is not a substitute for replying to the command source.
+
+For permission queries/providers, see [Permissions](/docs/proxy/wasm-permissions). For language keys and named reply arguments, see [Text](/docs/proxy/wasm-text).

@@ -1,99 +1,157 @@
 ---
 title: Bedrock and versions
-description: Which Java client and backend versions the proxy bridges, and how Bedrock Edition players join a Java backend.
+description: Java client/backend protocol routes, translation delegation, Bedrock transports, identity and bridge limits.
 group: Configuration
 ---
 
+A proxy session has a client protocol and a backend protocol. Supporting both separately does not imply that every pair is supported. The native Java protocol is currently Minecraft 26.3 (777).
+
 ## Java versions
 
-The proxy is built for Minecraft 26.3 (protocol 777). A session has one client version and, for each backend it reaches, one backend version. The proxy checks the pair at the handshake and refuses combinations it has no route for, before anything else happens.
-
-| Client | Backend | What happens |
+| Client | Backend | Behaviour |
 |---|---|---|
-| 26.3 | 26.3 | Relayed as is. |
-| 1.8 to 26.2 | 26.3 | Translated by the proxy, or by a Basalt Server itself (below). |
-| 26.3 | 26.2 (776), 26.1 (775), 1.21.11 (774), 1.21.9 or 1.21.10 (773), 1.21.7 or 1.21.8 (772), 1.21.6 (771), 1.21.5 (770) | The backend's packets are translated upward for the client. Set `protocol` to the backend's number. |
-| N | the same version N | Relayed without translation, for the versions in the list below. |
-| anything else | | Refused. |
+| Current native | Current native | Relay on the native protocol. |
+| Supported older client | Current native | Translate here, or delegate to a capable Basalt Server. |
+| Current native | Supported older backend | Translate the backend protocol upward for the client. |
+| Older protocol N | Same protocol N | Same-version relay for the listed supported backends. |
+| Older protocol N | Different older protocol M | No general arbitrary older-to-older bridge; select another compatible destination. |
 
-Backends older than 1.21.5 are therefore only reachable by clients of exactly their own version.
+The following table describes proxy-side Java routes in this build. Delegated Basalt sessions additionally depend on the server's supported protocols and envelope negotiation. For a running instance, `GET /v1/versions` exposes its advertised protocol entries; pair acceptance still follows the routing rules above.
 
-Same-version relay (client and backend on one protocol) is available for these protocol numbers: 47, 107 to 110, 210, 315, 316, 335, 338, 340, 393, 401, 404, 477, 480, 485, 490, 498, 573, 575, 578, 735, 736, 751 and 753 to 776. When a player's pairing has no route, they are told at login:
+| Protocol | Java release | Client to 26.3 backend | 26.3 client to backend |
+|---|---|---|---|
+| `47` | 1.8-1.8.9 | Translated | Translated |
+| `107` | 1.9 | Translated | Translated |
+| `108` | 1.9.1 | Translated | Translated |
+| `109` | 1.9.2 | Translated | Translated |
+| `110` | 1.9.3-1.9.4 | Translated | Translated |
+| `210` | 1.10-1.10.2 | Translated | Translated |
+| `315` | 1.11 | Translated | Translated |
+| `316` | 1.11.1-1.11.2 | Translated | Translated |
+| `335` | 1.12 | Translated | Translated |
+| `338` | 1.12.1 | Translated | Translated |
+| `340` | 1.12.2 | Translated | Translated |
+| `393` | 1.13 | Translated | Translated |
+| `401` | 1.13.1 | Translated | Translated |
+| `404` | 1.13.2 | Translated | Translated |
+| `477` | 1.14 | Translated | Translated |
+| `480` | 1.14.1 | Translated | Translated |
+| `485` | 1.14.2 | Translated | Translated |
+| `490` | 1.14.3 | Translated | Translated |
+| `498` | 1.14.4 | Translated | Translated |
+| `573` | 1.15 | Translated | Translated |
+| `575` | 1.15.1 | Translated | Translated |
+| `578` | 1.15.2 | Translated | Translated |
+| `735` | 1.16 | Translated | Translated |
+| `736` | 1.16.1 | Translated | Translated |
+| `751` | 1.16.2 | Translated | Translated |
+| `753` | 1.16.3 | Translated | Translated |
+| `754` | 1.16.4-1.16.5 | Translated | Translated |
+| `755` | 1.17 | Translated | Translated |
+| `756` | 1.17.1 | Translated | Translated |
+| `757` | 1.18-1.18.1 | Translated | Translated |
+| `758` | 1.18.2 | Translated | Translated |
+| `759` | 1.19 | Translated | Translated |
+| `760` | 1.19.1-1.19.2 | Translated | Translated |
+| `761` | 1.19.3 | Translated | Translated |
+| `762` | 1.19.4 | Translated | Translated |
+| `763` | 1.20-1.20.1 | Translated | Translated |
+| `764` | 1.20.2 | Translated | Translated |
+| `765` | 1.20.3-1.20.4 | Translated | Translated |
+| `766` | 1.20.5-1.20.6 | Translated | Translated |
+| `767` | 1.21-1.21.1 | Translated | Translated |
+| `768` | 1.21.2-1.21.3 | Translated | Translated |
+| `769` | 1.21.4 | Translated | Translated |
+| `770` | 1.21.5 | Translated | Translated |
+| `771` | 1.21.6 | Translated | Translated |
+| `772` | 1.21.7-1.21.8 | Translated | Translated |
+| `773` | 1.21.9-1.21.10 | Translated | Translated |
+| `774` | 1.21.11 | Translated | Translated |
+| `775` | 26.1-26.1.2 | Translated | Translated |
+| `776` | 26.2 | Translated | Translated |
 
-| Message | Meaning |
-|---|---|
-| `Your game version is not supported on this network.` | The client's protocol is not one the proxy can serve at all. |
-| `No server here can take your game version.` | No backend of the player's route accepts this client version. |
+Same-version relay is supported for the older protocols listed in this table. Set a backend's `protocol` in `servers.toml` to its actual protocol, or use `"client"` only for a server that accepts each client's version. `"auto"` means follows-client for Basalt forwarding and current-native for other schemes, not server-version discovery.
 
-When one backend of a route is incompatible with a client and another is not, the compatible one is used. A player whose current backend and a requested backend have no route between them stays where they are.
-
-<x-docs.callout type="note" title="What is not translated">
-Registries and content are never invented for a version that lacks them: a player always sees the registries of the backend they are on, resent when they change backend. Item components that changed shape between versions (such as a trim with an inline material, pot decorations and teleport effects) are not converted.
-</x-docs.callout>
+When the initial route contains incompatible servers, they are skipped. A client with no supported route sees the unsupported-version or no-compatible-server message. A requested move to an incompatible backend leaves the player on the current server.
 
 ### Who translates
 
-`[translation] mode` in `proxy.toml` decides.
+Choose `[translation] mode` in `proxy.toml`:
 
-- `auto` (default): when a backend is a Basalt Server with `forwarding = "basalt"` and `session-envelope = true`, the proxy forwards the player's original packets and the server translates. Otherwise the proxy translates where it has a verified route.
-- `proxy`: the proxy always translates.
-- `off`: no translation at all. Client and backend must speak the same protocol.
+| Mode | Policy |
+|---|---|
+| `auto` | Delegate to a capable Basalt backend; otherwise translate supported routes on the proxy. |
+| `server` | Delegate or relay a compatible same-version session, without proxy-side translation. |
+| `proxy` | Translate here, including toward Basalt backends. |
+| `off` | Require matching client/backend protocols and do not offer the session envelope. |
 
-### Mixing backends
+For delegation, configure the backend with `forwarding = "basalt"` and `protocol = "auto"` or `"client"`. On Basalt Server enable `[network.forwarding] session-envelope = true` with matching keys and backend identity. The envelope carries the original client session to the backend for translation, including clients too old for ordinary login queries.
 
-A network may mix a Basalt Server (26.3, translated for older clients) and a Paper of the player's own version. From 1.20.2 the player moves between the two without reconnecting. Before 1.20.2 a session works with one kind of backend only. When the player changes backend, the proxy clears the tab list entries and boss bars it saw from the previous one for clients that receive a new join packet.
+### Switching and content
+
+Java clients from 1.20.2 reconfigure in place when moving between backends. Older clients receive a new join sequence and have additional restrictions when mixing translated and raw relay paths. Test the actual source and destination combination, not just a first join to each one independently.
+
+Registries come from the destination backend and are refreshed during a supported switch. The proxy does not invent unavailable content or provide universal mod compatibility. Version-dependent packets, item components and client UI can have translation limits even when a login route exists.
 
 ### Modded backends
 
-Fabric, Forge and NeoForge backends without mods work. Modern forwarding on a modded backend needs a forwarding mod, and modpack compatibility is not guaranteed: the proxy relays configuration and play traffic, it does not understand mod channels.
+A compatible Java backend can sit behind the proxy, but its forwarding support must match. Modern forwarding on Fabric or another modded server requires a suitable forwarding mod. Modpack login channels and client requirements remain the modpack's responsibility; forwarding ordinary configuration/play traffic is not a guarantee that every modpack works.
 
 ## Bedrock Edition
 
-Bedrock support is off by default. Enable it in `proxy.toml`:
+Enable the Bedrock listener separately in `proxy.toml`:
 
 ```toml
 [bedrock]
 enabled = true
+transport = "both"
 port = 19132
-motd = "My Network"
+nethernet-port = 0
+advertise-address = ""
 ```
 
-The proxy then listens on UDP `19132` (open it on the firewall) and answers Bedrock server-list pings. If it cannot bind the port, startup fails with `Could not bind UDP port <port> for Bedrock.`
+The bridge advertises game version `1.26.60` and recognises Bedrock protocols `1001`, `2168`, `2169`, `2193` and `2225`. Newer clients using NetherNet cannot join a RakNet-only listener. The proxy's `--version` reports its native Java version, not this Bedrock transport configuration.
 
-### How a Bedrock player joins
+### Ports and transports
 
-A Bedrock player connects to the Bedrock port. The proxy authenticates them, opens a Java connection to the **first backend of the default route** as if it were a Java client, and translates the game between the two editions: chunks, position and movement, chat and commands, entities, inventory, health, titles and boss bars. Bedrock players do not use `[forced-hosts]`.
+| Mode | Required listeners with defaults |
+|---|---|
+| `both` | RakNet UDP 19132, NetherNet TCP signaling 19132 and NetherNet game UDP 19133. |
+| `nethernet` | TCP signaling 19132 and game UDP 19132. |
+| `raknet` | UDP 19132 only, for clients using RakNet. |
 
-The proxy advertises game version 1.26.60 and accepts Bedrock protocols 1001, 2168, 2169, 2193 and 2225. A client older than that sees `This server runs Minecraft 1.26.60. Update your game and come back.`
+`nethernet-port = 0` selects the Bedrock port when RakNet is off, otherwise the following port. An explicit value chooses the game UDP port. Forward every enabled transport through the firewall/container/NAT, and set `advertise-address` to the reachable public game address behind NAT.
+
+When both transports are requested, one may remain available if the other fails to bind; check startup warnings rather than assuming a running proxy has both. The NetherNet identity is persisted in `.basalt/nethernet-identity.der`.
+
+Bedrock server-list text is drawn from the proxy's server-list service, not a `[bedrock] motd` setting. See [Interface](/docs/proxy/interface).
+
+### Routing and delegation
+
+A Bedrock player enters the first backend of `[routing] try`; forced hosts do not select a Bedrock game mode. In proxy-translation mode the proxy opens a Java connection and translates between editions. The bridge supports backend changes, but do not assume Java's full route recovery behaviour applies to Bedrock.
+
+With `[bedrock] delegate = true`, a Basalt-forwarding backend can serve the Bedrock session through the session envelope instead. Configure Basalt forwarding and envelope support on that server. Delegating does not make a Paper backend understand Bedrock.
 
 ### Authentication and identity
 
-With `online-mode = true` a Bedrock player must be signed in to Xbox Live; a client without a signed login chain is turned away with `Sign in to Xbox Live to play here.` With `online-mode = false` an unsigned player is let in under the name it gives.
+With proxy online mode enabled, require an Xbox Live-signed Bedrock identity. Offline mode permits unsigned identities and is inappropriate for a public network relying on names for access. The antibot can also require Xbox authentication during attacks.
 
-The proxy does not invent a Java premium identity for a Bedrock account. The backend sees:
+When bridged to Java, the name is `_` followed by the sanitised gamertag, using letters, digits and `_`, limited to 16 bytes. The UUID is the offline UUID of that resulting name, not a Mojang premium UUID. Sanitisation and truncation can produce collisions between gamertags; the prefix is a naming convention, not proof of a Java account.
 
-| Part | Value |
-|---|---|
-| Name | `_` followed by the gamertag, with characters outside letters, digits and `_` replaced by `_`, at most 16 bytes |
-| UUID | The offline UUID of that name, never a Mojang profile id |
-| Skin | None |
+Basalt forwarding carries edition and XUID metadata. Other schemes lack those fields. A vanilla backend with `none` loses forwarded premium identity, just as it does for Java players. There is no built-in Java/Bedrock account-linking service.
 
-The leading `_` keeps a gamertag from colliding with a real Java name. Two gamertags that clean up to the same name get the same identity.
+### Gameplay and messages
 
-Only `forwarding = "basalt"` carries the fact that the player is on Bedrock, and the Xbox user id (XUID), to the backend. The other schemes have no place for it, so a backend that has to tell the editions apart must use `basalt`. Use `delegate = true` to let a Basalt Server backend serve Bedrock players itself instead of the proxy translating, see [Configuration](/docs/proxy/configuration#bedrock).
+The bridge handles chunks, movement, chat and commands, entities, health, inventory/equipment interactions and client HUD packets for its supported paths. It also handles a subset of container screens. Do not treat protocol acceptance as complete equivalence of every screen, entity appearance or client interaction.
 
-### Chat and messages
+Backend resource packs and client-specific content are not converted into Bedrock packs by the proxy. Test required resource-pack policies before moving a Bedrock player onto that backend. Do the same for crafting, specialised containers and modded gameplay. Delegated sessions use the Basalt Server path and its capabilities.
 
-By default messages from a backend that are translation keys (join and leave lines, death messages) arrive raw. Set `[bedrock] language` to the path of a Minecraft server jar or an `en_us.json` file and the proxy puts them into words. Nothing is downloaded.
+To resolve backend translation keys such as join/death messages, set `[bedrock] language` to a local official server jar or `en_us.json`. No language data is downloaded, and an empty setting leaves raw keys.
 
-### Limits
+### Bedrock protection
 
-A Bedrock player behind the proxy can walk, see, chat, run commands, build, use inventory slots, armour and the off hand, work with chests, shulker boxes, dispensers, hoppers and furnaces, switch backends and be moved by plugins. These are not translated:
+`antibot.toml` has a separate `[bedrock]` table for packet rate, login time, connection scoring and attack-time limits. It shares reputation, bans and attack mode with Java by origin. See [Antibot](/docs/proxy/antibot#bedrock).
 
-- crafting tables and the other windows, stack splits and crafting;
-- forms, particles and numbered sounds (named sounds work);
-- the equipment and skins of other players, effects on other entities, and mob variants;
-- scoreboards other than the sidebar;
-- linking a Bedrock account to a Java account, and a player list that shows the real gamertag.
+## Test a mixed network
 
-Resource packs a backend asks for are answered on the player's behalf: accepted if required, declined if optional, and never shown. A backend with `bungee-messages = true` can use `Connect`, `GetServer`, `GetServers` and `UUID` for Bedrock players too.
+Validate a Java first join, a Java move in both directions, a backend failure and each Bedrock transport you expose. Include an incompatible client to check that it receives the intended message. Keep authentication enabled when validating production identity; an offline smoke test only establishes transport behaviour.

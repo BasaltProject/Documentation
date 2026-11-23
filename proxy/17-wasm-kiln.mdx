@@ -1,0 +1,70 @@
+---
+title: Kiln
+description: Create proxy plugin projects, manage toolchains, validate modules and build .bppkg packages.
+group: Plugin basics
+---
+
+Kiln is the native command line for creating, compiling, checking and packaging plugins. Download it from the Kiln repository's releases, verify its checksum, make it executable and put it on your PATH. The proxy does not need the compiler or Kiln installed to load a finished package.
+
+## Create
+
+```bash
+kiln new greeter --lang cpp --target proxy
+```
+
+The target is important: it selects the proxy SDK and `.bppkg` package format. Kiln writes a manifest, source, resource configuration and language file. The chosen language is recorded in `plugin.toml`, so later builds do not need the same flag again.
+
+Supported language names are `c`, `cpp`, `zig`, `rust`, `assemblyscript`, `go`, `kotlin`, `csharp` and `java`. See the [language guides](/docs/proxy/wasm-plugins#choose-a-language) for layouts, entry points and restrictions.
+
+## Build
+
+```bash
+kiln build greeter
+```
+
+The plugin directory may be omitted when already inside it. Kiln compiles sources into `build/plugin.wasm` and checks the result. The SDK is bundled with Kiln and unpacked under `build/.kiln/`, which is generated state, not the place to edit application source. Use verbose output when diagnosing a compiler invocation.
+
+Toolchain discovery and downloads happen at build time. Subsequent builds reuse installed compilers or cached downloads. Source layout differs by language, but the build/check/pack workflow is the same.
+
+## Check
+
+```bash
+kiln check greeter
+```
+
+Checking validates the manifest, declared capability names, module size and exports, and the imported functions and their signatures against the target ABI. It rejects imports from the wrong host/target. It does not execute your callbacks or prove that a routing decision is correct.
+
+A standalone `kiln check path/to/plugin.wasm` checks a module without the whole project. Use the project check before shipping so manifest and resources are checked too.
+
+## Pack
+
+```bash
+kiln pack greeter
+```
+
+The package is written under the project's `build/` directory as `<id>-<version>.bppkg`. It contains `plugin.toml`, the module and resources. Copy the package to the proxy's `plugins/` directory, then restart or reload plugins. Operator-edited resources already extracted into `plugins/<id>/` are preserved when the package changes.
+
+A server package uses `.bspkg`; renaming that extension cannot change imports or target semantics. Rebuild for proxy from a project that uses the proxy API.
+
+## Toolchains
+
+| Command | Purpose |
+|---|---|
+| `kiln toolchain list` | Inspect toolchains. |
+| `kiln toolchain install` | Install a needed compiler ahead of a build. |
+| `kiln toolchain path` | Inspect its location. |
+| `kiln toolchain clean` | Remove cached toolchain state. |
+
+The first build may download a pinned compiler when a suitable local tool is unavailable. Language pages explain the relevant compiler and runtime proposals. `kiln --help` and each command's help describe selectors supported by your installed version.
+
+## Continuous integration
+
+Run the same create/build/check/pack steps in CI with an explicit proxy target in the manifest. Preserve the source and lockfiles appropriate to the language, rebuild generated SDK state, and publish the finished `.bppkg` rather than a machine-specific runtime cache.
+
+Check and compilation are only part of verification. Test first join, reconnect, backend switching and plugin reload against a running proxy. For decision plugins, include a refused destination and an unavailable backend. For packet plugins, include large packets and a timeout path.
+
+## Update a plugin
+
+Increase the manifest version, build/check/pack, replace the installed package and reload. Unsaved in-memory plugin state disappears. Plugin-host grants and runtime options have their own restart boundaries; changing them is not the same as replacing a package.
+
+See [Manifest and layout](/docs/proxy/wasm-plugin-toml) for dependencies, resource extraction and capabilities, and [Performance](/docs/proxy/wasm-performance) for keeping callbacks within budget.

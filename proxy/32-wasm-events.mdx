@@ -1,7 +1,7 @@
 ---
 title: Events and decisions
 description: Listen to what players do on the proxy, change or refuse it before it happens, and use commands, tasks, config and player data from a proxy plugin.
-group: Plugins
+group: Plugin API
 ---
 
 Events are how a proxy plugin finds out that something happened: a player is about to log in, joined, said something,
@@ -29,7 +29,7 @@ void plugin_init() {
 ```
 
 The examples use the C++ spelling `area::function`; other languages use the same names with their own casing, see
-[The SDK](/docs/server/wasm-sdk). How the proxy calls your handler and how long it may take is in
+[The SDK](/docs/proxy/wasm-sdk). How the proxy calls your handler and how long it may take is in
 [Execution model](/docs/proxy/wasm-execution-model).
 
 ## Registering
@@ -105,7 +105,7 @@ adds `reason`.
 | `events::event_get_str(ctx, field)` | Returns a string field as a `core::Text<256>`: `ok()` tells whether the field was there, `length` is the full length (larger than 256 means it was cut), `c_str()` the text |
 | `events::event_get_i64(ctx, field, &out)` | Reads an int field into `out` and returns the status |
 | `events::event_get_bool(ctx, field, &out)` | Reads a bool field into `out` and returns the status |
-| `events::event_get_value(ctx, field, out, capacity)` | Writes the field as an encoded [value](/docs/server/wasm-values) (needed for the `sample` list) and returns the length it needs. An empty field name gives a map of every readable field. |
+| `events::event_get_value(ctx, field, out, capacity)` | Writes the field as an encoded [value](/docs/proxy/wasm-values) (needed for the `sample` list) and returns the length it needs. An empty field name gives a map of every readable field. |
 | `events::event_fields(ctx, out, capacity)` | Writes a list of maps, one per field of this event, with `name`, `type`, `readable` and `writable` |
 | `events::event_player(ctx)` | The player handle, or 0 |
 
@@ -293,8 +293,8 @@ Observers run in registration order. They are queued like every observed event, 
 
 ## Commands, tasks, config and player data
 
-These are the same calls as on the server, described on [Commands](/docs/server/wasm-commands),
-[Tasks](/docs/server/wasm-tasks) and [Storage](/docs/server/wasm-storage). Only what differs on the proxy is listed here.
+The shared concepts have dedicated proxy references: [Commands](/docs/proxy/wasm-commands),
+[Tasks](/docs/proxy/wasm-tasks) and [Storage](/docs/proxy/wasm-storage). The sections below retain a compact reference; use those pages for full examples and lifecycle guidance.
 
 ### Commands
 
@@ -355,7 +355,7 @@ answers `ERR_ABSENT` for a task that already ran or was cancelled. To wait for s
 
 `config::config_i64`, `config_f64`, `config_bool` and `config_str` read `config.toml` of the plugin with dotted keys, as
 on the server. `events::config_value(key, out, capacity)` writes any value, including lists (TOML arrays) and maps
-(tables), as an encoded [value](/docs/server/wasm-values), and returns the length it needs. An empty key gives the whole
+(tables), as an encoded [value](/docs/proxy/wasm-values), and returns the length it needs. An empty key gives the whole
 file. A dashed key is also found with underscores, the file `limits.toml` is readable under the key `limits`, and a key
 that does not exist answers `ERR_ABSENT`.
 
@@ -389,4 +389,4 @@ use the plugin's global store, see [Administration](/docs/proxy/wasm-admin); for
 | Work with the player of an event | [Players and backends](/docs/proxy/wasm-players) |
 | Show boss bars, a sidebar or the tab list | [HUD](/docs/proxy/wasm-hud) |
 | Check permissions by name, register backends | [Backends, permissions and administration](/docs/proxy/wasm-admin) |
-| Encode and decode values | [Values](/docs/server/wasm-values) |
+| Encode and decode values | [Values](/docs/proxy/wasm-values) |

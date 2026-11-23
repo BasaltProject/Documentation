@@ -1,0 +1,116 @@
+---
+title: Remote administration API
+description: Enable the authenticated HTTP API, inspect sessions and servers, and limit send, kick and reload actions.
+group: Administration
+---
+
+The proxy includes an HTTP API for panels and scripts. It is disabled by default and configured in `config/remote.toml`. Reads require authentication, just like actions. The API speaks plain HTTP; keep it on loopback or a private network, with a TLS reverse proxy when needed.
+
+## Enable it
+
+```toml
+[api]
+enabled = true
+bind = "127.0.0.1"
+port = 25590
+
+[actions]
+send = false
+kick = false
+reload = false
+```
+
+Restart the proxy after changing this file. This example creates a read-only administration endpoint. To allow an action, enable its switch explicitly.
+
+On first use the proxy creates `.basalt/api.token` with restricted permissions. Send its contents in `Authorization: Bearer <token>`. The token is not a field in the TOML file. Keep it private, and keep the reverse proxy from logging authorization headers.
+
+## Read state
+
+For a local shell, load the token from the proxy working directory:
+
+```bash
+proxy_token=$(cat .basalt/api.token)
+curl --fail-with-body \
+  -H "Authorization: Bearer $proxy_token" \
+  http://127.0.0.1:25590/v1/status
+```
+
+| Method and path | Result |
+|---|---|
+| `GET /v1/status` | Build/Minecraft versions, protocol, uptime, public port, session and server counts, Bedrock player count and loaded-plugin count when available. |
+| `GET /v1/counters` | Buffer bytes, accepted/rejected connections, relayed traffic, logins, server changes, translation counts and session-end phases. |
+| `GET /v1/servers` | Server definitions without secrets, health, per-server player counts when available and server groups. |
+| `GET /v1/versions` | Native version plus client/server protocol entries and their verification flags. |
+| `GET /v1/players` | Java runtime sessions currently in play. |
+| `GET /v1/sessions` | Java runtime sessions, including ones still logging in. |
+| `GET /v1/players/<name>` | One matching player/session. |
+
+Responses are JSON. A session contains `name`, `uuid`, `edition`, `phase`, `server`, `protocol` and `version`; identity or destination can be null before login completes. The runtime session list reports Java sessions, while the top-level Bedrock count is exposed separately. Do not treat the list as a combined per-player Bedrock directory.
+
+A server's `protocol` is null when it follows the client; `follows-client` and `automatic` distinguish the configuration. `healthy` reflects the configured health checks, not a guarantee that a subsequent login will succeed.
+
+## Move a player
+
+Enable `[actions] send`, then:
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $proxy_token" \
+  -H 'Content-Type: application/json' \
+  --data '{"server":"survival"}' \
+  http://127.0.0.1:25590/v1/players/Alex/send
+```
+
+The body must be a JSON object with a `server` string. The player must be in play and the destination must exist. This runs the native send command; the resulting message describes the request, not a guarantee that backend login completed.
+
+## Kick a player
+
+Enable `[actions] kick`:
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $proxy_token" \
+  -H 'Content-Type: application/json' \
+  --data '{"reason":"Maintenance"}' \
+  http://127.0.0.1:25590/v1/players/Alex/kick
+```
+
+The body may be empty or a JSON object with a `reason` string. The proxy formats the kick using its normal message configuration.
+
+## Reload
+
+Enable `[actions] reload` and send `POST /v1/reload`:
+
+```bash
+curl --fail-with-body \
+  -X POST \
+  -H "Authorization: Bearer $proxy_token" \
+  http://127.0.0.1:25590/v1/reload
+```
+
+This has the same [reload boundaries](/docs/proxy/configuration#hot-reload) as the console. It cannot apply restart-only settings or restart the process. Action replies include `status` and a `message` containing command output; inspect the message rather than assuming a requested move has already finished.
+
+## Settings
+
+| `[api]` key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Enable the listener. |
+| `bind` | `"127.0.0.1"` | Literal IPv4 or IPv6 address. |
+| `port` | `25590` | HTTP port. |
+| `max-connections` | `32` | Total open administration connections. |
+| `max-connections-per-address` | `8` | Open connections from one peer. |
+| `max-body-bytes` | `65536` | Request body ceiling. |
+| `idle-seconds` | `60` | Close idle connections. |
+| `max-failures` | `5` | Wrong tokens before locking out an address. |
+| `lockout-seconds` | `30` | Initial lockout; repeated lockouts double up to one day. |
+| `requests-per-minute` | `120` | Per-address request budget. |
+
+`[actions] send`, `kick` and `reload` all default to true when the API is enabled, so set them false explicitly for a read-only panel. These are the supported write actions; there is no arbitrary-console-command HTTP endpoint.
+
+## Errors and limits
+
+An unknown path returns 404, an unsupported method 405, a malformed action body 400, and an action disabled in `remote.toml` returns 403. Player, session and destination errors are also reported in the response. Authentication, request-rate and connection limits are enforced by the HTTP listener before an action runs.
+
+Use bounded polling rather than repeatedly requesting full session lists. Protect the token as an administrator credential even for a read-only deployment: server addresses and player identities are operational information.
+
+For terminal monitoring and log rotation, see [Operations](/docs/proxy/operations).

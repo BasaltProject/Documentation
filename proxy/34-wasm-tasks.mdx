@@ -1,0 +1,59 @@
+---
+title: Tasks and time
+description: Run bounded delayed or repeating proxy callbacks, cancel tasks and use asynchronous completion contexts.
+group: Plugin API
+---
+
+The proxy does not simulate a world tick. Its task units are steps of 50 ms, so 20 means one second. A due task runs when the plugin thread is available; it is not a real-time guarantee or a way to block until a backend world advances.
+
+## Schedule callbacks
+
+| Call | Behaviour |
+|---|---|
+| `tasks::after(delay, handler)` | Run once after delay steps. |
+| `tasks::every(delay, period, handler)` | First run after delay, then repeat at the given period. |
+| `tasks::task_cancel(task)` | Cancel the returned task handle. |
+| `admin::wait(delay, handler)` | Schedule a completion callback using the administration request interface. |
+
+A negative delay or repeat period below 1 is invalid. A cancellation of an already completed/cancelled task returns absent. Keep the handle if you will need to stop a repeating task; a task handle is not a player handle.
+
+## A repeating task
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static int checks = 0;
+static int task = 0;
+
+static void check(bs::core::Ctx) {
+    bs::log::log_info("Periodic proxy check.");
+    if (++checks == 3) {
+        bs::tasks::task_cancel(task);
+        task = 0;
+    }
+}
+
+void plugin_init() {
+    task = bs::tasks::every(20, 20, check);
+}
+```
+
+This schedules three checks roughly one second apart and stops. For production work, avoid a log on every short-period task; batch the real work and emit a useful summary instead.
+
+## Timing and fairness
+
+A repeat period is scheduled after the last execution, so a delayed task does not replay a backlog to catch up. Long callbacks delay unrelated tasks and plugin decisions. Ordinary task callbacks have the same 50 ms budget as events/commands, not a larger allowance because they run later.
+
+Break large maintenance work into bounded batches. Keep a cursor in module memory and schedule the next batch; save durable progress if it must survive reload. A timer does not make a blocking operation safe.
+
+## Context and lifetime
+
+Task callbacks receive a context but it does not contain a player event or command argument. Never keep a previous callback's context for use inside a task. If a task targets a player, save a UUID/name, resolve the current connection and handle an absent or stale player.
+
+A backend ping is asynchronous: register its completion and read admin::completion_value inside that callback, as described in [Administration](/docs/proxy/wasm-admin#pinging-a-backend). Scheduling a task to guess when it finished is unreliable.
+
+Reload removes tasks with the plugin instance. A repeating task and any module counters must be recreated in initialisation. Saved data survives, while the old task handle does not.
+
+See [Execution model](/docs/proxy/wasm-execution-model#time) for scheduling and [Performance](/docs/proxy/wasm-performance) for callback budgets under load.

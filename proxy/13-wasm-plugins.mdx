@@ -1,0 +1,119 @@
+---
+title: WebAssembly plugins
+description: What a Basalt Proxy plugin is, how to build and load one, and where to find each part of the plugin API.
+group: Plugin basics
+---
+
+A proxy plugin is a small WebAssembly program that runs inside Basalt Proxy. It can greet players as they join, add
+commands, send a player to another backend, turn a login away, rewrite the entry in the server list, filter chat, show
+boss bars and talk to your backends. You write it in any language [Kiln](/docs/proxy/wasm-kiln) supports (C, C++, Zig,
+Rust, AssemblyScript, Go, Kotlin, C# and Java), compile it to a `.wasm` module, pack it as `.bppkg` and drop the package in the proxy's `plugins`
+folder.
+
+A plugin runs in a sandbox. It cannot open files or sockets by itself, it only does what the proxy API offers, and one
+that crashes or hangs is switched off without taking the proxy down. If you have written a plugin for Basalt Server the
+tools are the same: the same Kiln, the same SDK, the same manifest. What changes is the set of things you can do, see
+[How a proxy plugin differs from a server plugin](#how-a-proxy-plugin-differs-from-a-server-plugin).
+
+The examples use the C++ SDK, where a call is written `area::function` (for example `players::send` or `events::on`).
+The other languages use the same names with their own casing, see [The SDK](/docs/proxy/wasm-sdk).
+
+## Quickstart
+
+Follow the dedicated [Quickstart](/docs/proxy/wasm-quickstart) to create, build, install and run a first plugin. Choose `--target proxy` when creating the project; Kiln remembers that target in the manifest and packs `.bppkg` files.
+
+For the complete build/check/pack workflow and toolchain management, see [Kiln](/docs/proxy/wasm-kiln).
+
+## Choose a language
+
+| Language | A practical starting point |
+|---|---|
+| [C](/docs/proxy/wasm-lang-c) | Fixed buffers and direct C ABI wrappers |
+| [C++](/docs/proxy/wasm-lang-cpp) | Typed helpers, fixed-size strings and values |
+| [Zig](/docs/proxy/wasm-lang-zig) | Explicit allocation and slices |
+| [Rust](/docs/proxy/wasm-lang-rust) | Owned data and typed result handling |
+| [AssemblyScript](/docs/proxy/wasm-lang-assemblyscript) | TypeScript-like syntax compiled to WASM |
+| [Go](/docs/proxy/wasm-lang-go) | TinyGo toolchain and Go SDK packages |
+| [Kotlin](/docs/proxy/wasm-lang-kotlin) | Kotlin/Wasm, requiring WebAssembly GC support |
+| [C#](/docs/proxy/wasm-lang-csharp) | Managed C# sources compiled into a WASM module |
+| [Java](/docs/proxy/wasm-lang-java) | Java sources compiled to WASM, separate from jar adapters |
+
+Start with [Quickstart](/docs/proxy/wasm-quickstart), then use the language page for toolchains and source layout. All languages use the same host API, and Kiln packages them as `.bppkg`. The runtime proposals each compiler emits still matter: Kotlin needs GC support and the Java WASM path is not accepted on FreeBSD's WAMR runtime.
+
+## Where plugins live
+
+The proxy looks for plugins in the `plugins` folder of its working directory and creates it if it is missing. Each plugin
+is one of:
+
+- a `.bppkg` package, which is what `kiln pack` produces (a zip archive with `plugin.toml`, the module and the
+  `resources` folder);
+- a folder named after the plugin's `id`, with `plugin.toml` and the module inside, handy while testing. It reads its
+  language files from a `lang` folder inside it and its configuration from `config.toml` or `resources/config.toml`.
+
+Plugins load when the proxy starts and again on the `reload` console command. A reload stops every plugin, reads the
+folder again and starts them, and keeps the data they saved. Plugin state kept in memory is lost, so save what matters
+in the plugin's [data](/docs/proxy/wasm-events#commands-tasks-config-and-player-data).
+
+The first time a package loads, everything under its `resources` folder is copied into `plugins/<id>/`, skipping files
+that already exist. The proxy operator edits those copies, and updating the package never overwrites them. The module is
+compiled once and cached under `.basalt/wasm-cache`; a module may be up to 16 MiB. Per-player data is kept in
+`.basalt/players.db`.
+
+A package that cannot load is skipped, and the log says why: a missing or invalid `plugin.toml`, an `abi` or `api` the
+proxy does not speak, a missing dependency, a second plugin with the same `id`, or an error while the plugin starts.
+
+### The `[plugins]` table
+
+The operator controls the plugin host in `config/proxy.toml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Whether the `plugins` folder is looked at. `false` loads nothing. |
+| `queue-size` | `256` | How many events can wait for the plugin thread (1 to 65536). A full queue drops the newest event. |
+| `packet-max-kib` | `256` | Packets larger than this go past plugin packet listeners untouched (1 to 2048). |
+| `packet-timeout-ms` | `25` | How long a packet listener may wait for the plugin thread, and how long it may run (1 to 1000). |
+| `[plugins.allow]` | none | Per plugin id, what the operator allows beyond the sandbox. |
+
+```toml
+[plugins]
+enabled = true
+queue-size = 256
+
+[plugins.allow]
+greeter = ["commands"]
+lobby = ["network", "commands"]
+```
+
+The names in `[plugins.allow]` are `commands`, `network` and `packets`; any other name makes the file invalid and the
+proxy refuses to start. See [plugin.toml](/docs/proxy/wasm-plugin-toml#capabilities) for what each one means.
+The `[plugins]` table is read at startup: changing it needs a restart, and a `reload` that finds it changed is refused
+as a whole. With `watch-files = true` under `[reload]` the proxy also reloads by itself when a file in the plugins
+folder changes. See [Configuration](/docs/proxy/configuration) for the rest of `proxy.toml`.
+
+## How a proxy plugin differs from a server plugin
+
+A proxy plugin is written the same way as a server plugin, and the calls for events, commands, tasks, text, config and
+player data are the same ones. These are the differences you will notice:
+
+- A proxy player handle lasts for the public session, including backend changes. Server handles belong to a server's own players.
+- Ordinary callbacks run on one plugin thread. Packet listeners are a serialised exception running on the network caller, with a bounded wait and budget.
+- Tasks use steps of 50 ms; there is no world simulation tick on the proxy.
+- Proxy packages use `.bppkg` and import `basalt` plus `basalt_proxy`. Server packages use `.bspkg` and their server API.
+- Routing, backend registration and network admission belong here. Worlds, entities, recipes and gameplay belong on backends.
+
+The proxy also has [built-in interface configuration](/docs/proxy/interface), [commands](/docs/proxy/commands) and [protection](/docs/proxy/antibot). Use configuration for those simple policies and a plugin when you need custom decisions or logic. [Java adapter jars](/docs/proxy/java-plugins) follow a different lifecycle and trust model from WASM packages.
+
+## Where to go next
+
+| Page | What it covers |
+|---|---|
+| [plugin.toml](/docs/proxy/wasm-plugin-toml) | The manifest, capabilities, resources and language files |
+| [Execution model](/docs/proxy/wasm-execution-model) | The plugin thread, budgets, handles, decisions and what happens when a plugin fails |
+| [Events and decisions](/docs/proxy/wasm-events) | Every proxy event, reading and changing it, commands, tasks, config and data |
+| [Players and backends](/docs/proxy/wasm-players) | Player handles and calls, listing backends and the players on them |
+| [HUD](/docs/proxy/wasm-hud) | Titles, boss bars, sidebar, tab list, server links and chat completions |
+| [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) | Dialogs, resource packs, cookies, moving a client to another address and looking players up |
+| [Backends, permissions and administration](/docs/proxy/wasm-admin) | Registering and pinging backends, the console, permissions and groups, plugin storage |
+| [Plugin messages, packets and antibot](/docs/proxy/wasm-network) | Plugin message channels, packet listeners and the antibot |
+| [ABI reference](/docs/proxy/wasm-abi) | The exact contract, for plugins built without an SDK |
+| [Languages](/docs/proxy/wasm-lang-cpp) | Nine proxy language guides, with source layouts, entry points and examples |

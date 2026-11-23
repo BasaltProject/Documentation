@@ -1,14 +1,14 @@
 ---
 title: Dialogs, resource packs, cookies and transfers
 description: Open dialogs, push resource packs, store cookies and transfer players from a proxy plugin, watch how clients answer, and look players up.
-group: Plugins
+group: Plugin API
 ---
 
 This page is about asking a player's client to do something, and finding out what it answered: show a dialog, offer a resource pack, keep a cookie for the next visit, send the player to another server address. It also holds the extra player calls that do not belong anywhere else, such as finding a player by UUID, counting players on a backend, broadcasting a line and reading the client's settings.
 
 These calls take a player [handle](/docs/proxy/wasm-players) and run inside a callback. Only the float player data at the end needs a capability (`players_data`).
 
-In tables the functions are written as `interaction::dialog_show`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+In tables the functions are written as `interaction::dialog_show`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/proxy/wasm-sdk).
 
 ## A first example
 
@@ -96,7 +96,7 @@ Two things the client reports can be observed. A watcher is registered once, usu
 | `interaction::watch_resource_packs` | `player.resource_pack`: the client answered a pack. |
 | `interaction::watch_settings` | `player.settings`: the client sent its settings, on joining and whenever they change. |
 
-Inside the callback, `interaction::value_result` writes the event as a value that you open with the reader from [Values](/docs/server/wasm-values#decoding), as the example above does. The `player` field is a player handle that is valid for the length of the callback.
+Inside the callback, `interaction::value_result` writes the event as a value that you open with the reader from [Values](/docs/proxy/wasm-values#decoding), as the example above does. The `player` field is a player handle that is valid for the length of the callback.
 
 `player.resource_pack` carries:
 
@@ -307,4 +307,4 @@ A key is 1 to 128 bytes, and a plugin can keep 1000 keys per player. For data of
 | [HUD](/docs/proxy/wasm-hud) | Boss bars, sidebar, tab list, titles and the pause menu. |
 | [Events](/docs/proxy/wasm-events) | The player events to start from. |
 | [Backends, permissions and administration](/docs/proxy/wasm-admin) | Backends at run time, permissions and the plugin store. |
-| [Values](/docs/server/wasm-values) | Reading the values these events and calls give. |
+| [Values](/docs/proxy/wasm-values) | Reading the values these events and calls give. |

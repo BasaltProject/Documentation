@@ -1,0 +1,131 @@
+---
+title: Rust
+description: Write, build and package a Basalt Proxy plugin in Rust, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+Choose Rust for typed options/results and owned data. Kiln provides the basalt_proxy crate and builds a WASM module; the proxy remains the host for player, backend and storage operations. Native operating-system APIs are not available just because their Rust types exist.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `rustc` on your `PATH` when it has the `wasm32-unknown-unknown` standard library installed
+(`rustup target add wasm32-unknown-unknown`), and otherwise downloads Rust 1.100 (about 180 MB, 503 MB unpacked) into a
+per-user cache on the first build, on Linux, macOS and Windows. Kiln calls `rustc` directly, never Cargo. See
+[Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang rust --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/lib.rs
+```
+
+`src/lib.rs` is the root of your plugin; other files are ordinary modules declared with `mod` from it. There is no
+`Cargo.toml`. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is
+rebuilt each time.
+
+## The entry point
+
+Write `pub fn init()` in `src/lib.rs`. Kiln generates the exports the proxy needs and calls your `init` once, after the
+module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/lib.rs`.
+
+```rust
+use basalt_proxy::commands;
+use basalt_proxy::core::{Args, Ctx, NORMAL};
+use basalt_proxy::{events, log, players};
+
+fn on_join(ctx: Ctx) {
+    let player = events::player(ctx);
+    if player == 0 {
+        return;
+    }
+    let name = players::name(player).unwrap_or_default();
+    players::send(player, "<green>Welcome, {name}!", &Args::new().add("name", &name));
+}
+
+fn hello(ctx: Ctx) {
+    let times = commands::arg_i64(ctx, "times").unwrap_or(1);
+    for _ in 0..times {
+        commands::reply(ctx, "<yellow>Hello from greeter!", &Args::new());
+    }
+}
+
+pub fn init() {
+    log::info("greeter loaded");
+    events::on("player.join", NORMAL, on_join);
+    commands::register("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`events::on` listens to an event, see [Events](/docs/proxy/wasm-events); `commands::register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Rust spelling is in [The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: the `basalt_proxy` crate, with one module per area, `basalt_proxy::players`, and so on.
+  Functions are snake_case and some drop the area name: `players::player_name` is `players::name`,
+  `events::event_player` is `events::player`, `commands::command_arg_i64` is `commands::arg_i64`, `config::config_i64` is
+  `config::i64`. Proxy-specific calls keep their domain names; see the relevant API page.
+- **Strings in** are `&str`.
+- **Strings out** are `String`, or `Option<String>` when the call can fail, so `unwrap_or_default()` gives an empty one.
+- **Optional arguments** are not optional in the signature: a call that takes text arguments takes `&Args`, and
+  `&Args::new()` means none.
+- **Handles** are `core::Player` and `core::Ctx`, both `i32`. `0` is never a valid handle. Calls that list handles, such as
+  `players::online()`, return a `Vec`.
+- **`Args`** is `core::Args`, a builder: `Args::new().add("name", &name).add("amount", &amount)`.
+- **Constants** are `core::LOWEST` to `core::HIGHEST` (`i32`) for priorities, `core::DEBUG` to `core::ERROR` for levels,
+  and `core::ERR_ABSENT` and the like for result codes.
+- **Results**: a call that only does something returns an `i32` status, which you may ignore.
+- **Handlers** are closures or functions, anything that is `FnMut(Ctx) + 'static`, so `events::on("player.join", NORMAL,
+  move |ctx| { ... })` can capture what it moves in. State shared between handlers lives in a `thread_local!` with a `Cell`
+  or `RefCell`, or in an `Rc<RefCell<..>>` captured by each closure.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles the SDK and your crate with `rustc` for `wasm32-unknown-unknown`, with `opt-level=s`, `panic=abort` and fat LTO,
+and writes `build/plugin.wasm`, then checks it. `kiln pack` writes `build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see
+[Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |

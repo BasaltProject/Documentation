@@ -1,7 +1,7 @@
 ---
 title: Execution model
 description: How the proxy runs plugins, when your code is called, how long it may take, and what happens when a plugin is slow or fails.
-group: Plugins
+group: Plugin basics
 ---
 
 Knowing how the proxy calls your plugin explains most of its rules: why handlers must be short, why a player handle can
@@ -10,12 +10,10 @@ the pages for [events](/docs/proxy/wasm-events) and [players](/docs/proxy/wasm-p
 
 ## One plugin thread
 
-Every callback of every plugin runs on a single thread, one at a time, and a callback never runs inside another one.
-Two plugins therefore never run at the same moment, and you need no locks. The cost is that a slow handler holds up all
+Ordinary event, command and task callbacks run on one plugin thread, one at a time. Packet listeners are the exception: they enter on a network caller under the same serialisation lock. Two WASM callbacks therefore do not run concurrently, but code must not assume every callback uses the same operating-system thread. The cost is that a slow handler holds up all
 the plugins behind it, which is why the time budget below is tight.
 
-The proxy's network threads never wait for a plugin to forward traffic. Relaying packets does not enter WebAssembly,
-and with no plugin loaded the proxy does no extra work on any path. Only two things make the proxy wait for your code,
+Ordinary packet relay does not enter WebAssembly unless a listener needs it. The proxy waits for plugin results only on bounded decision or packet-interception paths. Two mechanisms can hold progress for your code,
 and both are bounded: a decision that you registered for (see [Observed and decided events](#observed-and-decided-events))
 and a packet listener (see [Packet listeners](#packet-listeners)).
 
@@ -106,12 +104,12 @@ the proxy keep running. Fix the plugin, replace the package and `reload` to brin
 ## Packet listeners
 
 A packet listener (the `packets` capability, see [Network](/docs/proxy/wasm-network)) is the one place where your code
-runs on a network thread, because the proxy needs the answer before it relays the packet. Two settings in the
+runs on a network thread, because the proxy needs the answer before it relays the packet. It is serialised against ordinary callbacks. Two settings in the
 `[plugins]` table of `proxy.toml` bound it:
 
 | Key | Default | Effect |
 |---|---|---|
-| `packet-timeout-ms` | `25` | The listener first waits at most this long for the plugin thread to be free, then runs with this same budget |
+| `packet-timeout-ms` | `25` | The network caller waits at most this long for the callback serialisation lock, then runs with this budget |
 | `packet-max-kib` | `256` | A packet larger than this goes past every listener untouched |
 
 A listener that does not get to run leaves the packet untouched, or cancels it when it was registered as fail-closed. A
@@ -153,3 +151,9 @@ pushes the following ones back instead of running twice to catch up.
 | Work with players and backends | [Players and backends](/docs/proxy/wasm-players) |
 | Listen to packets | [Plugin messages, packets and antibot](/docs/proxy/wasm-network) |
 | Raise the limits or grant a permission | [Plugins](/docs/proxy/wasm-plugins#the-plugins-table) |
+
+## Reload in a live network
+
+A plugin reload clears its in-memory roster and instances, and does not disconnect every player just to replay a join. Handle the documented roster gap, preserve durable state in data/storage calls, and avoid broadcasting duplicate welcome messages to compensate. Keep operator configuration and per-player state separate from caches you can rebuild.
+
+For changes requiring a process restart rather than a plugin reload, see [Configuration](/docs/proxy/configuration#hot-reload).

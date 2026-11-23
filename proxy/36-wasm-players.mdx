@@ -1,7 +1,7 @@
 ---
 title: Players and backends
 description: Find and talk to the players connected to the proxy, move them between backends, and list the backends and who is on them.
-group: Plugins
+group: Plugin API
 ---
 
 A proxy plugin sees every player connected to the network and every backend behind it. This page covers the player
@@ -30,7 +30,7 @@ void plugin_init() {
 ```
 
 The examples use the C++ spelling `area::function`; other languages use the same names with their own casing, see
-[The SDK](/docs/server/wasm-sdk).
+[The SDK](/docs/proxy/wasm-sdk).
 
 ## Player handles
 
@@ -104,7 +104,7 @@ The whole settings as one map, the client's address and port, and the `player.se
 
 `text` and `reason` are [MiniMessage](https://docs.advntr.dev/minimessage/), cut at 4096 bytes, and a text that starts with
 `@` is a key of the plugin's language file. The optional `core::Args` (pass `nullptr` or leave it out for none) fills `{name}` fields, see
-[Text](/docs/server/wasm-text). Each call returns 0, `ERR_STALE` for a handle that left, or `ERR_INVALID` when the text
+[Text](/docs/proxy/wasm-text). Each call returns 0, `ERR_STALE` for a handle that left, or `ERR_INVALID` when the text
 cannot be resolved or the player's connection cannot take it.
 
 `player_title` takes an empty text for the part you do not want to change. The three times are in ticks of the client (20

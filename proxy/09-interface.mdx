@@ -1,0 +1,197 @@
+---
+title: Server list and network interface
+description: MOTD profiles, backend status relay, tab list, sidebar, boss bar, placeholders, animations and messages.
+group: Administration
+---
+
+Presentation lives in `server_list.toml`, `tab_list.toml`, `scoreboard.toml`, `boss_bar.toml`, `animations.toml` and `messages.toml`. Reload after editing. Network-wide presentation belongs on the proxy; gameplay-specific UI can remain on a backend.
+
+## Text and profiles
+
+Text is MiniMessage, such as `<gray>`, `<bold>` and `<gradient:gray:white>...</gradient>`. Write a list for multiple lines. Placeholders are expanded before parsing.
+
+Each display file uses named profiles. Exactly one must have `default = true`. Other profiles can set `active = true` or a `when` list. Among matching profiles, the highest `priority` wins, and omitted fields inherit from the default.
+
+```toml
+[profiles.default]
+default = true
+motd = ["<bold>MY NETWORK</bold>", "<gray>Welcome</gray>"]
+
+[profiles.survival]
+priority = 10
+when = ["%basalt_player_host% = survival.example.org"]
+motd = ["<green>SURVIVAL</green>", "<gray>Build something lasting</gray>"]
+
+[profiles.maintenance]
+active = false
+priority = 100
+motd = ["<red>Maintenance</red>"]
+hide-player-count = true
+```
+
+`when` requires every condition to hold. Supported comparisons are `=`, `==`, `!=`, `<`, `<=`, `>` and `>=`, plus `contains` and wildcard `matches` where `*` matches text. A lone boolean placeholder is also a condition. Unknown or unavailable values are reported and do not silently count as a match.
+
+## Placeholders
+
+Use the vocabulary available on the proxy, rather than copying world or TPS placeholders from Basalt Server:
+
+| Placeholder | Value |
+|---|---|
+| `%basalt_server_online%` | Online count; inside a relayed server-list profile, the selected backend count when relayed. |
+| `%basalt_server_max_players%` | Slot count, including a relayed count in that profile. |
+| `%basalt_server_version%`, `%basalt_server_protocol%` | Native Minecraft version and protocol. |
+| `%basalt_player_protocol%` | Protocol in the available client context. |
+| `%basalt_player_host%` | Address the player typed. |
+| `%basalt_player_ip%` | Source address when known. |
+| `%basalt_player_name%` | Known player name; in a ping this needs address recognition. |
+| `%basalt_player_known%` | Whether a player name is known in this context. |
+| `%basalt_animation_<name>%` | Current frame of a named animation. |
+
+Pings happen before login. The proxy cannot know a visitor's authenticated group, health, position or world from a server-list request. Do not use backend-only placeholders in proxy conditions. Unknown placeholders remain visible and are reported instead of producing a misleading empty line.
+
+## server_list.toml
+
+The default entry advertises the proxy. Profiles can change it by hostname, protocol or known address.
+
+| Key | Default/meaning |
+|---|---|
+| `motd` | Two lines, or text containing a newline. |
+| `max-players` | Shipped default profile advertises 1000. This is separate from the real runtime session cap. |
+| `online-players` | Override the displayed online count; otherwise use the actual count. |
+| `hide-online-players` | False; omit player names from the hover list while keeping the count. |
+| `sample-size` | 12 names at most; 0 shows none. |
+| `hover` | Custom hover lines. |
+| `hide-player-count` | False; display `???` when true. |
+| `version-name`, `version-protocol` | Visual version label and compatibility indicator. They do not enforce admission. |
+| `icon` | A 64x64 PNG relative to the config directory, otherwise the built-in icon. |
+| `source`, `relay` | Select backend fields as below. |
+
+Use a legacy profile for clients before 1.16 if RGB gradients matter: those clients lack RGB text. The reserved `loading` profile is used while startup is in progress; it is not selected by ordinary matching. Maintenance presentation does not refuse logins; use whitelist policy or a login plugin for that.
+
+### Backend status relay
+
+```toml
+[profiles.default]
+default = true
+motd = ["<bold>MY NETWORK</bold>"]
+source = "route"
+relay = ["online", "max", "sample"]
+```
+
+- `source = "profile"` uses local profile settings and proxy counts.
+- `source = "server:lobby"` queries the named server.
+- `source = "route"` uses the first answering server of the default or forced-host route for that address.
+
+`relay` selects `online`, `max`, `sample`, `motd`, `version` or `icon`. The default relay fields are online, max and sample. Selected backend values take precedence over profile overrides. Unselected fields remain local, so the example keeps the network MOTD while showing the route's counts.
+
+Answers are cached according to `[status-relay]` in `servers.toml`. A public ping is not blocked while a query runs; until a backend answer is available, local profile values are shown. Health checks are configured separately.
+
+### Returning-player greetings
+
+```toml
+[greeting]
+remember-ip = true
+
+[profiles.returning]
+priority = 5
+when = ["%basalt_player_known%"]
+motd = ["<white>Welcome back, %basalt_player_name%</white>"]
+```
+
+Address recognition ships off. Enabling it stores the latest login address in the player database and lets pings resolve a name. Shared routers and changing addresses make this unsuitable for authentication or permissions. Turning it off stops writing addresses and does not erase previously recorded data.
+
+## UI priority
+
+Tab decoration, sidebar and boss bar all ship disabled. Their `[ui] priority` decides what happens when a backend sends its own UI:
+
+| Value | Behaviour |
+|---|---|
+| `"proxy"` | Keep the proxy element and discard the competing backend element. |
+| `"backend"` | Yield to the backend element; draw the proxy version while the backend supplies none. |
+
+The shipped tab priority is proxy; sidebar and boss bar priority is backend. This applies per element, not to all packets from a backend. The built-in configured in-game UI currently runs on the native Java session path; do not assume identical decoration on raw older-version relays or Bedrock. Tab headers and footers have no Bedrock equivalent.
+
+## tab_list.toml
+
+```toml
+enabled = true
+update-interval-ticks = 20
+
+[ui]
+priority = "proxy"
+
+[profiles.default]
+default = true
+header = ["<bold>MY NETWORK</bold>"]
+footer = ["<gray>Online: <white>%basalt_server_online%</white></gray>"]
+```
+
+`header` and `footer` are the lines above and below the Java player list. The shipped update interval is 20 steps of 50 ms, or one second. `0` draws once on join. A redraw only emits packets when the generated content changes.
+
+## scoreboard.toml
+
+```toml
+enabled = true
+update-interval-ticks = 20
+
+[ui]
+priority = "backend"
+
+[profiles.default]
+default = true
+title = "<bold>NETWORK</bold>"
+lines = [
+    "<gray>Players: %basalt_server_online%</gray>",
+    "<gray>%basalt_animation_dots%</gray>",
+]
+```
+
+`title` heads the sidebar and each `lines` entry becomes a row. Clients draw at most 15 rows. A backend usually already has a gameplay sidebar, which is why the default priority yields to it.
+
+## boss_bar.toml
+
+```toml
+enabled = true
+update-interval-ticks = 20
+
+[ui]
+priority = "backend"
+
+[profiles.default]
+default = true
+text = "<white>Welcome to the network</white>"
+color = "white"
+overlay = "progress"
+progress = "1.0"
+```
+
+Colours are pink, blue, red, green, yellow, purple and white. Overlays are progress, notched_6, notched_10, notched_12 and notched_20. `progress` is text resolving to a number from 0 to 1; out-of-range values are clamped. An unknown colour or overlay is reported and falls back to white or progress.
+
+## Animations
+
+Define text once in `animations.toml`:
+
+```toml
+[animations.dots]
+change-interval-ms = 500
+frames = [".", "..", "..."]
+```
+
+Use `%basalt_animation_dots%` in the server list or configured UI. The frame follows the clock, so players see the same frame and joining does not restart it. Frames may contain ordinary placeholders, but nested animations are suppressed to avoid recursion. The default frame interval is 200 ms, with a minimum of 1 ms. An animation cannot appear smoother than the element's own refresh interval.
+
+## Messages
+
+`messages.toml` has `[kick]` for login/disconnection text and `[command]` for command answers. Empty or missing values keep the shipped text. Use the exact keys and contextual placeholders documented in the generated file; unknown keys fail validation.
+
+```toml
+[kick]
+not-whitelisted = "<red>This network is currently private.</red>"
+connect-failed = "<red>Could not join %server%.</red> <gray>%reason%</gray>"
+
+[command]
+default-reason = "Please contact staff."
+```
+
+Kick keys cover bans, whitelist, unavailable destinations, versions, duplicate sessions, authentication, chat validation, packet/spam limits and antibot prompts. Bans support `%reason%` and `%expires%`; connection failures support `%server%` and `%reason%`. Antibot chat-check prompts use `{register}` and `{login}` for the configured command names.
+
+These are literal network messages, so every player sees the language you write. They do not rewrite messages authored by the backend. For plugin language files and `@keys`, see [plugin.toml](/docs/proxy/wasm-plugin-toml#resources-and-language-files).

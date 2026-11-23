@@ -1,0 +1,359 @@
+---
+title: Antibot and connection protection
+description: Configure reputation, attack detection, limbo verification, captchas, blocklists and persistent verified players.
+group: Administration
+---
+
+The antibot decides which connections may reach a backend. It is enabled by default in `config/antibot.toml`, with automatic attack detection and limbo verification during attacks. Most normal connections need no interactive check. Reputation, verification and bounded resource use complement the admission and packet limits in other files.
+
+This is application-level protection. It cannot keep a saturated uplink usable; filtering large network floods belongs upstream of the machine.
+
+## How a connection is judged
+
+1. Trusted addresses bypass antibot scoring and verification. Explicit blocklists can reject other origins before a session is created.
+2. Handshake, name, request-rate and reputation checks decide whether to admit, score or refuse the origin.
+3. During attack mode, or when configured suspicion warrants it, the proxy holds the client in a small limbo world before opening a backend session.
+4. Keep-alive, brand, movement, gravity and optional captcha checks verify client behaviour.
+5. A successful player can be remembered as verified from that origin, so returning connections avoid repeating checks for the configured lifetime.
+
+Java and Bedrock share origin reputation and attack state, but Bedrock has its own session controls. IPv6 origin tracking groups addresses by /64, so do not assume rotating the final IPv6 address creates a new reputation bucket.
+
+## Start with defaults
+
+Keep the generated file initially and inspect behaviour before tightening it. Raising a captcha or ban threshold changes the trade-off between filtering and false positives; setting every verification mode to `always` puts every unknown player through it.
+
+```toml
+[lists]
+trusted = ["10.0.0.5"]
+blocked = []
+
+[limbo]
+mode = "attack"
+
+[captcha]
+enabled = true
+type = "blocks"
+mode = "suspicious"
+```
+
+These are edits to the generated file, not additional copies of existing tables. Trust only controlled addresses. A public tunnel or shared load balancer address is not a safe universal trust entry unless it performs the checks you intend to bypass.
+
+If a load balancer fronts the proxy, configure trusted [PROXY protocol](/docs/proxy/configuration#network) peers so the proxy evaluates player origins rather than treating the entire network as one address.
+
+## Inspect and control protection
+
+Run in the console, or use `/basalt:antibot` with `basalt.command.antibot`:
+
+| Command | Purpose |
+|---|---|
+| `antibot status` | Attack state, connection/refusal counters, limbo outcomes, exploit attempts and tracked/verified counts. |
+| `antibot list bans` | Current reputation bans. |
+| `antibot list reputation` | Scored origins not currently banned. |
+| `antibot list verified` | Recent verified entries and expiry. |
+| `antibot attack on` | Force attack mode for a controlled check. |
+| `antibot attack off` | Force attack mode off. |
+| `antibot attack auto` | Return to automatic detection. |
+| `antibot ban <ip>`, `antibot unban <ip>` | Ban or clear an origin. |
+| `antibot verify <name>`, `antibot unverify <name>` | Manage a verification entry. |
+| `antibot verified <name>` | Test whether a name is verified. |
+
+Manual verification by name is broader than a normal successful origin-bound check. Grant it carefully; it is not account authentication. `pardon` manages persistent access bans, while `antibot unban` manages origin reputation bans.
+
+## Limbo and captchas
+
+`limbo.mode` can be `off`, `attack`, `suspicious` or `always`. Suspicious mode checks attacks as well as an origin reaching `suspicious-score`. Trusted or verified origins do not repeatedly visit the limbo.
+
+The block captcha builds digits into a wall in the limbo world. The map captcha renders a noisy code on an in-game map. The player types the digits in chat, within the configured attempts and timeout. Ordinary attack-mode logins do not all get a captcha under the shipped suspicious-only policy.
+
+The optional chat check asks for a `/register` or `/login` shaped response. It stores no password and is not an account system. Do not use it as an alternative to online authentication or an actual login plugin.
+
+Passthrough verifies a new origin and asks it to reconnect before spending Mojang authentication and plugin work. Supported modern clients can transfer back automatically; older clients get a reconnect prompt. Attack mode can activate passthrough after its configured delay even when the ordinary passthrough switch is off.
+
+## Lists, external data and notifications
+
+Local blocklists contain one IP or CIDR range per line, with `#` comments. Remote blocklists must use HTTPS, are bounded to 4 MiB and 20 seconds per download, and refresh on the configured schedule. Geo filtering uses your own `cidr,country,asn` text database; nothing is bundled. Anti-VPN checks use a provider and key you supply, cache results and do not hold the first connection while the lookup completes.
+
+Optional attack notifications POST JSON to your HTTPS webhook when attack mode starts and ends. Certificates are checked. A custom trust file is for your own certificate authority, not a switch to disable verification.
+
+## Verification persistence and multiple proxies
+
+With `[verified] persist = true`, verified entries survive restart in `.basalt/players.db`. Expiry, purge batches and a maximum entry count bound storage. `ttl-hours = 0` disables verification retention.
+
+A protected shared directory can exchange verification entries between proxies. Each instance needs a distinct `sync-id`, writes only its own checks and imports other files. Imported entries do not outlive the verification TTL and are not re-exported. Removing a local verification does not revoke another proxy's copy. Anyone able to write this directory can mark players verified, so protect its access like a credential.
+
+## Configuration reference
+
+The following values are the shipped defaults. Reload `antibot.toml` after editing; invalid changes are reported. Turning `[general] enabled` off disables verification, but leaves admission rules and `limits.toml` in force.
+
+### general
+
+`[general]`: Master switch.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch. Off, the proxy does no verification at all (the limits in limits.toml and the admission rules in proxy.toml still apply). |
+
+### lists
+
+`[lists]`: Trusted and blocked origins, including downloaded and local lists.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `trusted` | `[]` | Origins that are never scored, held in the limbo or banned: IP addresses or CIDR ranges, IPv4 or IPv6. Put your own monitoring, load balancer health checks and staff addresses here. |
+| `blocked-urls` | `[]` | https:// addresses of plain text lists (one address or CIDR range per line) to download and block. Downloads are limited to 4 MiB and 20 seconds each, and repeat every refresh-minutes. |
+| `refresh-minutes` | `60` | Minutes between remote blocklist refreshes. |
+| `blocked-files` | `[]` | Plain-text local IP/CIDR lists, relative to the config directory unless absolute; read at startup and reload. |
+| `blocked` | `[]` | Origins rejected before creating a session. |
+
+### reputation
+
+`[reputation]`: Bounded origin history, scoring and temporary bans. Scores decay over time.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max-origins` | `65536` | Most origins remembered at once. The oldest ones are forgotten first when it fills, so a flood of addresses cannot grow memory. |
+| `origin-expiry-seconds` | `3600` | Seconds an origin is remembered after it was last seen. Its score fades away over this time. |
+| `ban-score` | `100` | Reputation threshold for a temporary origin ban. |
+| `ban-seconds` | `600` | Temporary origin-ban duration in seconds. |
+| `new-origin-score` | `5` | Score added when a new origin is first seen; reputation fades by one point every six seconds. |
+| `failed-login-score` | `20` | Score added for a failed login. |
+| `limbo-failure-score` | `35` | Score added for failing verification. |
+| `captcha-before-ban` | `true` | The first time an origin with no ban or attack behind it crosses ban-score, send it to the captcha instead of banning it; failing the captcha or crossing the score again bans. Needs [captcha] enabled. In a confirmed attack the ban is immediate. |
+
+### handshake
+
+`[handshake]`: Validate the host and protocol supplied before login.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `allowed-hosts` | `[]` | Host names a client may put in its handshake (the address it typed), compared without case. Empty accepts any. Bots that connect by IP and not by name are the usual catch.  |
+| `blocked-protocols` | `[]` | Client protocol numbers that are refused outright, for versions you do not want on this network. For example [47]. |
+| `max-host-length` | `255` | Longest host name accepted. Vanilla's own limit is 255. |
+| `unknown-host-score` | `10` | Points added when allowed-hosts is set and the host is not in it. 0 refuses those connections outright. |
+
+### names
+
+`[names]`: Name-pattern filtering and scoring of names sharing an origin.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `blocked-patterns` | `[]` | Regular expressions (ECMAScript); a login name that matches any of them is refused. Most bot tools use a recognisable pattern, for example a prefix and then digits.  |
+| `max-names-per-origin` | `3` | Most different names one origin may log in with while it is remembered. Above it the origin is scored. 0 turns it off. |
+| `similar-names-score` | `30` | Points for the second name an origin sends that looks like an earlier one (the same letters, only digits changed). |
+| `names-per-origin-score` | `40` | Points for each name over max-names-per-origin. |
+
+### status
+
+`[status]`: Per-origin list-request controls and cached replies.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `requests-per-second` | `5` | Server list requests one origin may make each second before the extra ones are dropped. 0 means no limit. |
+| `cache-ms` | `1000` | Cache a status answer for the same protocol, host and address this many milliseconds. 0 disables. |
+| `cache-only-in-attack` | `true` | Reuse answers only while attack mode is on. |
+| `require-ping-in-attack` | `false` | Require a recent multiplayer-list ping before login during attacks; Direct Connect users may not have one. |
+| `no-ping-score` | `5` | Points for logging in without a recent ping while the above is off. 0 never scores it. |
+| `ping-validity-seconds` | `600` | How long a previous status ping remains valid. |
+
+### attack-mode
+
+`[attack-mode]`: Automatic detection, recovery and limits on unverified arrivals.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Switch on by itself when the proxy is flooded and off again when it calms down. In attack mode, the limbo (see [limbo]) is used for every login that is not trusted or verified. |
+| `connections-per-second` | `40` | Connections per second, across all origins, that count as an attack. |
+| `hard-connections-per-second` | `0` | Second, harder level: at this many connections each second every unverified login is sent through the captcha, not only the limbo. 0 turns the level off. |
+| `failed-logins-per-second` | `8` | Logins per second that fail (refused names, failed authentication, limbo failures) that count as an attack. |
+| `new-origins-per-second` | `25` | Origins never seen before, per second, that count as an attack. |
+| `confirm-seconds` | `2` | Seconds the numbers above must hold before attack mode starts. |
+| `cooldown-seconds` | `60` | Seconds everything must stay under half of the thresholds before attack mode stops. |
+| `entries-per-second` | `30` | During an attack, most unverified clients that finish the limbo and may enter a backend each second; the rest are told to try again. Verified and trusted players are never counted. 0 turns the budget off. |
+| `passthrough-after-seconds` | `5` | Seconds an attack must last before passthrough applies by itself even when [passthrough] is off. 0 never does. |
+
+### limbo
+
+`[limbo]`: Verification-world policy and client-behaviour checks.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `"attack"` | off never checks, attack checks during attacks, suspicious also checks high scores, always checks every untrusted/unverified login. |
+| `suspicious-score` | `40` | Score triggering limbo in suspicious mode. |
+| `legacy-clients` | `"skip"` | Every version the proxy translates goes through the limbo, 1.8 included. This is for a client the limbo still cannot hold: "skip" lets it straight to the backend (it is still scored); "kick" refuses it while the limbo would have been used. |
+| `timeout-seconds` | `20` | Seconds a client has to finish the limbo. |
+| `max-frame-bytes` | `2048` | Maximum incoming limbo frame size. |
+| `check-echo` | `true` | Send a ping the client must answer with the same id (clients 1.17 and newer), and move the held hotbar slot after an out-of-range one that a real client ignores: it must report the new slot and never the bad one. The slot is skipped while a map captcha is in the hand. |
+| `check-brand` | `true` | Require the client brand and refuse malformed ones or any in blocked-brands (compared ignoring case). |
+| `blocked-brands` | `[]` | Client brands refused by the brand check, case-insensitive. |
+| `one-per-name` | `true` | Let one name be in the limbo once at a time. |
+| `soft-fail-to-captcha` | `true` | When a client fails the gravity or movement check and the captcha is enabled, give it the captcha instead of kicking it, so a real player on a poor connection is not lost. |
+| `max-packets` | `1200` | Most packets a client may send while it is in the limbo play phase (the configuration phase allows 64). Past it the client is refused; a real client sends well under 30 each second. |
+| `max-latency-ms` | `1500` | Largest round trip, in milliseconds, measured with the limbo keep-alives. A client over it for latency-strikes answers in a row is refused, which stops slow proxies and bots that hold connections. 0 turns it off. |
+| `latency-strikes` | `3` | Consecutive high-latency answers before refusal. |
+| `keep-alive-interval-ms` | `2000` | Interval between limbo keep-alives. |
+| `keep-alive-timeout-ms` | `8000` | Deadline for a limbo keep-alive answer. |
+| `check-gravity` | `true` | Drop the player from a few blocks up and require that it falls the way vanilla's physics do and lands on the floor. |
+| `drop-height` | `6` | Initial gravity-check drop height in blocks. |
+| `min-fall-ticks` | `3` | Minimum movement reports needed before landing in the gravity check. |
+| `fall-tolerance` | `0.35` | How far, in blocks, a client may be from the physics at any tick, to leave room for lag. |
+| `check-movement` | `true` | Refuse a client that moves impossibly in the limbo. A player is free to walk around while the check runs. |
+| `max-speed` | `0.7` | Maximum sideways movement in blocks per tick during limbo. |
+| `max-distance` | `16.0` | Maximum distance from the limbo spawn in blocks. |
+| `require-client-information` | `true` | Require the client to send its settings and brand, as every real client does when it enters the configuration. |
+| `max-per-origin` | `2` | Maximum simultaneous limbo sessions for one origin. |
+| `max-sessions` | `2048` | Maximum concurrent limbo sessions across origins. |
+
+### captcha
+
+`[captcha]`: Interactive code verification.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Ask the player to read a code and type it in chat. It is the strongest check and the most annoying one, so by default only a very suspicious origin ever sees it: ordinary players and ordinary attack-mode logins never do. |
+| `type` | `"blocks"` | "blocks" builds the number out of real blocks on a wall in the limbo world, which the player reads by looking at it; a bot that does not render chunks cannot. "map" shows a noisy picture on a map in the player's hand instead. |
+| `mode` | `"suspicious"` | When to ask. "suspicious": only when the origin's score reaches score. "attack": every login the limbo holds while attack mode is on. "always": every login the limbo holds. |
+| `score` | `90` | Score that triggers the captcha in "suspicious" mode. It must be high: a ban comes at ban-score, so a score close to it means the origin has already done several things a real player does not. |
+| `length` | `4` | Number of digits generated for each captcha. |
+| `attempts` | `3` | Maximum attempts. |
+| `timeout-seconds` | `45` | Time allowed in seconds. |
+
+### passthrough
+
+`[passthrough]`: Verify and reconnect before expensive login work.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Make a new origin pass every check and then disconnect it with the order to join again; only origins that come back inside the window, or that are verified, reach the Mojang login and the plugins. Spares the authentication servers. |
+| `mode` | `"attack"` | off never checks, attack checks during attacks, suspicious also checks high scores, always checks every untrusted/unverified login. |
+| `window-seconds` | `120` | Seconds an origin has to come back after being sent away. |
+| `transfer` | `true` | Send a 1.20.5 or newer client a transfer packet back to this proxy instead of a disconnect, so it rejoins by itself. An older client, which has no such packet, gets the rejoin message. The host and port are taken from what the client connected to; set them when a load balancer sits in front. |
+| `transfer-host` | `""` | Explicit public transfer host, or empty to derive it. |
+| `transfer-port` | `0` | Explicit public transfer port, or 0 to derive it. |
+
+### chat-check
+
+`[chat-check]`: Optional prompt-response verification; no credentials are stored.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | An alternative to the captcha: the player types a command in chat, as on servers with /register and /login. It is only a check that something reads the prompt and answers it: NOTHING is stored and the password is never used, so it is not an account system. It replaces the captcha where both would apply (a forced captcha still wins). |
+| `mode` | `"attack"` | off never checks, attack checks during attacks, suspicious also checks high scores, always checks every untrusted/unverified login. |
+| `register-command` | `"register"` | "/<register-command> <word> <word>" with the two words equal, or "/<login-command> <word>". Letters, digits and _ only. |
+| `login-command` | `"login"` | Command name accepted for the one-word chat response. |
+| `min-length` | `4` | Minimum response-word length accepted by the chat check. |
+| `attempts` | `3` | Maximum attempts. |
+| `timeout-seconds` | `45` | Time allowed in seconds. |
+
+### notifications
+
+`[notifications]`: Attack reporting and HTTPS webhook delivery.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `quiet-logs-in-attack` | `true` | While attack mode is on, do not log each refused connection; one summary with the attack's numbers is logged when it ends. Outside attack mode every refusal is logged. |
+| `webhook-url` | `""` | An https:// address that gets a JSON POST when attack mode starts and ends. Empty sends nothing. |
+| `webhook-trust-file` | `""` | A PEM file with the certificate authority that signed the receiver's certificate, for a receiver of your own with a private CA. Empty trusts the system roots. Certificates are always verified. Read from the config directory unless absolute. |
+
+### tcp
+
+`[tcp]`: Optional Linux TCP_INFO scoring; ignored on other platforms.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Linux only (ignored elsewhere): read the kernel's view of each new connection (TCP_INFO) and score the origin when it looks relayed through a tunnel or proxy: a tiny segment size, many retransmissions or a long round trip. |
+| `min-mss` | `536` | Smallest acceptable maximum segment size in bytes; tunnels and some proxies lower it. 0 turns the check off. |
+| `max-retransmits` | `4` | Most retransmitted segments tolerated before login. 0 turns the check off. |
+| `max-rtt-ms` | `0` | Largest kernel round trip estimate in milliseconds. 0 turns the check off. |
+| `score` | `50` | Points added to the origin's score for each of these. |
+
+### kernel-block
+
+`[kernel-block]`: Optional external firewall integration, off by default.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Run a command when an origin is banned, so the kernel drops its packets before they reach this process. It needs privileges that the proxy usually does not have, so it is off by default. |
+| `only-in-attack` | `true` | Only for bans that happen while attack mode is on. |
+| `command` | `[]` | Argument array run without a shell. Substitutions are {ip}, {family} and {seconds}. Requires an external firewall setup and permission to update it. |
+
+### anti-vpn
+
+`[anti-vpn]`: Optional asynchronous IPv4 provider checks.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Ask a provider whether a new IPv4 address is a proxy or VPN. The answer is cached, so the first login from an address is not held back: it is judged when the answer is known. You supply the provider and its key. |
+| `url` | `""` | https:// address with {ip} where the address goes, key included. Example: "https://provider.example/check/{ip}?key=..." |
+| `match` | `""` | Text that appears in the provider's answer when the address is a proxy, e.g. "\"proxy\":true". |
+| `score` | `60` | Score added to the origin when the answer says proxy. |
+| `deny` | `false` | Refuse the login at once instead of adding score. |
+| `queries-per-minute` | `30` | Maximum external anti-VPN lookups per minute. |
+| `cache-hours` | `24` | Hours to retain provider answers. |
+
+### geo
+
+`[geo]`: Filtering with an operator-supplied country/ASN database.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `database` | `""` | Block origins by country or network using your own database: a text file of lines "cidr,country,asn" (for example "203.0.113.0/24,US,64500"), which you can export from the database you license. Nothing is bundled. |
+| `blocked-countries` | `[]` | Country codes to refuse. |
+| `blocked-asns` | `[]` | ASNs to refuse. |
+| `only-in-attack` | `false` | Apply only while attack mode is active. |
+
+### bedrock
+
+`[bedrock]`: Bedrock-specific protection sharing Java reputation and attack state.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Apply the antibot to Bedrock players too. They share the reputation, bans and attack mode of Java players by address, and their server-list pings and new sessions are throttled by the same rules. |
+| `packets-per-second` | `1500` | Most Bedrock packets a client may send each second once it is playing. 0 turns the limit off. |
+| `login-seconds` | `15` | Seconds a Bedrock client has from its session opening to finish logging in. |
+| `connect-score` | `2` | Score added to an address each time it opens a new Bedrock session, so a flood from one address gets banned. |
+| `half-open-per-second` | `200` | While attack mode is on, new Bedrock sessions per second accepted from all addresses together; 0 turns the limit off. |
+| `xbox-in-attack` | `true` | While attack mode is on, only let in Bedrock players whose identity Xbox Live signed. |
+
+### exploits
+
+`[exploits]`: Scan hostile text, plugin payloads, item NBT and request floods.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Refuse text and payloads built to attack a backend (Log4j lookups, oversized or abusive plugin messages, spam of tab-complete and commands). The proxy is the only point in front of every backend, so this is the place for it. |
+| `patterns` | `["${*:", "jndi:", "ldap:", "rmi:", "dns:"]` | Case-insensitive texts searched anywhere in the message; * matches any run of characters. A match kicks the player and adds score to the origin. The search is linear, so a long message cannot make it slow. |
+| `scan-chat` | `true` | Which text is searched. |
+| `scan-commands` | `true` | Scan command text for exploit patterns. |
+| `scan-names` | `true` | Scan player names for exploit patterns. |
+| `scan-plugin-payloads` | `true` | Scan client plugin-message payloads for exploit patterns. |
+| `max-plugin-payload-bytes` | `8192` | Largest plugin message from a client, in bytes (0 turns the limit off), and channels no client may use. |
+| `blocked-channels` | `[]` | Plugin-message channels clients may not use. |
+| `max-nbt-depth` | `24` | Maximum inspected item NBT nesting depth; 0 disables. |
+| `max-nbt-keys` | `512` | Maximum total compound keys in an inspected item payload. |
+| `max-nbt-bytes` | `32768` | Maximum combined inspected NBT name/value bytes. |
+| `max-tab-completes-per-second` | `8` | Maximum completion-request rate; 0 disables. |
+| `max-commands-per-second` | `15` | Maximum command rate before exploit refusal; 0 disables. |
+| `score` | `100` | Points added to the origin's score for each of these refusals. |
+
+### verified
+
+`[verified]`: Verification lifetime, persistence and cross-proxy sharing.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ttl-hours` | `24` | Hours a player that passed the limbo is trusted from the same origin, so they pass straight through next time. 0 verifies nobody. A plugin can add players to and remove them from this list. |
+| `max-entries` | `100000` | Maximum retained verification entries. |
+| `persist` | `true` | Keep the list in players.db so it survives a restart. Expired rows are deleted in batches of purge-batch every purge-seconds, and the table never holds more than max-entries rows. |
+| `purge-seconds` | `300` | Seconds between expired-verification purge runs. |
+| `purge-batch` | `500` | Maximum expired entries removed per purge. |
+| `sync-directory` | `""` | Share the list between proxies through a directory both can read and write (a mounted volume, rsync or Syncthing). Each proxy writes only the entries it verified itself to <sync-id>.verified there, atomically, and reads the files of the others every sync-seconds. Entries learned this way are never written back out, never outlive ttl-hours and are not removed by an unverify elsewhere. Whoever can write that directory can verify any name, so protect it like a key. Empty turns it off. sync-id defaults to this machine's host name and must differ between proxies on one machine. |
+| `sync-seconds` | `30` | Seconds between shared-directory synchronisations. |
+| `sync-id` | `""` | Distinct identity of this proxy in the shared directory; empty uses the hostname. |
+
+## Troubleshooting false positives
+
+Start with `antibot status` and the reputation list, then check whether players share an address behind a tunnel or NAT. Verify that trusted PROXY headers are configured before lowering origin thresholds. Inspect timeouts and latency checks for players on poor connections, and prefer a captcha fallback to repeatedly banning legitimate clients.
+
+To test a change, use a controlled client, briefly force attack mode if needed, and return to `antibot attack auto`. Keep a console session available so a mistake in player permissions does not prevent recovery. Do not test blocklists by adding your only administration address.
+
+If the issue is a normal packet-rate kick or login admission failure, inspect [configuration limits](/docs/proxy/configuration#packet-limits) as well: clearing an antibot ban does not remove those limits.

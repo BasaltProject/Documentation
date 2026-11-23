@@ -1,0 +1,51 @@
+---
+title: Performance
+description: Keep proxy callbacks and routing decisions within budget, control packet interception and measure network workloads.
+group: Plugin basics
+---
+
+A proxy plugin shares callback time with other plugins and can delay player admission or packet relay. Optimise the work that a callback actually performs, rather than relying on a language ranking or a server tick benchmark.
+
+## Budgets
+
+| Work | Limit/model |
+|---|---|
+| Initialisation | 2 seconds |
+| Ordinary event, command or task callback | 50 ms wall-clock budget |
+| Decided login/routing/chat event | The connection waits for a bounded decision; ordinary callback budgets still apply |
+| Packet listener | Configured packet-timeout-ms for acquiring serialisation and executing the callback, default 25 ms |
+| Plugin event queue | Bounded by queue-size, default 256 |
+
+A timeout interrupts and disables a plugin until reload. Repeated traps also disable it. Queue pressure may drop work or cause a decision to proceed without the plugin; increasing the queue does not make a slow handler faster.
+
+## Keep decisions short
+
+Compute policy before the decision when possible. A server-selection handler should consult an already available map or counter and return a destination. Avoid scanning every online player for every login, repeatedly re-reading configuration, or formatting large messages while the connection waits.
+
+Ordinary callbacks run serially on the plugin thread. A long repeating task delays unrelated callbacks and decisions from other plugins. Break optional maintenance into bounded batches and use scheduled tasks to continue later.
+
+## Avoid unnecessary boundary calls
+
+Each SDK operation crosses the WASM host boundary. Read a field once per callback when reusing it, collect structured fields through a value reply when appropriate, and update client UI only when its state changed. A task that loops over all players every 50 ms multiplies the work by both player count and update frequency.
+
+Use the built-in [interface files](/docs/proxy/interface) for static presentation and the native [groups](/docs/proxy/groups-and-permissions) for static permissions. A plugin is useful when there is custom logic to run, not merely because the operator needs a MOTD.
+
+## Packet interception
+
+Register only relevant directions, phases and names, and use the smallest payload work needed. Packets larger than packet-max-kib bypass listeners. Fail-closed registrations and ordinary listener failures have different outcomes, so test both under contention.
+
+Packet callbacks run on a network caller under serialisation with other WASM callbacks. A heavy packet handler can therefore affect both its connection and plugin scheduling. Do not use packet interception for work already expressible as a higher-level event.
+
+## Memory and caching
+
+Modules are compiled and cached locally. Ship portable `.wasm` inside `.bppkg`, not runtime-specific compiled output. C/C++ SDK objects use explicit buffers; size them for real replies and handle insufficient capacity. Large temporary arrays consume stack even if the module's total memory ceiling is larger.
+
+Use player/global storage for durable state and ordinary module memory for rebuildable caches. A plugin reload creates new instances and loses caches. A saved key survives; a player or context handle saved in that key does not become valid in a future session.
+
+## Measure the right workload
+
+Measure startup and first compilation separately from steady-state callbacks. Include realistic online counts, login bursts, backend changes, reconnects and plugin reload. Track proxy status, rejected connections, queue warnings and process CPU/memory alongside callback cost.
+
+Compare language variants only with the same algorithm, inputs, runtime, compiler settings and host calls. The shared WASM runtime's compute benchmarks do not establish a throughput figure for a network proxy or for a plugin that spends most of its time crossing the host boundary.
+
+For exact scheduling, error and failure semantics, see [Execution model](/docs/proxy/wasm-execution-model).

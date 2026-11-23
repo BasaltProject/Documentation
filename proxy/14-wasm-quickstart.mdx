@@ -1,0 +1,114 @@
+---
+title: Quickstart
+description: Create, build, check, install and run a first WASM plugin on Basalt Proxy.
+group: Plugin basics
+---
+
+## Quickstart
+
+Install Kiln (see [Kiln](/docs/proxy/wasm-kiln)), then create, build and pack a plugin for the proxy:
+
+```bash
+kiln new greeter --lang cpp --target proxy
+kiln build greeter
+kiln pack greeter
+```
+
+`kiln new` writes a ready-to-run plugin into `greeter/`: a manifest (`plugin.toml`), the code (`src/main.cpp`), a
+configuration file and a language file under `resources/`. The first build downloads the compiler for the language if
+it is not installed yet. `kiln pack` writes `greeter/build/greeter-0.1.0.bppkg`, a package ready for the proxy.
+
+Copy the package into the `plugins` folder next to where you run the proxy and start it (or type `reload` in the
+console of a running proxy):
+
+```
+[INFO] [Plugin greeter]: wrote plugins/greeter/config.toml
+[INFO] [Plugin greeter]: wrote plugins/greeter/lang/en_us.toml
+[INFO] [Plugin greeter]: starting up
+[INFO] [Proxy]: Loaded 1 plugin(s).
+```
+
+Type `plugins` in the console to list what loaded (in game, `/plugins` needs the `basalt.command.plugins` permission):
+
+```
+Plugins (1): greeter
+```
+
+The starting point greets a player on join, counts their visits, adds a `greeter hello` command and announces itself on
+a timer. Run `greeter hello` in the console and the reply appears in the log under the plugin's name.
+
+## A first plugin
+
+Replace `src/main.cpp` with a plugin that greets every player who joins and answers a command:
+
+```cpp
+#include <basalt/proxy.hpp>
+
+using namespace basalt::proxy;
+
+static void on_join(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    core::Args args;
+    args.add("name", players::player_name(player).c_str());
+    players::send(player, "@welcome", &args);
+}
+
+static void hello(core::Ctx ctx) {
+    const core::Player player = events::event_player(ctx);
+    core::Args args;
+    args.add("name", commands::command_source_name(ctx).c_str());
+    args.add("server", player == 0 ? "the console" : players::player_server(player).c_str());
+    commands::command_reply(ctx, "@hello", &args);
+}
+
+void plugin_init() {
+    log::log_info("greeter is ready");
+    events::on("player.join", core::kNormal, on_join);
+    commands::command("greeter hello", "", hello);
+}
+```
+
+The text lives in `resources/lang/en_us.toml`:
+
+```toml
+welcome = "<green>Welcome to the network, <yellow>{name}</yellow>!"
+hello = "<gray>Hello, {name}. You are on <aqua>{server}</aqua>."
+```
+
+Build, pack, copy the package over the old one and run `reload`. A player who joins gets the welcome line, and
+`/greeter hello` answers with their current backend.
+
+What the code does:
+
+- `plugin_init` is where the plugin starts. The proxy calls it once when the plugin loads, and everything you want to
+  react to is registered there.
+- `events::on` listens to an event by name and gives your function a `ctx`, the context of that one call. It is only
+  valid while the function runs. `events::event_player(ctx)` turns it into a player handle, or 0 when the event is not
+  about a connected player.
+- Handlers are plain functions. They cannot capture variables, so keep what they need in the plugin's data, in the
+  configuration or in `static` variables.
+- A text that starts with `@` is a key of the language file, anything else is written directly in
+  [MiniMessage](https://docs.advntr.dev/minimessage/) (`<green>Hello</green>`). `core::Args` fills the `{name}` fields.
+  See [Text](/docs/proxy/wasm-text).
+- `commands::command("greeter hello", "", hello)` registers the words `greeter hello`. The empty second argument means
+  anyone may run it. The reply goes to the player as a chat line, and to the proxy log when the console ran it.
+
+
+## Verify the installation
+
+Run `kiln check greeter` before packing, copy the `.bppkg` into the working directory's `plugins/`, then run `reload` in the proxy console. Use `plugins` to confirm loading, run `greeter hello`, and join through the proxy to trigger the welcome handler. Reload does not reconnect existing players or replay every join event.
+
+If a package is skipped, read the first message naming its id. Check the target, API/ABI versions, manifest, dependencies and required grants. Copying a `.bspkg` from a server does not turn it into a proxy package.
+
+## Add state or permissions
+
+The example uses no privileged operator grants. If your plugin will run console commands, use packets or communicate over the network API, declare the capability in [the manifest](/docs/proxy/wasm-plugin-toml) and have the operator grant it in `proxy.toml`. Grant changes require restart; replacing a package only requires plugin reload.
+
+For persistent player values declare `players_data = true`. Choose a named permission when registering commands intended for staff, then grant it through [proxy groups](/docs/proxy/groups-and-permissions).
+
+## Continue
+
+Use [Kiln](/docs/proxy/wasm-kiln) for the build/check/pack cycle, [your language guide](/docs/proxy/wasm-lang-cpp) for source layout and conventions, and [The SDK](/docs/proxy/wasm-sdk) for the API map. The [execution model](/docs/proxy/wasm-execution-model) explains callback limits and reload behaviour.

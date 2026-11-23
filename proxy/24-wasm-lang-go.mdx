@@ -1,0 +1,149 @@
+---
+title: Go (TinyGo)
+description: Write, build and package a Basalt Proxy plugin in Go (TinyGo), with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+Go plugins use TinyGo and SDK packages under basaltmc.org/sdk/proxy. The result is a WASM module rather than a standalone Go process. Use the generated callback conventions instead of assuming goroutines or host I/O can run like a normal application.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `tinygo` and a `go` already on your `PATH` when you have both, and otherwise downloads TinyGo
+0.44 and Go 1.26 (about 180 and 64 MB, 1.5 GB unpacked) into a per-user cache on the first build, on Linux, macOS and
+Windows. See [Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang go --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  go.mod
+  main.go
+  resources/config.toml
+  resources/lang/en_us.toml
+```
+
+There is no `src/` folder: the Go package is the project folder, `package main`, and every `.go` file in it is part of the
+plugin. `go.mod` is plain (`module basalt.plugin/greeter`); Kiln supplies the SDK through a generated `go.work` that lives
+under `build/.kiln/go/`, outside your own files. The module is written to `build/plugin.wasm`.
+
+An editor needs that same workspace to resolve the SDK imports. Point it at the file, for example with
+`GOWORK=$PWD/build/.kiln/go/go.work` in the environment of the editor, after the first build.
+
+## The entry point
+
+A package-level `init` function calls `core.Init` with the function that registers everything, and `main` stays empty:
+
+```go
+func init() { core.Init(setup) }
+
+func main() {}
+```
+
+The proxy runs Go's package initialisation first, and then calls `setup` once after the module loads. That is where you
+register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `main.go`.
+
+```go
+package main
+
+import (
+	"basaltmc.org/sdk/proxy/commands"
+	"basaltmc.org/sdk/proxy/core"
+	"basaltmc.org/sdk/proxy/events"
+	"basaltmc.org/sdk/proxy/log"
+	"basaltmc.org/sdk/proxy/players"
+)
+
+func init() { core.Init(setup) }
+
+func main() {}
+
+func setup() {
+	log.LogInfo("greeter loaded")
+	events.On("player.join", core.Normal, onJoin)
+	commands.Command("greeter hello [times: int 1..5]", "", hello)
+}
+
+func onJoin(ctx core.Ctx) {
+	player := events.EventPlayer(ctx)
+	if player == 0 {
+		return
+	}
+	name, _ := players.PlayerName(player)
+	players.Send(player, "<green>Welcome, {name}!", core.NewArgs().Add("name", name))
+}
+
+func hello(ctx core.Ctx) {
+	times, ok := commands.CommandArgI64(ctx, "times")
+	if !ok {
+		times = 1
+	}
+	for i := int64(0); i < times; i++ {
+		commands.CommandReply(ctx, "<yellow>Hello from greeter!", nil)
+	}
+}
+```
+
+`events.On` listens to an event, see [Events](/docs/proxy/wasm-events); `commands.Command` registers a command from a spec
+such as `greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Go spelling is in [The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: one package per area, `basaltmc.org/sdk/proxy/<area>`, imported by its own name. Functions are
+  the C++ name in PascalCase: `players::send` is `players.Send`, `players::player_name` is `players.PlayerName`,
+  `commands::command_reply` is `commands.CommandReply`, `events::event_player` is `events.EventPlayer`.
+- **Strings in** are `string`.
+- **Strings out** come with a flag: `(string, bool)`, with `false` when the call failed.
+- **Optional arguments** are `nil` pointers: pass `nil` for no `*core.Args`. A number that may be absent comes back as
+  `(int64, bool)`.
+- **Handles** are `core.Player` and `core.Ctx`, both `int32`. `0` is never a valid handle. `players.PlayersOnline()`
+  returns a `[]core.Player`.
+- **`Args`** is `core.NewArgs().Add(key, value)`, which returns the `*Args` so pairs chain.
+- **Constants** are `core.Lowest` to `core.Highest` for priorities and `core.Debug` to `core.Error` for levels.
+- **Handlers** are `func(core.Ctx)`: named functions, method values or closures, which can capture what they need.
+
+## Building
+
+```bash
+kiln build
+```
+
+runs `tinygo build` for `wasm-unknown` with `-opt=z` and no scheduler, writes `build/plugin.wasm` and then checks it. `kiln pack` writes `build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see
+[Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |

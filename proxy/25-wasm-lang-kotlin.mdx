@@ -1,0 +1,135 @@
+---
+title: Kotlin
+description: Write, build and package a Basalt Proxy plugin in Kotlin, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+Kotlin/Wasm provides nullable values, function references and Kotlin language features while compiling to a proxy WASM module. Its compiler emits WebAssembly GC features, so check runtime support, especially on FreeBSD. Java tools used by Kiln at build time do not become an external JVM requirement for a finished WASM plugin.
+
+## What Kiln installs
+
+Nothing by hand. Kiln downloads the Kotlin compiler 2.4 on the first build (about 90 MB), and a JRE 21 (about 50 MB, 253 MB
+unpacked in all) unless a `java` of version 17 or newer is on your `PATH`, into a per-user cache on Linux, macOS and
+Windows. See [Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang kotlin --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/org/basaltmc/proxy/example/main.kt
+```
+
+Every `.kt` file under `src/` is compiled together. The folders follow the package, which is a habit and not a
+requirement. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is
+rebuilt each time.
+
+## The entry point
+
+Write a top-level `fun init()` in a file that starts with a `package` line. Kiln finds it by searching your sources for
+`fun init()`, reads the package of that file, and generates the exports the proxy needs and a call to it. `init` runs
+once, after the module loads; that is where you register listeners, commands and tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `main.kt`.
+
+```kotlin
+package org.basaltmc.proxy.example
+
+import org.basaltmc.proxy.commands.command
+import org.basaltmc.proxy.commands.commandArgI64
+import org.basaltmc.proxy.commands.commandReply
+import org.basaltmc.proxy.core.Args
+import org.basaltmc.proxy.core.Ctx
+import org.basaltmc.proxy.core.Priority
+import org.basaltmc.proxy.events.eventPlayer
+import org.basaltmc.proxy.events.on
+import org.basaltmc.proxy.log.logInfo
+import org.basaltmc.proxy.players.playerName
+import org.basaltmc.proxy.players.send
+
+fun onJoin(ctx: Ctx) {
+    val player = eventPlayer(ctx)
+    if (player == 0) return
+    val name = playerName(player) ?: "player"
+    send(player, "<green>Welcome, {name}!", Args().add("name", name))
+}
+
+fun hello(ctx: Ctx) {
+    val times = commandArgI64(ctx, "times") ?: 1L
+    for (i in 0 until times) commandReply(ctx, "<yellow>Hello from greeter!")
+}
+
+fun init() {
+    logInfo("greeter loaded")
+    on("player.join", Priority.NORMAL, ::onJoin)
+    command("greeter hello [times: int 1..5]", "", ::hello)
+}
+```
+
+`on` listens to an event, see [Events](/docs/proxy/wasm-events); `command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the Kotlin spelling is in [The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: one package per area, `org.basaltmc.proxy.<area>`, holding top-level functions that you import by
+  name. Functions are the C++ name in camelCase: `players::send` is `send`, `players::player_name` is `playerName`,
+  `commands::command_reply` is `commandReply`, `log::log_info` is `logInfo`. Proxy-specific operations use the `hud`, `interaction`, `admin` and `network` packages.
+- **Strings in** are `String`.
+- **Strings out** are `String?`, `null` when the call failed.
+- **Optional arguments** are default parameters: `commandReply(ctx, text)` and `commandReply(ctx, text, args)`. A number
+  that may be absent comes back as `Long?`.
+- **Handles** are `Player` and `Ctx`, both aliases of `Int`. `0` is never a valid handle. `playersOnline()` returns a
+  `List<Player>`.
+- **`Args`** is `Args().add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.LOWEST` to `Priority.HIGHEST` and `Level.DEBUG` to `Level.ERROR`.
+- **Handlers** are `(Ctx) -> Unit`: function references such as `::onJoin`, or lambdas, which can capture variables. The
+  repeating-task call takes a trailing lambda, `every(period, period) { ... }`.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles your sources and the SDK with the Kotlin/Wasm compiler for WASI, links the module, writes `build/plugin.wasm` and
+checks it. `kiln pack` writes
+`build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see [Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |
+
+Kotlin/Wasm needs runtime support for WebAssembly GC. Check the target runtime before choosing it, particularly FreeBSD.

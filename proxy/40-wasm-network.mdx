@@ -1,14 +1,14 @@
 ---
 title: Plugin messages, packets and antibot
 description: Talk to backends and clients over plugin messaging channels, see and change raw packets as the proxy relays them, and control the antibot from a proxy plugin.
-group: Plugins
+group: Plugin API
 ---
 
 A proxy sits in the middle of every connection, and this page is about the parts of that middle a plugin can reach. **Plugin messages** are the channel Minecraft offers for custom data between a server and a client, which a plugin can listen to and answer. **Raw packets** go one level lower: a plugin can see each packet the proxy relays, change it, drop it, or send one of its own. The **antibot** is the proxy's defence against floods of fake players, which a plugin can read and steer.
 
 These are strong tools, so a plugin has to ask for them in its manifest and the proxy owner has to grant them under `[plugins.allow]`. Read [Capabilities](#capabilities) first.
 
-In tables the functions are written as `network::channel_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+In tables the functions are written as `network::channel_register`, the way they are spelled in C++. Other languages use their own casing, see [The SDK](/docs/proxy/wasm-sdk).
 
 ## Capabilities
 
@@ -368,3 +368,9 @@ void plugin_init() {
 | [Backends, permissions and administration](/docs/proxy/wasm-admin) | The `commands` power and the rest of the administration calls. |
 | [Players and backends](/docs/proxy/wasm-players) | Player handles, which the send and receive calls take. |
 | [plugin.toml](/docs/proxy/wasm-plugin-toml) | Declaring capabilities in the manifest. |
+
+## Configure protection without a plugin
+
+The complete operator reference is [Antibot](/docs/proxy/antibot). Use it for attack thresholds, limbo policy, blocklists, external data, Bedrock checks and verification sharing. Imports here add programmatic decisions and inspection; they do not replace admission budgets or `limits.toml`.
+
+For backend BungeeCord channel permissions and supported subcommands, see [Routing](/docs/proxy/backends-and-routing#bungeecord-messages). Keep that reserved channel separate from your own registered channels.

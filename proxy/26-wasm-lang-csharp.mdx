@@ -1,0 +1,154 @@
+---
+title: C#
+description: Write, build and package a Basalt Proxy plugin in C#, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+C# sources compile to a WASM module with the Basalt.Proxy SDK. This is separate from the optional Java plugin adapters and from a .NET service running beside the proxy. Account for managed-runtime module and memory overhead, and use the compiler/runtime features supported by the Kiln target.
+
+## What Kiln installs
+
+Nothing by hand. Kiln downloads the .NET 10 SDK, the NativeAOT-LLVM compiler packages and the WASI SDK on the first build
+(about 243, 44 and 114 MB, 1.1 GB unpacked), into a per-user cache. It does not use a .NET SDK from your machine. On any
+platform other than Linux x64 the build stops with a message saying so. See [Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang csharp --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/Main.cs
+```
+
+Every `.cs` file under `src/` is compiled together. There is no project file to write: Kiln generates one, with implicit
+usings and nullable reference types off, so each file lists its own `using` lines. The module is written to
+`build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and is rebuilt each time.
+
+## The entry point
+
+Write a `public static class Plugin` with a `public static void Init()`, inside a namespace. Kiln finds the class by the
+text `class Plugin` in your sources, takes the namespace from that file, and generates the exports the proxy needs and a
+call to `Plugin.Init()`. `Init` runs once, after the module loads; that is where you register listeners, commands and
+tasks.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/Main.cs`.
+
+```csharp
+using Basalt.Proxy.Commands;
+using Basalt.Proxy.Core;
+using Basalt.Proxy.Events;
+using Basalt.Proxy.Log;
+using Basalt.Proxy.Players;
+
+namespace Greeter;
+
+public static class Plugin
+{
+    static void OnJoin(int ctx)
+    {
+        int player = EventBus.EventPlayer(ctx);
+        if (player == 0)
+        {
+            return;
+        }
+        string name = Directory.PlayerName(player) ?? "player";
+        Directory.Send(player, "<green>Welcome, {name}!", new Args().Add("name", name));
+    }
+
+    static void Hello(int ctx)
+    {
+        long times = Arguments.I64(ctx, "times") ?? 1;
+        for (long i = 0; i < times; i++)
+        {
+            Sender.Reply(ctx, "<yellow>Hello from greeter!");
+        }
+    }
+
+    public static void Init()
+    {
+        Logger.LogInfo("greeter loaded");
+        EventBus.On("player.join", Priority.Normal, OnJoin);
+        Registry.Register("greeter hello [times: int 1..5]", "", Hello);
+    }
+}
+```
+
+`EventBus.On` listens to an event, see [Events](/docs/proxy/wasm-events); `Registry.Register` registers a command from a
+spec such as `greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Pages in this section write calls in the C++ form (`players::send`); the C# spelling is in [The SDK](/docs/proxy/wasm-sdk).
+
+- **Where things live**: a namespace per area, `Basalt.Proxy.<Area>`, holding one static class named for its job, not for
+  the area. Methods are the C++ name in PascalCase. The classes are:
+
+  | Area | Namespace and class |
+  |---|---|
+  | `core` | `Basalt.Proxy.Core`: `Args`, `Priority`, `Level`, `Handler` |
+  | `log` | `Basalt.Proxy.Log.Logger` |
+  | `config` | `Basalt.Proxy.Config.Settings` |
+  | `text` | `Basalt.Proxy.Text.Translations` |
+  | `players` | `Basalt.Proxy.Players.Directory` |
+  | `data` | `Basalt.Proxy.Data.PlayerStore` |
+  | `events` | `Basalt.Proxy.Events.EventBus` |
+  | `commands` | `Basalt.Proxy.Commands`: `Registry` (register), `Arguments` (read arguments), `Sender` (reply, name, console) |
+  | `tasks` | `Basalt.Proxy.Tasks.Scheduler` |
+  | `hud` | `Basalt.Proxy.Hud.Displays` |
+  | `values` | `Basalt.Proxy.Values`: `ValueWriter`, `Value`, `ValueIter` |
+
+  So `players::send` is `Directory.Send`, `players::player_name` is `Directory.PlayerName`, `commands::command_reply` is
+  `Sender.Reply` and `config::config_i64` is `Settings.ConfigI64`.
+- **Strings in** are `string`.
+- **Strings out** are `string`, `null` when the call failed. A number that may be absent is `long?`.
+- **Optional arguments** are default parameters: `Sender.Reply(ctx, text)` and `Sender.Reply(ctx, text, args)`.
+- **Handles** are plain `int`. `0` is never a valid handle. `Directory.PlayersOnline()` returns an `int[]`.
+- **`Args`** is `new Args().Add(key, value)`, which returns the `Args` so pairs chain.
+- **Constants** are `Priority.Lowest` to `Priority.Highest` and `Level.Debug` to `Level.Error`.
+- **Handlers** are the delegate `Handler`, `void (int ctx)`: a method group such as `OnJoin`, or a lambda
+  (`ctx => { ... }`), which can capture variables.
+
+## Building
+
+```bash
+kiln build
+```
+
+generates a project for the NativeAOT-LLVM compiler, publishes it for `wasi-wasm`, writes `build/plugin.wasm` and checks
+it. `kiln pack` writes
+`build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see [Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |

@@ -1,0 +1,84 @@
+---
+title: The SDK
+description: Proxy SDK areas, language imports, callback types, strings, values, handles and error conventions.
+group: Plugin API
+---
+
+The SDK ships with Kiln and is unpacked under `build/.kiln/` during a build. It wraps the host ABI in each language's naming, string and callback conventions. The host operations are the same; source-level conveniences and return types differ.
+
+## Areas
+
+| Area | Responsibility | Reference |
+|---|---|---|
+| `core` | Context/player handles, arguments, priorities and shared types | This page |
+| `log` | Plugin-prefixed logging | This page |
+| `events` | Events, decisions, field access and proxy extensions | [Events](/docs/proxy/wasm-events) |
+| `commands` | Command registration, source, arguments and replies | [Commands](/docs/proxy/wasm-commands) |
+| `tasks` | Delayed and repeating callbacks | [Tasks](/docs/proxy/wasm-tasks) |
+| `config` | Typed plugin configuration reads | [Storage](/docs/proxy/wasm-storage) |
+| `data` | Typed player data by connected-player handle | [Storage](/docs/proxy/wasm-storage) |
+| `text` | Language keys and named arguments | [Text](/docs/proxy/wasm-text) |
+| `values` | Structured data writers/readers | [Values](/docs/proxy/wasm-values) |
+| `players` | Proxy players, backend moves and basic messages | [Players](/docs/proxy/wasm-players) |
+| `hud` | Boss bars, sidebar, tab list and client HUD | [HUD](/docs/proxy/wasm-hud) |
+| `interaction` | Dialogs, packs, cookies, transfers and lookup | [Interaction](/docs/proxy/wasm-interaction) |
+| `admin` | Backend registration, permissions, global/offline data and console | [Administration](/docs/proxy/wasm-admin) |
+| `network` | Channels, packets and antibot integration | [Network](/docs/proxy/wasm-network) |
+
+Proxy does not expose the server's world, entity, item or menu API. A similar concept can also live under another area; for example, proxy global storage is under admin, not the server's services area.
+
+## Imports by language
+
+| Language | Root/example |
+|---|---|
+| [C](/docs/proxy/wasm-lang-c) | `<basalt/proxy.h>` or `<basalt/proxy/events.h>` |
+| [C++](/docs/proxy/wasm-lang-cpp) | `<basalt/proxy.hpp>` and `basalt::proxy::events` |
+| [Zig](/docs/proxy/wasm-lang-zig) | `@import("basalt_proxy")` |
+| [Rust](/docs/proxy/wasm-lang-rust) | `basalt_proxy::events` |
+| [AssemblyScript](/docs/proxy/wasm-lang-assemblyscript) | `basalt-proxy/events` |
+| [Go](/docs/proxy/wasm-lang-go) | `basaltmc.org/sdk/proxy/events` |
+| [Kotlin](/docs/proxy/wasm-lang-kotlin) | `org.basaltmc.proxy.events` |
+| [C#](/docs/proxy/wasm-lang-csharp) | `Basalt.Proxy.Events.EventBus` |
+| [Java](/docs/proxy/wasm-lang-java) | `org.basaltmc.proxy.events.EventBus` |
+
+The C/C++ umbrella headers and Zig root bring areas together. Other languages import packages/classes they use. API pages use C++ names; each language guide gives the actual conventions for entry points, strings, callbacks and optional values.
+
+## Shared types
+
+`core::Player` and `core::Ctx` are integer handles, with 0 invalid. A context identifies the current callback and expires when it returns. A player handle survives backend changes but expires when the player leaves the proxy. Reconnecting creates a new handle.
+
+C++ handlers are plain functions taking `core::Ctx`. Register them in `plugin_init`. Other languages use their equivalent `init` entry point and callback type; Kiln supplies the exported trampoline. Do not export a standalone operating-system main function as a substitute.
+
+Priorities run from lowest to highest for event processing. The default priority is `core::kNormal`. Permission-provider priorities have their own ordering, described on [Permissions](/docs/proxy/wasm-permissions), and should not be confused with event priorities.
+
+## Strings and buffers
+
+C/C++ input strings are NUL-terminated. Output APIs often take an explicit buffer/capacity and return a length or error; a length is not automatically a NUL-terminated string. The C++ `Text<N>` helper exposes `ok()`, `length` and `c_str()` and can truncate long replies to its fixed capacity.
+
+Managed SDKs generally return their language's string/optional type and own the output allocation. Zig exposes slices and caller-selected buffers. Do not carry pointers into temporary output buffers into another callback.
+
+Some operations return status 0, some a positive handle/count, and others 1/0 boolean decisions. A successful send means work was accepted; it does not prove the client displayed it. Read the particular function's contract.
+
+## Errors
+
+| Result | Meaning |
+|---|---|
+| `BASALT_OK` / 0 | Success for status-returning calls. |
+| `BASALT_ERR_ABSENT` | No value, missing optional argument or no provider decision. |
+| `BASALT_ERR_INVALID` | Invalid input, type, buffer or unsupported use. |
+| `BASALT_ERR_STALE` | A context/player/request is no longer valid. |
+| `BASALT_ERR_DENIED` | Required capability or operator grant is missing. |
+
+A negative return code is an operation result, not a trap. Test it before using output. An out-of-bounds access or timeout is a module failure and follows the [execution model](/docs/proxy/wasm-execution-model).
+
+## Named arguments and logging
+
+Use `core::Args` to carry replacements such as `{name}` to message calls. In C++ it supports `args.add("name", value)`. Passing no args is different from assuming a proxy placeholder is automatically expanded; see [Text](/docs/proxy/wasm-text).
+
+`log::log_debug`, `log_info`, `log_warn` and `log_error` emit plugin-prefixed lines. Use operational logs sparingly, especially in packet callbacks or while rejecting a flood. A log line per packet is itself a workload.
+
+## Host ABI
+
+Modules import shared functions from `basalt` and proxy-domain functions from `basalt_proxy`. SDK namespaces hide that split. The ABI uses wasm32 offsets into module memory, not native pointers; never persist an offset or host handle as a reusable identifier across reloads.
+
+The [ABI reference](/docs/proxy/wasm-abi) describes imports and exports. Prefer rebuilding with the matching Kiln SDK instead of maintaining generated SDK files manually inside your project.

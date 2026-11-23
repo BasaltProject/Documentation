@@ -1,0 +1,132 @@
+---
+title: Operations
+description: Monitor a running proxy, tune resource limits, reload safely, back up state and diagnose connection failures.
+group: Administration
+---
+
+Start with a working single backend, keep its port private, and add routing, protection and plugins incrementally. `status`, `glist`, `antibot status` and the logs answer different questions: process pressure, topology, protection and individual failures.
+
+## Logging
+
+Console logging is always available. With `[logging] file = true`, the proxy also writes `.basalt/logs/latest.log`. On the next start it archives the previous run under `.basalt/logs/archive/<date>-<n>.log.gz`. `keep-days` defaults to 14, with 0 keeping archives indefinitely.
+
+The default level is info; trace, debug, warn and error are also accepted. Terminal colour follows `auto`, `always` or `never`. Logging settings require restart. A service needs a stable working directory so it keeps finding the same configuration, keys and database.
+
+During an attack the antibot can suppress per-refusal logs and emit a summary instead. This is configured in `antibot.toml`, independently of log severity. Use its counters and optional webhook rather than expecting a line for every refused origin.
+
+## Statistics
+
+`status` reports:
+
+| Field | Meaning |
+|---|---|
+| Sessions | Open runtime connections, not just players in game. |
+| Retained buffer bytes | Network memory held against the global buffer budget. |
+| Accepted / rejected | Connections admitted or refused under resource/admission limits. |
+| Bytes toward clients / servers | Relayed traffic since startup. |
+| Logins / server changes | Completed logins and moves. |
+| Translated by servers / proxy | Sessions using delegated or proxy-side translation. |
+| Ended in handshake/status, login, configuration, play | Connection-end phases, useful for locating where failures cluster. |
+| CPU seconds / peak memory | Process usage on supported Unix platforms. |
+| Bedrock players | Additional count when Bedrock is enabled. |
+
+`glist` shows players per backend and health/group information. `antibot status` adds attack state, refusals, limbo results and exploit counts. The [HTTP API](/docs/proxy/remote-api) exposes structured counters, server state and sessions for a panel; there is no Prometheus-format endpoint to scrape.
+
+## Tune the limiting resource
+
+| Setting | What to investigate first |
+|---|---|
+| `runtime.io-loops` | Session-processing load and CPU distribution. 0 selects 2..16 loops from available cores. |
+| `runtime.workers` / `max-pending-work` | Queued DNS/authentication work during login bursts. |
+| `runtime.max-sessions` | Open-session pressure, including pings and unfinished logins. |
+| `runtime.max-buffered-bytes` | Global retained buffer pressure; it is not a total RSS cap. |
+| `runtime.session-buffer-bytes` | One slow session retaining too much output. |
+| `runtime.high-water-bytes` / `low-water-bytes` | Backpressure thresholds for pausing/resuming reads. |
+| `network.compression-threshold` | CPU/bandwidth balance; -1 disables client compression. |
+| `admission.*` | Login/status bursts and shared-origin limits. |
+| `limits.toml` | Excess packet, chat or command traffic after login. |
+| `plugins.queue-size` / callback work | Dropped plugin work or slow decisions; fix slow callbacks before expanding queues. |
+
+Raise a limit because measurements show it is the bottleneck. More workers do not fix an unreachable authentication service, and a larger packet buffer does not make a stalled client read faster. Slow peers are bounded by deadlines and backpressure instead of receiving unlimited memory.
+
+The number shown in the multiplayer list is presentation in `server_list.toml`, separate from `max-sessions`. Changing advertised slots does not enlarge the real cap.
+
+## Reload and restart
+
+`reload`, SIGHUP on supported Unix systems, the optional file watcher and the HTTP reload action use the same configuration path. See the [reload matrix](/docs/proxy/configuration#hot-reload) before changing listener or host settings.
+
+Routing and per-session policy can be snapshotted by an existing connection. A successful reload need not migrate every player to a new route. Restart-only differences are reported. Plugins are stopped and loaded again; state held only in plugin memory is lost.
+
+Before a restart, tell players what will happen, save relevant plugin state and stop with `stop`, SIGTERM or Ctrl+C. Restarting the proxy disconnects public sessions even when all backends remain running.
+
+## Backups and upgrades
+
+Preserve these together:
+
+| Location | Why it matters |
+|---|---|
+| `config/` | Routing, forwarding credentials, permissions and presentation. |
+| `.basalt/forwarding.key` | Private proxy identity trusted by Basalt backends. Losing it requires updating trust. |
+| `.basalt/players.db` | Player records, memberships, whitelist, bans and plugin/verification data. |
+| `.basalt/api.token` | HTTP administration credential. |
+| `.basalt/nethernet-identity.der` | Persisted NetherNet identity when used. |
+| `plugins/` | Packages and operator-edited resources/configuration. |
+
+Stop the process for a straightforward consistent database backup, or use SQLite's backup facilities. Do not copy only the main database while ignoring a live write-ahead log. Compiled WASM cache is rebuildable; player state and secrets are not.
+
+For an update, verify the downloaded checksum, stop, replace the executable and start in the same working directory. Existing settings are preserved. Supported missing proxy options may be appended as commented defaults; unknown removed keys still need attention. Review the generated configuration comments and [installation guide](/docs/proxy/installation#updating).
+
+## Hardening
+
+Run as an unprivileged service account. Expose the public Java port and only the Bedrock transports/query you enabled. Restrict backend ports to the proxy and use matching forwarding credentials. Keep online mode on at the public entry point.
+
+Trust PROXY headers only from your own balancers. Keep the HTTP API on loopback or a protected private/TLS route. Restrict filesystem access to config, state and any shared verification directory. Grant plugin console, network and packet capabilities only when needed; Java plugins run through an embedded JVM and do not have the WASM capability sandbox.
+
+## Troubleshooting
+
+### Startup fails
+
+| Symptom | Check |
+|---|---|
+| Invalid or unknown setting | The named file/key; use current servers.toml and routing.try syntax. |
+| Forwarding must be chosen | Add explicit forwarding to each servers entry. |
+| Missing/unused secret | Velocity, BungeeGuard and SafeNet require a non-empty secret; none, Basalt and BungeeCord do not use one. |
+| Unknown server or group | Define every routing/group member and check spelling. |
+| Invalid bind / dual stack | Use a literal address and an IPv6 bind for dual-stack mode. |
+| Port cannot bind | Another process, firewall/container setup or transport port collision. |
+| Invalid forwarding key | Restore its 64-hex-character private key, or deliberately replace it and update backend trust. |
+| Only one Bedrock transport starts | Check separate RakNet and NetherNet warnings and all required ports. |
+
+### A player cannot log in
+
+| Symptom | Check |
+|---|---|
+| No server available | Backend reachability, DNS, port, protocol compatibility, forwarding and the route order. |
+| Unsupported version / no compatible server | The [client/backend pair](/docs/proxy/bedrock-and-versions), not just one version number. |
+| Login could not be completed | Mojang reachability/account authentication and session-IP policy. |
+| Already connected | Another active session with the same identity. |
+| Whitelist or ban message | Proxy access state as well as backend access state. |
+| Connection closes with no useful reply | Admission/session/buffer caps or a stage timeout; inspect rejected counts and logs. |
+| Verification fails / try again | Antibot reputation, latency, shared NAT and limbo/captcha outcomes. |
+
+### The backend rejects a player
+
+Match forwarding on both sides. Backend online mode is normally false because the public proxy authenticated the player. For Velocity, compare the exact shared secret. For Basalt, check the public trusted key and matching backend-id. A forwarding failure is not a reason to silently downgrade to an unsigned scheme.
+
+Keep backend-specific rejection details in backend logs as well as proxy logs; the player's message may deliberately omit them.
+
+### A move or command appears to do nothing
+
+Use `/basalt:server` or `/basalt:send` to avoid a backend command collision. Check permissions, whether the player is in play, whether another change is pending and whether the target protocol is compatible. A preparation acknowledgment is not a completed move. For a rejected backend login, inspect the configured connect-failed message and backend logs.
+
+### Bedrock is visible but cannot join
+
+Check that the client's transport is enabled. With both transports, defaults require UDP 19132, TCP 19132 and UDP 19133. Verify the advertised public address behind NAT, Xbox authentication policy, the first server in the default route and its forwarding. A successful ping alone does not test the game transport or Java backend login.
+
+### A plugin fails
+
+Read the plugin id and failure reason in logs. Check the manifest target/API/ABI, dependencies and grants. WASM callbacks have budgets; a timeout or repeated traps disables the plugin until reload. Packet listeners have an additional bounded wait. Java plugin errors can indicate unavailable adapter APIs or bytecode/runtime dependencies; test the jar in isolation.
+
+## Reporting a crash
+
+Include the proxy version/build, platform, startup mode, relevant configuration with secrets removed, and the end of `.basalt/logs/latest.log`. Describe the client/backend versions and whether the failure happened on first join or a move. Report proxy issues through its repository issue tracker, and share sensitive security findings through the project's security policy.

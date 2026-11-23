@@ -1,7 +1,7 @@
 ---
 title: HUD
 description: Show players boss bars, a sidebar, tab list text, titles, pause menu links and chat completions straight from the proxy.
-group: Plugins
+group: Plugin API
 ---
 
 A proxy plugin can put things on a player's screen without any backend being involved: a boss bar over the network's name, a sidebar with the player's rank, a header and footer in the tab list, a title when a countdown ends. Everything on this page is sent by the proxy on the player's own connection, whichever backend they are on.
@@ -32,7 +32,7 @@ static void on_join(proxy::core::Ctx ctx) {
 void plugin_init() { proxy::events::on("player.join", proxy::core::kNormal, on_join); }
 ```
 
-In tables below the functions are written as `hud::bossbar_show`. In C++ the area name is repeated in the function name, so the call is `hud::hud_bossbar_show`; other languages use their own casing, see [The SDK](/docs/server/wasm-sdk).
+In tables below the functions are written as `hud::hud_bossbar_show`. In C++ the area name is repeated in the function name, so the call is `hud::hud_bossbar_show`; other languages use their own casing, see [The SDK](/docs/proxy/wasm-sdk).
 
 ## What a call answers
 
@@ -49,7 +49,7 @@ Everything a plugin shows is attached to the player's connection and disappears 
 
 ## Text
 
-Every text on this page is [MiniMessage](/docs/server/wasm-text), or a language key of the plugin when it starts with `@`, and is cut at 4096 bytes.
+Every text on this page is [MiniMessage](/docs/proxy/wasm-text), or a language key of the plugin when it starts with `@`, and is cut at 4096 bytes.
 
 ```cpp
 proxy::hud::hud_bossbar_title(player, "welcome", "@bar.welcome");
@@ -63,11 +63,11 @@ A boss bar is named by an id you choose, 1 to 64 bytes, and belongs to one playe
 
 | Function | What it does |
 |---|---|
-| `hud::bossbar_show` | Shows the bar, or replaces it. |
-| `hud::bossbar_progress` | Sets the fill, from 0 (empty) to 1 (full). A value outside the range is clamped; a NaN is `ERR_INVALID`. |
-| `hud::bossbar_title` | Changes the text. |
-| `hud::bossbar_style` | Changes the color and the overlay. |
-| `hud::bossbar_hide` | Removes the bar. |
+| `hud::hud_bossbar_show` | Shows the bar, or replaces it. |
+| `hud::hud_bossbar_progress` | Sets the fill, from 0 (empty) to 1 (full). A value outside the range is clamped; a NaN is `ERR_INVALID`. |
+| `hud::hud_bossbar_title` | Changes the text. |
+| `hud::hud_bossbar_style` | Changes the color and the overlay. |
+| `hud::hud_bossbar_hide` | Removes the bar. |
 
 `bossbar_show` takes the player, the id, the text (required), the progress (default `1.0`), the color (default `"purple"`) and the overlay (default `"progress"`).
 
@@ -136,8 +136,8 @@ The player has one sidebar, and the last plugin to set it wins.
 
 | Function | What it does |
 |---|---|
-| `hud::sidebar` | Shows the sidebar with a title and lines, top to bottom. Calling it again updates it in place. |
-| `hud::sidebar_clear` | Takes it down. |
+| `hud::hud_sidebar` | Shows the sidebar with a title and lines, top to bottom. Calling it again updates it in place. |
+| `hud::hud_sidebar_clear` | Takes it down. |
 
 The title is required. A sidebar holds at most 15 lines and any extra lines are ignored. Lines have no score numbers next to them, only your text. A line that is not text is `ERR_INVALID`.
 
@@ -145,7 +145,7 @@ The title is required. A sidebar holds at most 15 lines and any extra lines are 
 
 ### Header and footer
 
-`hud::tab_list` sets the header and the footer of the player's tab list. Each part is separate:
+`hud::hud_tab_list` sets the header and the footer of the player's tab list. Each part is separate:
 
 - Passing `nullptr` keeps what the player has now.
 - Passing an empty string clears it.
@@ -159,12 +159,12 @@ The player has one tab list, so the last plugin to set a part wins.
 
 ### Extra rows
 
-`hud::tab_entry` adds a row to the player's own tab list that is not a real player: a section heading, a spacer, a line of text. The row is shown only to that player.
+`hud::hud_tab_entry` adds a row to the player's own tab list that is not a real player: a section heading, a spacer, a line of text. The row is shown only to that player.
 
 | Function | What it does |
 |---|---|
-| `hud::tab_entry` | Adds the row `id`, or updates it. |
-| `hud::tab_entry_remove` | Removes the row. |
+| `hud::hud_tab_entry` | Adds the row `id`, or updates it. |
+| `hud::hud_tab_entry_remove` | Removes the row. |
 
 A row has an id (1 to 64 bytes, per player, shared by all plugins), a `name` (the profile name of the row, cut at 16 characters), the display `text` and a latency in milliseconds that decides the connection bars next to it (0 to 10000, clamped, default 0). The name and the text are both required. A player can have at most 80 plugin rows: a new id beyond that is ignored.
 
@@ -175,13 +175,13 @@ proxy::hud::hud_tab_entry(player, "staff-1", "alex", "<white>Alex", 20);
 
 ## Titles and the action bar
 
-Titles and the action bar use calls from the players area, next to the other player calls of the proxy (see [Players and backends](/docs/proxy/wasm-players)). The one HUD call about them is `hud::clear_title`.
+Titles and the action bar use calls from the players area, next to the other player calls of the proxy (see [Players and backends](/docs/proxy/wasm-players)). The one HUD call about them is `hud::hud_clear_title`.
 
 | Function | What it does |
 |---|---|
 | `players::player_title` | Shows a title and subtitle. A part given as an empty text is not changed. The fade in, stay and fade out times are in ticks (20 per second); a negative time means the client's default, and no times are sent at all when all three are negative. |
 | `players::action_bar` | Shows one line above the hotbar. |
-| `hud::clear_title` | Takes the title, subtitle and action bar off the screen. With `reset` true the fade times also return to their defaults. |
+| `hud::hud_clear_title` | Takes the title, subtitle and action bar off the screen. With `reset` true the fade times also return to their defaults. |
 
 ```cpp
 proxy::players::player_title(player, "<gold>Round 1", "<gray>Get ready", 10, 40, 10);
@@ -190,7 +190,7 @@ proxy::players::action_bar(player, "<yellow>Round starts in 10 seconds");
 
 ## Pause menu links
 
-`hud::server_links` replaces the links in the client's pause menu (the "Server Links" screen). It takes a list of label and URL pairs. An empty list clears them.
+`hud::hud_server_links` replaces the links in the client's pause menu (the "Server Links" screen). It takes a list of label and URL pairs. An empty list clears them.
 
 A label that is exactly one of these names becomes one of the client's own link types, shown with the client's own wording:
 
@@ -210,7 +210,7 @@ The `pairs` argument holds label then URL, `count` times. The links of the backe
 
 ## Chat completions
 
-`hud::chat_completions` changes the words the client offers when the player completes text in the chat box, for example names of your custom commands' arguments.
+`hud::hud_chat_completions` changes the words the client offers when the player completes text in the chat box, for example names of your custom commands' arguments.
 
 | Action | Effect |
 |---|---|
@@ -242,4 +242,4 @@ Any other action is `ERR_INVALID`. A call holds at most 256 words.
 | [Players and backends](/docs/proxy/wasm-players) | Player handles, sending text, moving and kicking players. |
 | [Dialogs, resource packs, cookies and transfers](/docs/proxy/wasm-interaction) | Dialogs, resource packs and the other things a client can be asked to do. |
 | [Events](/docs/proxy/wasm-events) | `player.join` and the other events to hang a HUD on. |
-| [The SDK](/docs/server/wasm-sdk) | How the calls are spelled in each language. |
+| [The SDK](/docs/proxy/wasm-sdk) | How the calls are spelled in each language. |

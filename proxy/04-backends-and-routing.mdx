@@ -1,128 +1,153 @@
 ---
 title: Backends and routing
-description: Define backend servers, route players by hostname, fall back when a server is down, and move players between servers.
+description: Configure servers.toml, domain routes, server groups, health checks, fallback and live server changes.
 group: Configuration
 ---
 
-`backends.toml` has three parts: the backends themselves, the default route, and optional routes by hostname. Backends and routes are the only part of the configuration that [reloads while the proxy runs](/docs/proxy/configuration#hot-reload).
+`config/servers.toml` defines where players go after they reach the proxy. `proxy.toml` defines how they reach it. Routes, groups and server definitions can be reloaded; health-check and status-relay timing settings require a restart.
 
-## Defining backends
-
-Each backend is a table named `[backends.<name>]`. The name is what routes, console commands and plugins refer to: 1 to 64 characters from letters, digits, `_` and `-`. A file may define 1 to 256 backends.
-
-```toml
-[backends.lobby]
-host = "127.0.0.1"
-port = 25566
-forwarding = "basalt"
-protocol = "auto"
-
-[backends.survival]
-host = "survival.internal"
-port = 25567
-forwarding = "velocity"
-secret = "change-me"
-```
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `host` | string | none, **required** | Hostname, IPv4 or IPv6 address, without a port. Names are resolved when a player connects. |
-| `port` | integer | `25566` | 1 to 65535. |
-| `forwarding` | string | none, **required** | How the player's identity reaches this backend: `none`, `basalt`, `velocity`, `bungeecord`, `bungeeguard` or `safenet`. Aliases: `modern` for `velocity`, `legacy` and `bungee` for `bungeecord`, `false` and `disabled` for `none`. Explained in [Forwarding](/docs/proxy/forwarding). |
-| `protocol` | integer or string | `777` | The Java protocol number of the backend, `"client"`, or `"auto"`. See below. |
-| `secret` | string | `""` | Shared secret for `velocity`, token for `bungeeguard`, passphrase for `safenet`, 1 to 4096 bytes. Required by those three schemes and an error for the others. |
-| `property-name` | string | `"safe_net_passphrase"` | Property that carries the SafeNET passphrase. Only valid with `safenet`. |
-| `bungee-messages` | boolean | `false` | Let this backend use the BungeeCord plugin channel (see [below](#bungeecord-messages)). |
-
-A backend without an explicit `forwarding` is refused at startup: `backends.<name>.forwarding must be chosen explicitly for this backend`. There is no default so that a weak scheme is never chosen by omission.
-
-### The `protocol` key
-
-- A number is the protocol of the backend: `777` is Minecraft 26.3, `776` is 26.2, `775` is 26.1, `774` is 1.21.11, `773` is 1.21.9 and 1.21.10, `772` is 1.21.7 and 1.21.8, `771` is 1.21.6 and `770` is 1.21.5. Other versions are accepted when the client has the same version (`protocol` equal to the player's). See [Bedrock and versions](/docs/proxy/bedrock-and-versions) for what each combination does.
-- `"client"` means the backend speaks whatever version each player connects with. This is how a Basalt Server behaves, because it translates older clients itself.
-- `"auto"` resolves to `"client"` for a backend with `forwarding = "basalt"`, and to `777` for every other scheme. With `"auto"` the proxy still translates clients older than 1.13 itself for a Basalt backend, because those clients cannot carry the login query that `basalt` forwarding uses.
-
-## Routing
+## A complete two-server example
 
 ```toml
 [routing]
-default = ["lobby", "backup-lobby"]
+try = ["lobby", "survival"]
 
 [forced-hosts]
-"play.example.org" = ["survival"]
-"minigames.example.org" = ["minigames", "lobby"]
+"survival.example.org" = ["survival", "lobby"]
+
+[servers.lobby]
+host = "127.0.0.1"
+port = 25566
+protocol = "auto"
+forwarding = "basalt"
+
+[servers.survival]
+host = "10.0.0.12"
+port = 25565
+protocol = "auto"
+forwarding = "velocity"
+secret = "replace-with-the-backend-secret"
 ```
 
-A route is an ordered, non-empty list of backend names, with no duplicates. Every name has to exist in `[backends]`; an unknown name fails startup with `references an unknown backend`.
+This example expects a Basalt lobby and a Velocity-forwarding backend. Configure their [forwarding](/docs/proxy/forwarding) to match before joining. DNS for `survival.example.org` must point at the proxy, not the survival backend.
 
-### Choosing a route
+## Server definitions
 
-When a player connects, the proxy looks at the hostname written in the Minecraft handshake, which is the address the player typed in the client.
+Use `[servers.<name>]`, with 1 to 256 servers per file. Names contain 1 to 64 ASCII letters, digits, `_` or `-`; use the same name in routes, commands and plugins.
 
-1. Lowercase it and strip one trailing dot.
-2. If it matches a key in `[forced-hosts]`, use that route.
-3. Otherwise use `[routing] default`.
+| Key | Default | Meaning |
+|---|---|---|
+| `host` | `"127.0.0.1"` | Hostname, literal IPv4 or IPv6 address, without a port. DNS is resolved when connecting. |
+| `port` | `25566` | Backend port, 1 to 65535. |
+| `protocol` | `777` | Fixed Java protocol number, `"client"` or `"auto"`. |
+| `forwarding` | required | `none`, `basalt`, `velocity`, `bungeecord`, `bungeeguard` or `safenet`. |
+| `secret` | `""` | Required for Velocity, BungeeGuard and SafeNet, 1 to 4096 bytes without NUL. Leave empty or omit for other schemes. |
+| `property-name` | `"safe_net_passphrase"` | SafeNet credential property. Only accepted for `safenet`. |
+| `bungee-messages` | `false` | Allow this backend to use the BungeeCord messaging channel. |
 
-Forced-host keys are bare hostnames: no port, and up to 256 entries. Two keys that become equal after lowercasing are a duplicate and refused. Remember to point each DNS name at the proxy.
+A missing forwarding choice fails validation rather than selecting a weak scheme silently. `modern` aliases Velocity; `legacy` and `bungee` alias BungeeCord; `false` and `disabled` alias none. Prefer the canonical names above.
 
-### Fallback
+### Choosing a protocol
 
-A route is also the fallback order. The proxy tries the backends of the list in order and sends the player to the first that accepts them. A backend that is down, refuses the connection, cannot be resolved or times out (`connect-timeout-ms`) is skipped for that player, and the next entry is tried. If none works, the player is disconnected with:
+- A number describes the backend's actual Java protocol. For example, `777` is 26.3, `776` is 26.2 and `770` is 1.21.5.
+- `"client"` means the backend accepts the player's protocol. Use it for a backend that performs its own translation.
+- `"auto"` follows the client for Basalt forwarding and selects the current native protocol for other schemes. It is not network discovery of a Paper server's version.
 
+Set a fixed number when the backend runs another version. The [version matrix](/docs/proxy/bedrock-and-versions#java-versions) explains the accepted pairs and the role of the Basalt session envelope.
+
+## Default route and forced hosts
+
+`[routing] try` is the default ordered route. `[forced-hosts]` maps the hostname in the player's handshake to another route. Comparison ignores case and one trailing dot; duplicate normalised names are refused. Hosts have no port, and the file may contain up to 256 forced-host entries.
+
+```toml
+[routing]
+try = ["lobby"]
+
+[forced-hosts]
+"creative.example.org" = ["creative", "lobby"]
+"play.example.org" = ["lobby"]
 ```
-No server is available right now. Please try again shortly.
+
+Define every named destination under `[servers]`, or as a server group. An unknown destination fails validation. Forced hosts choose an initial destination; they are not access-control rules for the game mode.
+
+## Server groups
+
+A group is an ordered collection of servers that can appear wherever a route takes a destination:
+
+```toml
+[server-groups.lobbies]
+servers = ["lobby-1", "lobby-2"]
+
+[routing]
+try = ["lobbies", "survival"]
 ```
 
-The same list protects a player already in game. If the backend they are on drops, the proxy tries the other backends of the player's route that it has not yet tried for them, and moves the player there. When none is left they are disconnected with `No backend is available. Please reconnect later.`
+Groups contain server names, not other groups. Group names follow the server-name rules, cannot collide with a server and are limited to 256 groups. Expansion preserves order and removes repeated destinations. This is fallback, not load balancing: the first eligible available server wins, with no weights or least-player selection.
 
-Entries are not balanced: the first available backend always wins, so with `["lobby-1", "lobby-2"]`, `lobby-2` only takes players while `lobby-1` is unavailable. There are no weights and no player counting.
+## Fallback and recovery
 
-Bedrock players always go to the first backend of the default route.
+At login the proxy tries the route in order, skipping incompatible client/backend pairs and moving on after failed connection attempts. Each attempt is bounded by `connect-timeout-ms` and the overall login deadline. If no destination works, the player sees `No server is available right now. Please try again shortly.`
 
-## Moving players between backends
+If an active backend unexpectedly drops during play, the proxy can recover to another backend of the player's route without a new public login. Visited destinations prevent automatic loops. If recovery exhausts the route, the player is disconnected. A successful explicit server change resets the recovery history.
 
-A player changes backend while staying connected. From Minecraft 1.20.2 the client is reconfigured in place and receives the registries of the new backend. Before 1.20.2 it receives the new backend's join packet.
+Bedrock uses the first server of the default route and does not select a route from forced hosts. Do not assume Java's route fallback and switching behaviour applies to the Bedrock bridge.
 
-A move is requested by:
+## Health checks
 
-- the `send` console command;
-- a plugin, see [Players and backends](/docs/proxy/wasm-players);
-- a backend that has `bungee-messages = true` and sends the BungeeCord `Connect` message, which is how a lobby's server-selector plugin works.
+```toml
+[health]
+enabled = true
+mode = "status"
+interval-seconds = 10
+timeout-ms = 1500
+failures-before-down = 2
+```
 
-A request is refused when the target backend is unknown, when the player is not yet in game, when the target is the backend they are already on, or when another change is in progress. If the client and the target backend have no usable version route, the change is refused and the player stays where they are. The proxy never changes the contents of a backend's registries to fit another version.
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Probe servers in the background. Off means servers are tried without advance checks. |
+| `mode` | `"tcp"` | `tcp` checks the connection; `status` also requests Minecraft multiplayer-list status. |
+| `interval-seconds` | `10` | Time between checks of a server, 1 to 3600 seconds. |
+| `timeout-ms` | `1500` | Check timeout, 50 to 60000 ms. |
+| `failures-before-down` | `2` | Consecutive failures before marking down, 1 to 100. One success brings it back. |
 
-### BungeeCord messages
+Routing prefers servers not marked down. If every candidate is down, it tries them anyway, so a bad check does not permanently lock players out. `/glist` and the [remote API](/docs/proxy/remote-api) expose server health. Changing this table requires a restart.
 
-With `bungee-messages = true`, the proxy answers the channel `bungeecord:main` (and the legacy name `BungeeCord`) for that backend and nothing else. Supported subcommands:
+## Backend status relay
+
+A profile in [`server_list.toml`](/docs/proxy/interface#backend-status-relay) can use `source = "server:lobby"` or `source = "route"` and selectively relay online count, slots, sample, MOTD, version or icon.
+
+```toml
+[status-relay]
+ttl-ms = 5000
+timeout-ms = 1500
+```
+
+`ttl-ms` is the cache lifetime (100 to 3600000 ms); `timeout-ms` bounds a query (50 to 60000 ms). While a result is pending or unavailable, the profile uses its local values. These timings require a restart and are independent of health checks.
+
+## Moving players
+
+Players with `basalt.command.server` can use `/server` and `/server <name>`. Staff with `basalt.command.send` can run `/send <player> <server>` or `/send all <server>`. A plugin can use the [player API](/docs/proxy/wasm-players#moving-a-player).
+
+A move is refused if the target does not exist, the player is not in play, the destination is current, another move is pending or the protocol pair is incompatible. Accepted preparation is not a guarantee that the destination will finish login. From 1.20.2, Java clients reconfigure in place; older clients receive a new join sequence.
+
+See [Commands](/docs/proxy/commands) for names, permissions, aliases and backend command collisions.
+
+## BungeeCord messages
+
+Enable `bungee-messages = true` only on a backend you want to control the proxy. It can then use `bungeecord:main` or legacy `BungeeCord`:
 
 | Subcommand | Effect |
 |---|---|
-| `Connect` | Moves the player who sent it to the named backend. |
-| `GetServer` | Replies with the name of the player's current backend. |
-| `GetServers` | Replies with all backend names, comma separated. |
-| `UUID` | Replies with the player's UUID. |
+| `Connect` | Request a move of the sending player to another backend. |
+| `GetServer`, `GetServers` | Query current server or configured server names. |
+| `UUID` | Query the player's UUID. |
+| `PlayerCount`, `PlayerList` | Query players on a named server or `ALL`. |
+| `IP`, `ServerIP` | Query player or backend address information. |
+| `Forward` | Forward a plugin message between backends. |
 
-Other subcommands are ignored. Messages coming from a client are always discarded, and with `bungee-messages = false` (the default) everything on the channel is dropped.
+`PlayerCount`, `PlayerList`, `IP`, `ServerIP` and `Forward` also need the plugin host enabled. Messages received from a player's client are discarded. This messaging support does not load BungeeCord Java plugins and does not require the backend to use BungeeCord forwarding.
 
-## Console commands
+## Applying changes
 
-Commands typed in the proxy's terminal. A leading `/` is optional.
-
-| Command | Effect |
-|---|---|
-| `help` | List the commands. |
-| `servers` | List the backend names. |
-| `status` | Print counters: sessions, retained buffer bytes, accepted and rejected connections, bytes relayed, logins, backend changes, where connections ended, CPU seconds and peak memory (Linux, macOS), and the number of Bedrock players. |
-| `reload` | Re-read the configuration directory, see [Hot reload](/docs/proxy/configuration#hot-reload). |
-| `send <player> <backend>` | Move a connected player. Player names are case-sensitive. |
-| `stop` | Stop the proxy. |
-
-These names cannot be replaced by a plugin. Any other line is offered to plugin commands first.
-
-`send` answers with one of: `Backend change preparation accepted for <player>.`, `Player not found (names are case-sensitive).`, `Unknown backend.`, `Invalid player name.`, `Control queue or buffer budget is full.`, or `Backend change unavailable: session is not in play, destination is current, or change is busy.`
-
-## Commands and permissions for players
-
-The proxy itself offers no commands to players. Every in-game command comes from a plugin, which can restrict it with a `permission`. A command that declares a permission runs for the players the proxy's permission chain grants it to, and always for the console, see [Backends, permissions and administration](/docs/proxy/wasm-admin#permissions). Commands without a permission are open to everyone. The permission model of each backend is separate: see [Access and permissions](/docs/server/groups-and-permissions) for Basalt Server.
-
-Clients from 1.13 offer plugin commands in tab completion; Bedrock clients see them in their command list.
+Run `reload` after changing server definitions, groups or routes. Existing sessions keep their routing snapshot; new sessions use the new topology. A missing server name, invalid secret or malformed file is reported rather than silently replaced by defaults.

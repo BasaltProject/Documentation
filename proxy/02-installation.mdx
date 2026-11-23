@@ -30,7 +30,7 @@ Two kinds of build are published:
 - **Releases.** A tagged release (`v<version>`) is published every Monday at 09:00 in Madrid, when something changed since the previous one. Versions look like `26.3.4`: the Minecraft version, then a counter.
 - **Nightly.** A single prerelease called `nightly` that is replaced by every push to the main branch. Its versions end in `-n<k>`. Use it to try a fix, not for a network you care about.
 
-Every release carries a `SHA256SUMS` file. Verify the download before running it:
+The versioned filenames below are examples; substitute the version and architecture you downloaded. Releases carry a `SHA256SUMS` file. Verify the download before running it:
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS
@@ -47,13 +47,15 @@ chmod +x BasaltProxy-26.3.4-Linux-x64
 Run the executable from the directory where you want its configuration and state to live. All relative paths (`config/`, `.basalt/`, `plugins/`) are resolved from the working directory.
 
 ```bash
-mkdir basalt-proxy && cd basalt-proxy
+mkdir basalt-proxy
+mv BasaltProxy-26.3.4-Linux-x64 basalt-proxy/
+cd basalt-proxy
 ./BasaltProxy-26.3.4-Linux-x64
 ```
 
-On the first start the proxy writes commented `proxy.toml` and `backends.toml` into `./config/`, then starts with them. Existing files are never overwritten. The default `backends.toml` defines a single backend, `lobby`, at `127.0.0.1:25566`, so edit it before players join (see [Backends and routing](/docs/proxy/backends-and-routing)).
+On the first start the proxy generates the commented configuration files under `./config/`. Existing settings are preserved. During upgrades, missing supported options in `proxy.toml` can be appended as commented defaults rather than replacing your choices. The default `servers.toml` defines a single backend, `lobby`, at `127.0.0.1:25566`, so edit it before players join (see [Backends and routing](/docs/proxy/backends-and-routing)).
 
-You can type [console commands](/docs/proxy/backends-and-routing#console-commands) in the terminal while it runs. Stop it with `stop`, Ctrl+C or SIGTERM.
+You can type [console commands](/docs/proxy/commands) in the terminal while it runs. Stop it with `stop`, Ctrl+C or SIGTERM.
 
 ### Android
 
@@ -92,9 +94,13 @@ an Android foreground service and does not keep the device awake automatically.
 | Port | Protocol | Setting | Default |
 |---|---|---|---|
 | Java clients | TCP | `[network] port` | `25565` |
-| Bedrock clients | UDP | `[bedrock] port`, only when `[bedrock] enabled = true` | `19132` |
+| Bedrock RakNet | UDP | `[bedrock] port`, with RakNet enabled | `19132` |
+| Bedrock NetherNet signaling | TCP | `[bedrock] port`, with NetherNet enabled | `19132` |
+| Bedrock NetherNet game traffic | UDP | `[bedrock] nethernet-port`, 0 chooses automatically | `19133` with both transports |
+| Administration API | TCP/HTTP | `[api] port` in remote.toml, off by default | `25590` |
+| Legacy query | UDP | `[query] port`, off by default | `25565` |
 
-Open only these on the proxy's firewall. The backends' ports should accept connections from the proxy and nobody else.
+Expose only the client transports you enable. Keep the HTTP API on loopback or a private network, and expose query only if needed. For current Bedrock clients, NetherNet needs both signaling TCP and game UDP. See [Bedrock ports](/docs/proxy/bedrock-and-versions#ports-and-transports). The backends' ports should accept connections from the proxy and nobody else.
 
 ## Running as a service
 
@@ -119,7 +125,7 @@ StandardInput=null
 WantedBy=multi-user.target
 ```
 
-`SIGHUP` reloads `backends.toml` and the plugins, the same as the `reload` console command (see [Hot reload](/docs/proxy/configuration#hot-reload)). `SIGTERM` stops the proxy cleanly. With `StandardInput=null` the console reads nothing, which is harmless: the proxy keeps running.
+`SIGHUP` reloads supported configuration and plugin instances, the same as the `reload` console command (see [Hot reload](/docs/proxy/configuration#hot-reload)). `SIGTERM` stops the proxy cleanly. With `StandardInput=null` the console reads nothing, which is harmless: the proxy keeps running.
 
 ## Docker
 
@@ -150,7 +156,7 @@ services:
     restart: unless-stopped
 ```
 
-`stdin_open` and `tty` let you reach the console with `docker attach`. Inside a container, `localhost` is the container itself, so backend hosts in `backends.toml` must be service names or addresses reachable from it. Add `19132:19132/udp` to `ports` if you enable Bedrock.
+`stdin_open` and `tty` let you reach the console with `docker attach`. Inside a container, `localhost` is the container itself, so backend hosts in `servers.toml` must be service names or addresses reachable from it. For Bedrock with both transports enabled, also publish `19132:19132/udp`, `19132:19132/tcp` and `19133:19133/udp`. Configure `advertise-address` behind NAT. Leave the administration API unpublished unless you have a private or TLS-protected route to it.
 
 Back up `data/` before upgrading: it holds the forwarding key (`.basalt/forwarding.key`) that your backends trust.
 
@@ -192,4 +198,14 @@ to `build/<preset>/bin/` for distribution.
 2. Stop the proxy (`stop`). Players are disconnected.
 3. Replace the executable and start it again. Configuration and the forwarding key are read from the working directory and carry over.
 
-Existing configuration files are not rewritten when the proxy is updated, so new keys do not appear in them; their defaults apply until you add them. Compare against [Configuration](/docs/proxy/configuration) after an upgrade. An unknown key is a startup error, so remove keys that a release no longer accepts.
+Existing settings are preserved. Missing supported options in `proxy.toml` may be appended as comments with their defaults; they are not activated or used to overwrite your values. Other missing keys use defaults until you add them. Compare against [Configuration](/docs/proxy/configuration) after an upgrade. An unknown key is a startup error, so remove keys that a release no longer accepts.
+
+## Check the first connection
+
+1. Keep `online-mode = true` on the proxy and configure each backend for the chosen forwarding scheme.
+2. Make the backend reachable from the proxy while keeping it private from players.
+3. Join the public Java address and check `/basalt:server`.
+4. Add a second backend and test `/basalt:server <name>` before relying on fallback.
+5. Enable Bedrock separately and test its public transports from outside your NAT.
+
+Use `glist`, `status` and the logs to distinguish a refused login from an unreachable backend. The [operations guide](/docs/proxy/operations#troubleshooting) covers common failures. The proxy does not require a Minecraft EULA file; backend servers have their own requirements.

@@ -6,7 +6,7 @@ group: Configuration
 
 The proxy authenticates the player, then opens its own connection to a backend. Without help, the backend would see every player as the proxy's address with an offline UUID. A **forwarding scheme** is how the proxy tells the backend who is really there, and how the backend knows the claim comes from the proxy and not from someone who connected to it directly.
 
-The scheme is chosen per backend with `forwarding` in `backends.toml`, and the backend must be configured for the same scheme. A mismatch makes the login fail.
+The scheme is chosen per backend with `forwarding` in `servers.toml`, and the backend must be configured for the same scheme. A mismatch makes the login fail.
 
 | Scheme | Proves the sender is the proxy | Replayable | Works with |
 |---|---|---|---|
@@ -18,10 +18,10 @@ The scheme is chosen per backend with `forwarding` in `backends.toml`, and the b
 | `none` | No | n/a | Offline vanilla backend |
 
 <x-docs.callout type="warning" title="Never expose an unsigned backend">
-`bungeecord` and `none` prove nothing. A backend using them must be unreachable from anywhere except the proxy (firewall, private network or loopback). `bungeeguard` and `safenet` stop a casual attacker but send their secret with every player, so keep those ports private as well. Only `basalt` and `velocity` are safe on a reachable port, and only `basalt` resists a captured login being replayed.
+`bungeecord` and `none` prove nothing. A backend using them must be unreachable from anywhere except the proxy (firewall, private network or loopback). `bungeeguard` and `safenet` stop a casual attacker but send their secret with every player, so keep those ports private as well. Signed forwarding authenticates a claim; it does not replace a firewall or encrypt the transport. Keep backend ports private with every scheme. Basalt additionally binds its response to a fresh challenge.
 </x-docs.callout>
 
-In every scheme except `none`, the proxy is the one that authenticates players with Mojang, so the backend must **not** authenticate again: set its `online-mode` to `false`. Leave `[network] online-mode = true` on the proxy.
+The public proxy authenticates players with Mojang. Its backend connection must **not** authenticate again, including with `none`: set its `online-mode` to `false`. Leave `[network] online-mode = true` on the proxy.
 
 ## Basalt native
 
@@ -41,13 +41,13 @@ Forwarding key 3f9a1c0e5b7d2a46. Add to each basalt backend: trusted-keys = ["<6
 
 Copy the quoted value into each backend. If the key file exists but does not hold exactly 64 hex characters, startup fails with `forwarding key file <path> must hold 64 hex characters`.
 
-**Rotation.** Generate the new key (delete or rename the old file, restart the proxy and read the new public key), but before switching, put both public keys in every backend's `trusted-keys`. Once all backends list both, switch the proxy, then remove the old key from the backends.
+**Rotation.** Generate a replacement key using a separate key-file path in an isolated proxy instance. Add its public half alongside the current public key in every backend's `trusted-keys`. Only after the backends trust both should you switch the production proxy to the replacement private key and restart it. Remove the old public key once the new setup is confirmed. Keep the old private key protected until rollback is no longer needed.
 
 ### Configuring the proxy
 
 ```toml
-# backends.toml
-[backends.lobby]
+# servers.toml
+[servers.lobby]
 host = "10.0.0.5"
 port = 25566
 forwarding = "basalt"
@@ -74,20 +74,20 @@ session-envelope = false
 | Key | Meaning |
 |---|---|
 | `trusted-keys` | Public keys, 64 hex characters each, whose signatures are accepted. List two to rotate. |
-| `backend-id` | This backend's own name. The proxy signs it, so use the same name as in `backends.toml`. |
+| `backend-id` | This backend's own name. The proxy signs it, so use the same name as in `servers.toml`. |
 | `session-envelope` | Offer the proxy to forward each player's original packets, which this server then translates itself, instead of the proxy translating. Needs `[translation] mode = "auto"` on the proxy and `protocol = "client"` or `"auto"` on the backend. |
 
 The server's own configuration page covers the rest of its settings.
 
-Because the signed data says whether the proxy verified the player with Mojang and whether the player is Java or Bedrock, a Basalt backend is the only one that can tell Bedrock players from Java players.
+Basalt forwarding explicitly carries authentication and edition information, including Bedrock XUID when available. The other forwarding schemes do not carry that edition metadata.
 
 ## Velocity modern forwarding
 
 A shared secret signs the player information with HMAC-SHA256. The backend asks for it through a login query, which exists from Minecraft 1.13, so a client older than 1.13 can only use a `velocity` backend when the proxy translates it to a newer version (see [Bedrock and versions](/docs/proxy/bedrock-and-versions)).
 
 ```toml
-# backends.toml
-[backends.survival]
+# servers.toml
+[servers.survival]
 host = "10.0.0.6"
 port = 25565
 forwarding = "velocity"
@@ -112,10 +112,10 @@ These three put the player's address, UUID and skin properties into the host fie
 | `bungeeguard` | a token carried as a property named `bungeeguard-token` | The BungeeGuard plugin with the token in its allowed list; on Basalt Server `mode = "bungeeguard"` and the token in `tokens` |
 | `safenet` | a passphrase carried as a property named `safe_net_passphrase`, or the name in `property-name` | `mode = "safenet"` on Basalt Server with the passphrase in `tokens` |
 
-For `bungeeguard` and `safenet`, `secret` in `backends.toml` is the token or passphrase, and it is required. The proxy removes that property from the profile it sends back to the player, so a client never sees the credential.
+For `bungeeguard` and `safenet`, `secret` in `servers.toml` is the token or passphrase, and it is required. The proxy removes that property from the profile it sends back to the player, so a client never sees the credential.
 
 ```toml
-[backends.legacy]
+[servers.legacy]
 host = "10.0.0.7"
 port = 25565
 forwarding = "bungeeguard"
@@ -133,7 +133,17 @@ These schemes need no login query, so they also work for old backends that relay
 ## Choosing
 
 - Basalt Server behind the proxy: `basalt`.
-- Paper, Fabric or Spigot on a recent version: `velocity`.
+- Paper and forks with modern forwarding: `velocity`. Fabric requires a compatible forwarding mod. Spigot needs a scheme it actually implements, usually BungeeCord-family forwarding.
 - A backend that supports neither, or one older than 1.13 that the client reaches without translation: `bungeeguard` where the plugin exists, `bungeecord` otherwise, on a network only the proxy can reach.
 
 Whichever you choose, do not mix schemes by accident: the proxy never falls back to a weaker scheme after a failure, it fails the login instead.
+
+## Forwarding is separate from plugins
+
+A backend can use Velocity forwarding without loading Velocity Java plugins on the proxy. Likewise, `bungee-messages = true` enables the [backend message channel](/docs/proxy/backends-and-routing#bungeecord-messages), not BungeeCord identity forwarding. [Java plugin adapters](/docs/proxy/java-plugins) are a third, independent feature.
+
+## Verify a setup
+
+Check one backend at a time. Confirm the backend is reachable from the proxy, its online mode is off, its forwarding mode matches and its credential or trusted public key is correct. For Basalt, match `backend-id` to the server name in `servers.toml`. A mismatched credential is a login error; do not fix it by changing to `none` on a public network.
+
+For Basalt delegation, also enable the backend session envelope and choose the appropriate [translation mode](/docs/proxy/bedrock-and-versions#who-translates). Keep the forwarding private key across proxy upgrades or update the trusted keys on every backend.

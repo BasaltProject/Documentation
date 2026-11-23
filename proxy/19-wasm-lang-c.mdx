@@ -1,0 +1,131 @@
+---
+title: C
+description: Write, build and package a Basalt Proxy plugin in C, with its SDK conventions and a complete first plugin.
+group: Languages
+---
+
+Choose C for direct ABI wrappers and explicit memory use. The SDK uses fixed buffers, integer handles and plain function callbacks. Build for wasm32 without relying on a host libc, heap allocator or operating-system APIs.
+
+## What Kiln installs
+
+Nothing by hand. Kiln uses a `clang` on your `PATH` when it can link WebAssembly with `lld`, and otherwise downloads Zig
+(about 55 MB, 407 MB unpacked) and compiles with `zig cc`. The download happens on the first build, into a per-user cache,
+on Linux, macOS and Windows. See [Kiln](/docs/proxy/wasm-kiln#toolchains).
+
+## Project layout
+
+```bash
+kiln new greeter --lang c --target proxy
+```
+
+```
+greeter/
+  plugin.toml
+  .gitignore
+  resources/config.toml
+  resources/lang/en_us.toml
+  src/main.c
+```
+
+Every `.c` file under `src/` is compiled, and `src/` is on the include path, so you can split the plugin into several
+files and headers. The module is written to `build/plugin.wasm`; `build/.kiln/` holds the SDK copy and scratch files and
+is rebuilt each time.
+
+## The entry point
+
+Define `void plugin_init(void)` in any file under `src/`. The SDK calls it once, after the module loads, and it is where
+you register listeners, commands and tasks. Nothing else needs to be exported or listed anywhere.
+
+## A first plugin
+
+This plugin greets a player when they join and adds a `/greeter hello [times]` command. It is the whole of `src/main.c`.
+
+```c
+#include <basalt/proxy.h>
+
+static void on_join(bs_ctx ctx) {
+    const bs_player player = bs_event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    char name[64] = {0};
+    bs_player_name(player, name, sizeof name);
+    bs_args args;
+    bs_args_init(&args);
+    bs_args_add(&args, "name", name);
+    bs_send(player, "<green>Welcome, {name}!", &args);
+}
+
+static void hello(bs_ctx ctx) {
+    int64_t times = 1;
+    bs_command_arg_i64(ctx, "times", &times);
+    for (int64_t i = 0; i < times; ++i) {
+        bs_command_reply(ctx, "<yellow>Hello from greeter!", 0);
+    }
+}
+
+void plugin_init(void) {
+    bs_info("greeter loaded");
+    bs_on("player.join", BASALT_PRIORITY_NORMAL, on_join);
+    bs_command("greeter hello [times: int 1..5]", "", hello);
+}
+```
+
+`bs_on` listens to an event, see [Events](/docs/proxy/wasm-events); `bs_command` registers a command from a spec such as
+`greeter hello [times: int 1..5]`, see [Commands](/docs/proxy/wasm-commands). The text is
+[MiniMessage](/docs/proxy/wasm-text), and `{name}` is filled from the arguments.
+
+## How the SDK names things
+
+Calls are spelled in the C++ form on the other pages of this section (`players::send`) and are described in
+[The SDK](/docs/proxy/wasm-sdk). In C they are plain functions with the prefix `bs_` and the same name:
+`players::send` is `bs_send`, `players::player_name` is `bs_player_name`, `commands::command_reply` is `bs_command_reply`. The log
+calls are `bs_debug`, `bs_info`, `bs_warn` and `bs_error`. `#include <basalt/proxy.h>` brings in every area, or include
+one at a time as `<basalt/proxy/players.h>`.
+
+- **Strings in** are `const char *`, NUL-terminated. Pass `0` where text is optional.
+- **Strings out** are written into a `char` buffer and a capacity you pass. The call returns the length, or a negative
+  code. The buffer is **not** NUL-terminated, so start it zeroed (`char name[64] = {0}`) or end it yourself at the
+  returned length. If the answer does not fit in the capacity nothing is written and the return value is the length
+  needed.
+- **Handles** are `bs_player` and `bs_ctx`, both `int32_t`. `0` is never a valid handle.
+- **`Args`** is the `bs_args` struct: `bs_args_init`, then `bs_args_add(&args, key, value)` for each pair. It holds 1024
+  bytes in total and `bs_args_add` returns `BASALT_ERR_INVALID` when a pair does not fit. Pass `0` instead of a pointer
+  for no arguments.
+- **Numbers to text**: there is no `printf`. `bs_format_i64(value, out)` writes a decimal into a buffer of 24 bytes.
+- **Handlers** are `void (*)(bs_ctx ctx)`. A handler gets no user data, so keep state in `static` variables.
+- **Constants** keep the names of the ABI: `BASALT_PRIORITY_NORMAL`, `BASALT_ERR_ABSENT` and the like.
+
+## Building
+
+```bash
+kiln build
+```
+
+compiles with `-O2` for `wasm32`, without a libc, and writes `build/plugin.wasm`, then checks it. Measure the result on your proxy workload rather than assuming one module size or callback time for every language. `kiln pack` writes
+`build/greeter-0.1.0.bppkg` for the proxy's `plugins/` folder, see [Kiln](/docs/proxy/wasm-kiln#pack).
+
+## Store network state
+
+Player handles remain valid through backend changes while the player stays connected to this proxy. Use the per-player data API for values that should follow the player across those changes. Declare `players_data = true` in the manifest. Use `storage = true` for plugin-global keys. Both persist in the proxy database and are isolated by plugin id.
+
+The proxy storage calls differ from the server's document-storage API: use the typed player-data calls or `admin` key/value calls described in [Configuration and storage](/docs/proxy/wasm-storage). Do not substitute a namespace in a server-only document example and assume the operation exists.
+
+## Runtime rules
+
+Ordinary callbacks share the proxy plugin thread and have a 50 ms wall-clock budget. Initialisation has 2 seconds. Packet callbacks have their own bounded wait and execution budget. Keep decisions short and handle errors explicitly; a slow callback delays other plugins and can disable its own instance.
+
+Tasks count 50 ms steps, not backend world ticks. A player handle stays on the proxy session when the player changes server, but becomes stale on disconnect. Keep context handles only for the duration of a callback. Read [Execution model](/docs/proxy/wasm-execution-model) before adding timers or packet listeners.
+
+`target = "proxy"` selects SDK imports and `.bppkg` packaging. Java and Kotlin compiled to WebAssembly are native WASM plugins, separate from jars run by [other plugin runtimes](/docs/proxy/java-plugins).
+
+## Where to go next
+
+| Guide | Purpose |
+|---|---|
+| [Quickstart](/docs/proxy/wasm-quickstart) | Build, install and verify a complete first plugin |
+| [The SDK](/docs/proxy/wasm-sdk) | Areas, spelling, handles, strings and error conventions |
+| [Values](/docs/proxy/wasm-values) | Structured replies and buffers |
+| [Events](/docs/proxy/wasm-events) | Observe or decide login, chat and routing |
+| [Commands](/docs/proxy/wasm-commands) | Register and answer a proxy command |
+| [Storage](/docs/proxy/wasm-storage) | Preserve player or global state |

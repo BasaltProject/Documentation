@@ -1,38 +1,52 @@
 ---
 title: Introduction
-description: What Basalt Proxy does, what it is for and when to put it in front of your servers.
+description: Build a Minecraft network with one address, shared authentication, routing, protection and plugins.
 group: Getting started
 ---
 
-Basalt Proxy sits in front of one or more Minecraft Java servers and gives players a single address. It authenticates players, picks a backend for them, relays the game, and can move a player from one backend to another without disconnecting them. It is written in C++23 and ships as one native executable per platform: no Java runtime is needed on the machine that runs it.
+Basalt Proxy gives a network of Minecraft servers one public address. It authenticates players, chooses a backend, relays their sessions and moves them between servers without making them reconnect to the proxy. It is written from scratch in C++23 and distributed as a native executable, with no external JVM required.
 
-It shares its network layer with [Basalt Server](/docs/server/introduction), but a Basalt Server behind it is optional. A backend can be a vanilla server, Paper, Spigot, Fabric or Basalt Server, as long as the proxy and the backend agree on a [forwarding scheme](/docs/proxy/forwarding) and a protocol version.
+A backend can be vanilla, Paper, Spigot, Fabric or [Basalt Server](/docs/server/introduction). Each has its own address, protocol and forwarding scheme. Basalt Server is optional; it can also take over translation that would otherwise happen on the proxy.
 
-## What it does
+## Start with a working network
 
-- **Single entry point.** One public address (`25565` by default) in front of any number of named backends. Players are routed by the hostname they typed, see [Backends and routing](/docs/proxy/backends-and-routing).
-- **Authentication in one place.** With `online-mode = true` the proxy checks every Java player with Mojang, and passes the verified identity to the backend using one of the [forwarding schemes](/docs/proxy/forwarding).
-- **Moving between servers.** A player is moved with the `send` console command, by a plugin, or by a backend that uses the BungeeCord plugin channel. From Minecraft 1.20.2 the client reconfigures in place instead of reconnecting.
-- **Version bridging.** Clients from 1.8 up to 26.2 can join a 26.3 backend, and 26.3 clients can reach backends from 1.21.5 up to 26.2. See [Bedrock and versions](/docs/proxy/bedrock-and-versions).
-- **Bedrock players.** An optional UDP listener lets Bedrock Edition players join a Java backend.
-- **Plugins.** Off by default. Plugins add commands, react to player events and move players. Plugins are WebAssembly modules, see [Plugins](/docs/proxy/wasm-plugins).
-- **Protection.** Token-bucket admission control per origin address and globally, bounded buffers, timeouts for every stage of a connection. See [Operations](/docs/proxy/operations).
+1. [Install the proxy](/docs/proxy/installation) and run it once to generate `config/`.
+2. Define your servers and routes in [`servers.toml`](/docs/proxy/backends-and-routing).
+3. Configure [identity forwarding](/docs/proxy/forwarding) on both ends. Keep the proxy in online mode and backend ports private.
+4. Join through the proxy, then use `/server` to test changing backend.
+5. Add [permissions](/docs/proxy/groups-and-permissions), [presentation](/docs/proxy/interface) and [plugins](/docs/proxy/wasm-plugins) for your community.
 
-## When to use it
+## What belongs on the proxy
 
-Use a proxy when you run more than one server and want players to share an address, a lobby and a login, or when you want authentication and connection limiting to live on a machine of its own. If you run a single server, you do not need one.
+| Area | What you control |
+|---|---|
+| [Routing](/docs/proxy/backends-and-routing) | Ordered routes, domain-specific destinations, server groups, fallback and health checks |
+| [Client support](/docs/proxy/bedrock-and-versions) | Current and older Java protocols, Bedrock listeners and who translates |
+| [Access](/docs/proxy/groups-and-permissions) | Proxy permission groups, whitelist and bans across the network |
+| [Commands](/docs/proxy/commands) | Player and staff commands, aliases, custom text commands and replies |
+| [Interface](/docs/proxy/interface) | Server-list profiles, backend status relay, tab list, sidebar, boss bar and animations |
+| [Antibot](/docs/proxy/antibot) | Origin reputation, attack detection, limbo checks, captchas and verified players |
+| [Remote administration](/docs/proxy/remote-api) | Authenticated HTTP reads and restricted send, kick and reload actions |
+| [Operations](/docs/proxy/operations) | Monitoring, resource limits, reload, updates, backups and troubleshooting |
+| [WASM plugins](/docs/proxy/wasm-plugins) | Network events, routing decisions, commands, client interaction and persistent data |
+| [Java plugin adapters](/docs/proxy/java-plugins) | Optional BungeeCord and Velocity compatibility through Stratum and Shim |
 
-<x-docs.callout type="warning" title="The proxy is a security boundary">
-When a backend trusts forwarded identities, anyone who can reach the backend directly can claim to be anyone. Pick a signed scheme (`basalt` or `velocity`) and keep the backend ports reachable only from the proxy. Details in [Forwarding](/docs/proxy/forwarding).
+The proxy does not simulate worlds, mobs or blocks. Those remain the responsibility of each backend. Installing a proxy does not synchronise inventories or backend permission systems.
+
+## Java and Bedrock
+
+The native Java protocol is currently Minecraft 26.3 (777). Older clients and backends are accepted through supported protocol routes, not by assuming every pair works. An incompatible server is skipped at login; an incompatible requested move leaves the player on their current server.
+
+Bedrock support is built in and off by default. It includes NetherNet and RakNet transports and can bridge a player to a Java backend or delegate the session to Basalt Server. Read [Bedrock and versions](/docs/proxy/bedrock-and-versions) before choosing ports, forwarding and backend versions.
+
+## Plugins
+
+The native API is WebAssembly. [Kiln](/docs/proxy/wasm-kiln) builds `.bppkg` packages with a manifest, module and resources. Plugins can react to player events, decide routing, add commands, draw interfaces and talk to backends. The plugin host is enabled by default; sensitive capabilities require an explicit operator grant.
+
+Optional Java adapters run BungeeCord and Velocity plugin bytecode through the embedded Shim JVM. They are separate from forwarding and from BungeeCord plugin messages. They are early compatibility layers, so test the specific jars you need.
+
+<x-docs.callout type="warning" title="Keep the backend boundary private">
+Authenticate at the proxy and configure the same forwarding scheme on each backend. Firewall backend ports so players cannot bypass the proxy, its whitelist or its protection. A forwarding setting alone is not a network firewall.
 </x-docs.callout>
 
-## How the documentation is organised
-
-| Page | Covers |
-|---|---|
-| [Installation](/docs/proxy/installation) | Downloading, running, systemd, Docker, updating |
-| [Configuration](/docs/proxy/configuration) | Every key of `proxy.toml` |
-| [Backends and routing](/docs/proxy/backends-and-routing) | `backends.toml`, forced hosts, fallback, commands |
-| [Forwarding](/docs/proxy/forwarding) | Identity schemes and the matching backend configuration |
-| [Bedrock and versions](/docs/proxy/bedrock-and-versions) | Bedrock listener, client and backend versions |
-| [Operations](/docs/proxy/operations) | Logging, statistics, hardening, troubleshooting |
+For a first network, keep the generated defaults, get one backend working, and add destinations one at a time. The [configuration reference](/docs/proxy/configuration) explains where each setting lives.

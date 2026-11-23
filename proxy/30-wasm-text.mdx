@@ -1,0 +1,99 @@
+---
+title: Text and language files
+description: MiniMessage, plugin language keys, named arguments, translation and the limits of proxy placeholders.
+group: Plugin API
+---
+
+Plugin messages are literal MiniMessage text or language keys from the plugin's own resources. Keep operator-editable wording in language files so updating a plugin does not require changing source to translate a welcome or command answer.
+
+## Language files
+
+Place text under `resources/lang/<code>.toml`:
+
+```toml
+welcome = "<green>Welcome, <yellow>{name}</yellow>!</green>"
+
+[network]
+current = "<gray>You are on <white>{server}</white>.</gray>"
+```
+
+Nested tables become dotted keys, such as `network.current`. Package loading extracts editable resources without overwriting existing operator copies. Reload to load changed language resources.
+
+A string beginning with `@` is a key, for example `@welcome`. Other strings are literal text. Missing keys in message resolution fall back to displaying the key rather than silently deleting the message; the dedicated translation call can instead return an absent error.
+
+## Send with arguments
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void on_join(bs::core::Ctx ctx) {
+    const auto player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const auto name = bs::players::player_name(player);
+    bs::core::Args args;
+    args.add("name", name.c_str());
+    bs::players::send(player, "@welcome", &args);
+}
+
+void plugin_init() {
+    bs::events::on("player.join", bs::core::kNormal, on_join);
+}
+```
+
+`Args` maps names to text. `{name}` is substituted from the corresponding argument. Passing arguments does not register a `%placeholder%` and does not select a player's language automatically.
+
+## MiniMessage
+
+Use components such as `<red>`, `<bold>`, `<gradient:aqua:green>...</gradient>` and the supported click/hover tags. Keep legacy section-sign colour codes out of plugin API text. Older clients cannot display every RGB or interaction feature available to current clients.
+
+Treat player-supplied text as data when composing markup. Do not build privileged click actions from unvalidated user input. A plain message and a component-JSON API are different inputs; use the JSON-specific player calls only for valid component JSON.
+
+## Translate before another API call
+
+`text::translate(key, args)` looks up a language key and substitutes arguments without sending it. The key is passed without the `@`. The C++ helper returns `Text<256>`; inspect `ok()` and account for truncation if a translated line may be long.
+
+```cpp
+#include <basalt/proxy.hpp>
+
+namespace bs = basalt::proxy;
+
+static void show_current(bs::core::Ctx ctx) {
+    const auto player = bs::events::event_player(ctx);
+    if (player == 0) {
+        return;
+    }
+    const auto server = bs::players::player_server(player);
+    bs::core::Args args;
+    args.add("server", server.c_str());
+    const auto line = bs::text::translate("network.current", &args);
+    if (line.ok()) {
+        bs::players::send(player, line.c_str());
+    }
+}
+
+void plugin_init() {
+    bs::commands::command("whereami", "", show_current);
+}
+```
+
+HUD calls generally take final strings rather than an Args object. Translate/compose first when a title or bar needs replacements. See [HUD](/docs/proxy/wasm-hud) for each call's client and size limits.
+
+## Language selection
+
+The proxy looks for `en_us` first and then another loaded language file containing the key. It does not automatically choose a file based on the player's locale. If your plugin needs per-player languages, read the player locale and implement an explicit choice of keys or text. Do not assume writing `fr_fr.toml` alone changes every French client's output.
+
+## Named arguments versus placeholders
+
+| Form | Owner and use |
+|---|---|
+| `{name}` | Plugin Args replacement in a message/language line. |
+| `@network.current` | Key in this plugin's language resources. |
+| `%basalt_server_online%` | Proxy configuration placeholder used by supported native presentation/command files. |
+
+The proxy's native configuration has [its own placeholder vocabulary](/docs/proxy/interface#placeholders). The WASM proxy API does not offer the server's menu-placeholder registration or generic server placeholder-fill operations. Do not copy those calls from a server plugin into a proxy plugin.
+
+For client messages use [Players](/docs/proxy/wasm-players), for command replies use [Commands](/docs/proxy/wasm-commands), and for native operator messages use `messages.toml` rather than a plugin language file.

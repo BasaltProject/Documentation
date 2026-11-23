@@ -1,0 +1,57 @@
+---
+title: BungeeCord and Velocity plugins
+description: Load optional Java plugins through Stratum and the embedded Shim JVM, select a platform and diagnose compatibility.
+group: Other plugin runtimes
+---
+
+The native Basalt Proxy plugin format is [WASM .bppkg](/docs/proxy/wasm-plugins). Existing BungeeCord and Velocity jars have a separate compatibility path: Stratum implements the platform APIs, and Basalt Shim executes their bytecode inside the proxy process. No external Java runtime is installed or launched.
+
+These adapters are early. Test your actual plugin set; matching a platform descriptor does not mean every API or dependency a jar uses is compatible.
+
+## Install a jar
+
+1. Keep the native plugin host enabled in `proxy.toml`.
+2. Place the plugin jar in the working directory's `plugins/` folder.
+3. Start the proxy, or reload plugin instances.
+4. Inspect the logs and `plugins` command before letting players use it.
+
+The loader recognises `velocity-plugin.json` for Velocity and `bungee.yml` or `plugin.yml` for the BungeeCord path. Use proxy plugins, not a Bukkit/Paper server plugin that happens to have a plugin.yml. Without a detected Java plugin, the embedded Java machine is not started for this purpose.
+
+Keep plugin-specific data and configuration under the plugin's expected folder, and back it up with `plugins/`. A reload restarts instances and can expose assumptions in plugins that were written for a process restart; use a full restart when validating compatibility.
+
+## Jars supporting both platforms
+
+A jar with both Velocity and BungeeCord descriptors defaults to Velocity. To choose BungeeCord explicitly:
+
+```toml
+[plugins.java-platform]
+"example.jar" = "bungee"
+```
+
+Keys may be the plugin id/name from a descriptor or the jar filename. Values are `velocity` or `bungee`. The choice is part of the plugin-host configuration, so changing it requires a proxy restart.
+
+## Forwarding and messaging are independent
+
+| Feature | Purpose |
+|---|---|
+| `forwarding = "velocity"` | Send a player's identity to a compatible backend. |
+| `bungee-messages = true` | Let a backend use the BungeeCord plugin-message channel. |
+| Java adapter | Load a jar that calls Velocity or BungeeCord platform APIs. |
+
+You can use forwarding or messaging without installing Java plugins. Conversely, loading a Velocity jar does not automatically configure a Paper backend's forwarding secret.
+
+## Permissions and commands
+
+Adapter commands and permission providers integrate with proxy services. Configure the plugin's own settings alongside [groups](/docs/proxy/groups-and-permissions), and check command-name collisions with backends. An adapter is not a copy of a full standalone Velocity or BungeeCord installation and does not automatically import that proxy's global configuration.
+
+## Trust and resource use
+
+WASM manifest capabilities and `[plugins.allow]` grants describe the native WASM sandbox. Do not assume they sandbox a Java jar. Treat Java plugins as code trusted within the proxy process, and keep their files and credentials under the service account's control.
+
+An embedded JVM still has Java runtime work and memory use. The absence of a host JDK does not make Java bytecode native WASM or remove the need to test performance and shutdown behaviour.
+
+## Diagnose compatibility
+
+Start with one jar and its declared dependencies. Read the first loader or linkage error rather than later failures caused by it. Check the detected platform, plugin descriptor, requested API classes, bytecode features and any native/JDK-specific dependencies. If a plugin relies on unsupported behaviour, changing forwarding mode will not fix it.
+
+When reporting an adapter problem, include the plugin version, selected platform, proxy build and first relevant stack trace, with secrets removed. If you are writing a new network plugin, start with the [WASM quickstart](/docs/proxy/wasm-plugins#quickstart).
